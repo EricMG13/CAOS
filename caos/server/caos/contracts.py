@@ -155,6 +155,11 @@ class RecommendationMatrixRequest(StrictModel):
         return value
 
 
+class ReportInputsRequest(StrictModel):
+    thesis: ThesisRequest
+    recommendations: RecommendationMatrixRequest
+
+
 class NoteRequest(StrictModel):
     body: str = Field(min_length=1, max_length=12000)
 
@@ -217,7 +222,7 @@ def digest(value: Any) -> str:
 
 def clean_json(value: Any) -> Any:
     """Reject non-finite values before they can reach an API or artifact."""
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+    if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("non-finite numeric values are not serializable")
     if isinstance(value, dict):
         return {str(k): clean_json(v) for k, v in value.items()}

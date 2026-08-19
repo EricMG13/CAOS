@@ -62,6 +62,55 @@ def save_recommendations(store: MemoryStore, case_id: str, actor: str, request: 
     return result
 
 
+def save_report_inputs(store: MemoryStore, case_id: str, actor: str, thesis_request: ThesisRequest, recommendation_request: RecommendationMatrixRequest, accepted_snapshot_id: str | None = None) -> dict[str, Any]:
+    _validate_case_refs(store, case_id, thesis_request.evidence_ids)
+    _validate_case_refs(store, case_id, recommendation_request.analytical_dependency_ids, artifacts_only=True)
+    with store.lock:
+        theses = store.theses.setdefault(case_id, [])
+        recommendations = store.recommendations.setdefault(case_id, [])
+        thesis_version = theses[-1]["version"] if theses else 0
+        recommendation_version = recommendations[-1]["version"] if recommendations else 0
+        if thesis_version != thesis_request.expected_version or recommendation_version != recommendation_request.expected_version:
+            raise ValueError("VERSION_CONFLICT")
+        thesis = {
+            "id": store._id("thesis"),
+            "case_id": case_id,
+            "author": actor,
+            "core_thesis": thesis_request.core_thesis,
+            "drivers": list(thesis_request.drivers),
+            "risks": list(thesis_request.risks),
+            "catalysts": list(thesis_request.catalysts),
+            "unresolved_questions": list(thesis_request.unresolved_questions),
+            "evidence_ids": list(thesis_request.evidence_ids),
+            "version": thesis_version + 1,
+            "created_at": now_iso(),
+        }
+        recommendation = {
+            "id": store._id("rec"),
+            "case_id": case_id,
+            "author": actor,
+            "market_snapshot_id": recommendation_request.market_snapshot_id,
+            "rows": [row.model_dump(mode="json") for row in recommendation_request.rows],
+            "analytical_dependency_ids": list(recommendation_request.analytical_dependency_ids),
+            "accepted_snapshot_id": accepted_snapshot_id,
+            "stale": False,
+            "stale_reasons": [],
+            "version": recommendation_version + 1,
+            "created_at": now_iso(),
+        }
+        theses.append(thesis)
+        recommendations.append(recommendation)
+        try:
+            store.persist()
+        except Exception:
+            theses.pop()
+            recommendations.pop()
+            raise
+    store.audit_event("thesis.versioned", actor, case_id=case_id, version=thesis["version"])
+    store.audit_event("recommendation.versioned", actor, case_id=case_id, version=recommendation["version"])
+    return {"thesis": copy.deepcopy(thesis), "recommendations": copy.deepcopy(recommendation)}
+
+
 def recommendation_state(store: MemoryStore, case_id: str, value: dict[str, Any] | None) -> dict[str, Any] | None:
     if not value:
         return None

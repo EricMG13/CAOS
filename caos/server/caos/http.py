@@ -13,18 +13,20 @@ from .artifacts.domain import (
     accepted_snapshot,
     create_assumption,
     create_note,
-    latest_version,
     latest_accepted_snapshot,
+    latest_version,
     mark_assumptions_stale,
     promote_note,
     recommendation_state,
     save_recommendations,
+    save_report_inputs,
     save_thesis,
     snapshot_diff,
 )
 from .artifacts.relative_value import compare_universe, save_universe
 from .config import Settings
 from .contracts import (
+    DESTINATIONS,
     ApproveRequest,
     AssumptionRequest,
     ConfirmDraftRequest,
@@ -35,20 +37,25 @@ from .contracts import (
     MethodologyDraftRequest,
     NoteRequest,
     RecommendationMatrixRequest,
+    ReportInputsRequest,
     RVUniverseRequest,
-    StartRunRequest,
     SnapshotSwitchRequest,
+    StartRunRequest,
     ThesisRequest,
-    DESTINATIONS,
     clean_json,
     digest,
 )
-from .identity_cases.domain import Identity, identity_from_request, require_case, require_role
+from .identity_cases.domain import (
+    Identity,
+    identity_from_request,
+    require_case,
+    require_role,
+)
 from .methodology.bundle import DeployVBundle, MethodologyError
 from .publishing.domain import freeze_report, render_pdf, render_xlsx
 from .publishing.recipes import validate_recipe
 from .sources.domain import current_source_set, ingest_upload, list_sources, pathway_fit
-from .store import MemoryStore, PostgresStore, STORE, now_iso
+from .store import STORE, MemoryStore, PostgresStore, now_iso
 from .workflows.domain import WorkflowError, WorkflowRuntime
 
 
@@ -160,6 +167,14 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="source not found")
             return {key: value for key, value in source.items() if key != "vault_path"}
 
+    @app.get("/api/cases/{case_id}/artifacts/{artifact_id}")
+    def artifact_detail(case_id: str, artifact_id: str, request: Request) -> dict[str, Any]:
+        require_case(store, case_id, identity(request))
+        artifact = store.get_artifact(artifact_id)
+        if not artifact or artifact.get("case_id") != case_id:
+            raise HTTPException(status_code=404, detail="artifact not found")
+        return artifact
+
     @app.post("/api/cases/{case_id}/sources/{source_id}/withdraw")
     def withdraw_source(case_id: str, source_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
@@ -265,6 +280,19 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     def thesis(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return {"versions": store.versioned(store.theses, case_id), "current": latest_version(store, store.theses, case_id)}
+
+    @app.post("/api/cases/{case_id}/report-inputs", status_code=201)
+    def report_inputs(case_id: str, payload: ReportInputsRequest, request: Request) -> dict[str, Any]:
+        who = identity(request)
+        require_case(store, case_id, who, write=True)
+        try:
+            accepted = accepted_snapshot(store, case_id)
+            if not accepted:
+                raise HTTPException(status_code=409, detail="SNAPSHOT_REQUIRED")
+            return save_report_inputs(store, case_id, who.subject, payload.thesis, payload.recommendations, accepted["id"])
+        except ValueError as exc:
+            status = 409 if str(exc) == "VERSION_CONFLICT" else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post("/api/cases/{case_id}/thesis", status_code=201)
     def write_thesis(case_id: str, payload: ThesisRequest, request: Request) -> dict[str, Any]:

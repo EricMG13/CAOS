@@ -3468,3 +3468,16 @@ Decision under review: make the issuer registry the routine entry point for sear
 | RT-2026-08-19-007 | Operations reviewer | Rebuilding the legacy dictionary as a second authority can restore divergent metric definitions and provenance precedence across surfaces. | High | Resolved in design; implementation gate | Metric snapshots are projections from governed typed run outputs, not an independent write surface. One versioned catalog defines key, label, unit, polarity, basis, and extraction rule. No manual metric editing, seeded live values, or surface-specific precedence is in scope. |
 
 Decision: accept the issuer-first design subject to these implementation gates. The design restores routine issuer search and maintenance without reviving the legacy dictionary as an authority. Application work must prove atomic publication, direct-object authorization, immutable case pinning, duplicate prevention, and no stale-value carry-forward before release.
+
+## 2026-08-19 — Adversarial UX hardening critic pass
+
+Decision under review: make the existing case workspace honest under reload, narrow layouts, failed API calls, evidence deep-links, and unsaved report edits without changing the underlying authority model.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-19-008 | Saboteur | URL-derived state can diverge from server-rendered markup and silently overwrite a deep-linked run during initial case loading. | High | Resolved | Query state now hydrates after the deterministic server render, preserves an explicit run id, and mirrors state back to the URL only after hydration. A browser smoke test confirms the run query survives loading and no hydration warning is emitted. |
+| RT-2026-08-19-009 | Evidence auditor | An artifact link that only changes the client URL but has no case-authorized detail route leaves the analyst at a decorative evidence rail. | High | Resolved | Added a case-authorized artifact detail route and renders the artifact summary, lineage, evidence references, and expanded source blocks. The route returns 404 for a missing artifact and was verified with FastAPI TestClient. |
+| RT-2026-08-19-010 | Workflow reviewer | A report draft can be lost by SPA navigation or a case switch even if the browser unload warning exists. | High | Resolved | Drafts are session-scoped, visibly marked unsaved, guarded on internal links and case changes, and retained until an explicit freeze succeeds. Browser verification confirms a dismissed discard prompt keeps the current route and draft. |
+| RT-2026-08-19-011 | Accessibility reviewer | A desktop-only gate prevents keyboard, zoom, and reflow access below 900px; async failures are indistinguishable from empty data. | High | Resolved | Replaced the gate with a horizontal mobile rail and stacked panels, added explicit loading/error states, and re-ran the axe suite across all nine destinations with zero violations. |
+
+Decision: accept the hardening pass subject to continued API-backed browser testing for real accepted snapshots and report approval flows. No authority or recommendation semantics were widened by the UX changes.
