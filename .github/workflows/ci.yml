@@ -46,7 +46,7 @@ jobs:
           cache: pip
           cache-dependency-path: caos/server/requirements-dev.txt
       - run: pip install -r caos/server/requirements-dev.txt
-      - run: ruff check caos/server caos/tests --exclude caos/server/caos/methodology/vendor
+      - run: python -m ruff check --config ruff.toml caos/server caos/tests --exclude caos/server/caos/methodology/vendor
       - run: python -m pytest caos/tests/test_clean_slate.py -q
 
   corpus:
