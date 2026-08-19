@@ -5,9 +5,9 @@ session. It holds everything the session needs to own a task, so the invocation
 prompt that points at it can stay thin. The prompt is the front door; the brief is
 the house.
 
-**Canonical worked example:** [`caos/docs/PATH_TO_PRODUCTION_BRIEF.md`](../../../../caos/docs/PATH_TO_PRODUCTION_BRIEF.md).
-Read it in full before writing a brief — it is the reference implementation of every
-section below. Other examples in the repo: `caos/docs/FRONTEND_ARCHITECT_BRIEF.md`.
+There is no repository-local canonical worked example in the clean-slate
+checkout. Use the user's supplied brief or task context as the source of truth,
+then apply the structure below.
 
 ## Why a brief instead of a fat prompt
 

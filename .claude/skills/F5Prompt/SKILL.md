@@ -29,12 +29,12 @@ This skill produces **two paired artifacts**:
    protocol, and the definition of done. This is the artifact that does the heavy
    lifting; the prompt is just its front door.
 
-The canonical worked example lives in the repo at
-[`caos/docs/PATH_TO_PRODUCTION_BRIEF.md`](../../../caos/docs/PATH_TO_PRODUCTION_BRIEF.md)
-— read it before writing a brief, and see `references/context-brief-structure.md`
-for the distilled section-by-section template. The pairing is the whole idea: the
-brief *is* the context pack, so the prompt "only points Fable 5 at it and states the
-deliverable, the boundaries, and the autonomy."
+This clean-slate repository does not ship a canonical production brief. Use the
+user's current brief or task context as the source of truth, and see
+`references/context-brief-structure.md` for the distilled section-by-section
+template. The pairing is the whole idea: the brief *is* the context pack, so the
+prompt "only points Fable 5 at it and states the deliverable, the boundaries, and
+the autonomy."
 
 ## The core shift
 

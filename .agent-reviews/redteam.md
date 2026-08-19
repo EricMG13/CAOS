@@ -3444,3 +3444,12 @@ Report Studio tear-sheet and add a boundary between adjacent stacked segments.
 Decision: accept the paper-specific ramp and bounded segment hairline. The
 change is limited to Report Studio presentation; it does not alter report data,
 ordering, calculations, or the dark-workspace tranche semantics.
+
+## 2026-08-19 — Clean-slate documentation path reconciliation
+
+Decision under review: remove pre-clean-slate audits and update the remaining
+repository guidance for the current CAOS tree.
+
+| ID | Objection | Impact | Status | Resolution |
+|----|-----------|--------|--------|------------|
+| RT-2026-08-19-001 | Historical review records still cite deleted `caos/docs/` briefs and old `caos/frontend/src/` files. Recreating those paths would make obsolete architecture look active. | Medium | Resolved | Obsolete audit artifacts were removed. The append-only records remain historical, and this note marks those paths as non-authoritative. Current guidance is in `README.md`, `caos/README.md`, `PRODUCT.md`, `DESIGN.md`, and `CLAUDE.md`. |

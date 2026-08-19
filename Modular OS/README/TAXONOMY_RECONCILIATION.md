@@ -1,7 +1,7 @@
 # CP Module Taxonomy Reconciliation
 Version: 1.0 | Created: 2026-06-08
 Resolves: Audit F-2 (conflicting module taxonomies)
-Status: **RESOLVED 2026-06-08; FULLY APPLIED 2026-06-20.** Owner ratified Taxonomy A (v2 Canonical). 2026-06-08 rewrite covered the email matrix (24 `REF_CP-EMAIL_SourceRoutingMatrix.md` copies → v2.0) and `CP-COMMON_PREAMBLE.md` module_manifest (v3.3, L7 + infra, `Feeds:TBD` resolved) — but it **did not reach `CP-X/SYSTEM_REFERENCE.md` (the route graph), `CP-X/REF_CP-X_ExampleOutputPattern.md`, or `CP_ONBOARDING_DOCUMENTATION_v2.txt`**, which still carried legacy names for ~18 modules (incl. lane-swaps CP-3B/CP-3D/CP-4C). 2026-06-20: those three files re-synced to Taxonomy A, CP-1A schema `module_name` corrected (`BusinessTransactionSummary` → `BusinessTransactionFactPack`), and L5/L7 rows added to the CP-X route graph. Verified by `tools/check_module_consistency.py` (24/24, 0 drift across schema / ACTIVE_PROMPT / CP-X route / onboarding). Recommendation and mapping retained below for the record.
+Status: **RESOLVED 2026-06-08; FULLY APPLIED 2026-06-20.** Owner ratified Taxonomy A (v2 Canonical). The email matrix, common preamble, CP-X route graph, CP-X example output, onboarding guide, and CP-1A schema were re-synced to that taxonomy. The current consistency check reports 26 modules with 0 drift across schema, active prompts, CP-X routing, and onboarding. The recommendation and mapping below remain as an audit record.
 
 ## 1. The conflict
 
@@ -52,12 +52,19 @@ The *semantics* of each email matrix section should be re-pointed to the correct
 
 **Implication:** this is not a find-replace of labels — several sections' *content* (allowed Evidence/Context/Trigger rules) was written for the legacy lane and must be re-authored for the correct v2 lane. The "Relative Value" email rules, for instance, are analytically correct but currently attached to CP-5 (QA) — they should move to CP-3.
 
-## 5. Required corrective actions (pending ratification)
+## 5. Corrective actions completed
 
-1. Rewrite `CP-COMMON_PREAMBLE.md` `module_manifest` to Taxonomy A (and add L7: CP-SR, CP-MON). Replace the `Feeds: TBD` placeholders.
-2. Re-author `REF_CP-EMAIL_SourceRoutingMatrix.md` section headers **and** per-section rules to Taxonomy A, then re-sync all 24 module copies from the single canonical source in `02_SCHEMA/REF_CP-EMAIL_CANONICAL_LOCATION.md`.
-3. Add a CI check: assert every `module_name` in prose matches the `const` in the corresponding payload schema.
+1. Rewrote `CP-COMMON_PREAMBLE.md` `module_manifest` to Taxonomy A, including L7 and infrastructure modules, and resolved the former `Feeds: TBD` placeholders.
+2. Re-authored the canonical `REF_CP-EMAIL_SourceRoutingMatrix.md` and re-synced its module copies to Taxonomy A.
+3. Re-synced the CP-X route graph, example output pattern, and onboarding documentation.
+4. Added the module consistency check that compares schema, active prompt, CP-X route, and onboarding names.
 
-## 6. Decision needed from owner
+## 6. Validation
 
-> Confirm Taxonomy A (v2 Canonical) is authoritative. On confirmation, the §5 corrective rewrite of `REF_CP-EMAIL` (×24) and `CP-COMMON_PREAMBLE` can proceed. If Taxonomy B is in fact intended, the conflict is far larger (the route map, execution order, and 22 payload schemas would all need reversion) and should be escalated.
+Run this from the repository root:
+
+```bash
+python3 "Modular OS/tools/check_module_consistency.py"
+```
+
+The expected result is `26 modules checked, 0 with drift`.

@@ -6,19 +6,25 @@ repository. This is the single canonical source: `AGENTS.md` is a symlink to
 
 ## Project
 
-**CAOS — Credit Agent OS**: an institutional leveraged-finance credit analysis
-platform. A Next.js 16 analyst UI with 15 destinations in five workflow groups
-(Intake / Analyze / Decide / Publish / Monitor — anchored by Command Center,
-Pipeline, Deep-Dive, Model Builder, Report Studio, Monitor, plus the global
-Ask ⌘K launcher; `frontend/src/lib/nav.ts` is the source of truth) backed by a
-FastAPI service, deployed
-as a self-hosted Docker stack (Caddy → oauth2-proxy → FastAPI → Postgres). The analytical methodology is the 27-module
-"Modular OS" prompt corpus under `Modular OS/`. The app lives under `caos/`
-(`frontend/` Next.js, `server/` FastAPI). See [caos/README.md](caos/README.md)
-and [caos/docs/](caos/docs/) for architecture and current build status.
+**CAOS, Credit Agent OS:** an institutional leveraged-finance credit workspace.
+The current application surface has eight destinations: Cases, Sources, Run
+Console, Deep-Dive, RV Screener, Command Center, Model Builder, and Report
+Studio. It supports six pathways: Full Credit, Earnings Update, Covenant &
+Refinancing, Relative Value, Distressed & Restructuring, and source-bound Deep
+Research.
 
-The full design reference also lives in [.impeccable.md](.impeccable.md); the
-Design Context below is kept in sync with it.
+The frontend is Next.js 16 and React 19 under `caos/frontend/`. The API is
+FastAPI under `caos/server/`. The self-hosted production stack is under
+`caos/deploy/` and uses Caddy, oauth2-proxy, FastAPI, Postgres, and ClamAV.
+The vendored Deploy V bundle at
+`caos/server/caos/methodology/vendor/deploy_v/` is the runtime methodology
+authority. `Modular OS/` is a reference corpus and CI consistency target, not
+the runtime authority.
+
+Read [README.md](README.md) for repository orientation, [caos/README.md](caos/README.md)
+for local and deployment details, [PRODUCT.md](PRODUCT.md) for the product
+contract, and [DESIGN.md](DESIGN.md) for the design contract. The persistent
+design context is [.impeccable.md](.impeccable.md).
 
 ## Engine conventions
 
@@ -125,12 +131,12 @@ visible focus ring.
 
 - **Parallel WIP Git Staging**: Stage explicit paths only (never use wildcard `git add -A` or `git add .` unless you are sure no user changes are present). Only stage and commit files modified by the agent, preserving the user's parallel work-in-progress.
 - **Git Branch Comparisons**: For `detect_changes()` and general diffs, compare against `origin/main` as the default branch/base reference, as local `main` might be stale or shallow.
-- **Land work, don't stack it.** Unmerged branches are this repo's dominant source of friction: they rot at the rate `main` moves, so a branch left open for two weeks is a guaranteed conflict, and CI red you didn't cause becomes indistinguishable from CI red you did. Run `caos/scripts/git_rot.sh` before starting new work — it prints, per open PR and local branch, how far behind `origin/main` it is and whether to merge, rebase, or close. **Cut branches from `origin/main`, never local `main`** (`git fetch origin && git switch -c <name> origin/main`), and **rebase before every push**. Prefer finishing an open branch over opening another.
-- **Never leave uncommitted work in a `/tmp` or `/private/tmp` worktree.** macOS purges those paths, taking the work with them and leaving a broken worktree entry. Put throwaway worktrees under `.claude/worktrees/`, and commit before you walk away. `git_rot.sh --local` flags volatile worktrees that hold uncommitted changes.
+- **Land work, don't stack it.** Unmerged branches are this repo's dominant source of friction: they rot at the rate `main` moves, so a branch left open for two weeks is a guaranteed conflict, and CI red you didn't cause becomes indistinguishable from CI red you did. Before starting new work, inspect open PRs and local branches, then decide whether to finish, rebase, or close existing work. **Cut branches from `origin/main`, never local `main`** (`git fetch origin && git switch -c <name> origin/main`), and **rebase before every push**. Prefer finishing an open branch over opening another.
+- **Never leave uncommitted work in a `/tmp` or `/private/tmp` worktree.** macOS purges those paths, taking the work with them and leaving a broken worktree entry. Put throwaway worktrees under `.claude/worktrees/`, and commit before you walk away.
 - **Turbopack Dev Cache**: Ensure `turbopackFileSystemCacheForDev: false` remains in `next.config.js` to prevent persistent development server cache crashes and high disk write overhead.
 - **Accessibility Verification**: Use the local axe-core runner `node caos/frontend/scripts/a11y-axe.mjs` for actual accessibility validation rather than relying on static regex-based audits which are prone to false positives.
 - **FastAPI Server Environment**: Execute the server suite and check scripts with the project virtual environment when one exists (`caos/server/.venv` or `caos/server/.venv311`); otherwise install `caos/server/requirements.txt` + `requirements-dev.txt` into a fresh venv. Do not downgrade the FastAPI pin in `requirements.txt` (currently `0.139.*` — it clears the starlette CVE set).
-- **Red "Lock — requirements.lock in sync"? Run `caos/scripts/relock.sh` and commit the lock.** Dependabot bumps `requirements.txt` but cannot regenerate a pip-compile lock, so every pip dependabot PR arrives failing that gate. The gate is correct — the prod image installs from the lock, so an unpropagated bump would ship a stale package. **The lock must be regenerated in place**: pip-compile treats the existing output file as its constraint set, so writing to a fresh path drops every pin and floats the whole transitive graph to latest instead of moving the one package that actually changed. `relock.sh --check` verifies without touching the tree.
+- **Dependency changes**: keep `requirements.txt` and `requirements-dev.txt` aligned with the supported FastAPI range, run the server checks in a clean environment, and review transitive upgrades before shipping.
 
 ## Skill improvement observations
 
@@ -147,11 +153,16 @@ permanently integrated during a later review pass.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **Credit-Operating-System** (26665 symbols, 48283 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+When the GitNexus MCP server is attached, use its index for the current
+checkout to understand code, assess impact, and navigate safely. Indexes are
+local-only and their symbol and relationship counts are not repository
+metadata.
 
 > **Availability check first:** the `.gitnexus/` index is local-only (not committed), and the GitNexus MCP server is not attached in every session — cloud/CI checkouts have neither. The MUST rules below apply **only when the GitNexus MCP tools are actually available in the session**; when they are not, fall back to careful manual review (read the symbol's callers before editing, diff against `origin/main` before committing) and note in your summary that impact analysis was unavailable.
 
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
+> Index stale? Rebuild it with the repository's available GitNexus runner, then
+> verify the current checkout before relying on results. If the server or index
+> is unavailable, inspect callers manually and compare against `origin/main`.
 
 ## Always Do
 
@@ -173,10 +184,10 @@ This project is indexed by GitNexus as **Credit-Operating-System** (26665 symbol
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/Credit-Operating-System/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/Credit-Operating-System/clusters` | All functional areas |
-| `gitnexus://repo/Credit-Operating-System/processes` | All execution flows |
-| `gitnexus://repo/Credit-Operating-System/process/{name}` | Step-by-step execution trace |
+| Repository context resource | Codebase overview and index freshness |
+| Cluster resources | Functional areas |
+| Process resources | Execution flows |
+| Process detail resources | Step-by-step execution trace |
 
 ## CLI
 

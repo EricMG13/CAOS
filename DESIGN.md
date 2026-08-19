@@ -290,7 +290,7 @@ The palette is a restrained dark desk: black workspace, cool panels, hairline bo
 
 ### Filed Output Scale
 
-Report Studio, Query exhibits, print views, and research deliverables use a deliberate paper scale rather than workspace labels: **Output Title** (650, 21px), **Output Section** (650, 14px), **Output Body** (400, 13px, 1.6), **Output Meta** (500, 8.5px, mono), **Output Table Label** (600, 7.8px, mono), and a 26px filed-copy watermark. The full-model appendix is an intentional fit-to-page exception with a 14px title, 7px metadata, 6.5px submetadata, and a 5.2–5.9px table scale. These sizes are valid only inside paper/output roots; they must not leak into navigation, buttons, panel headers, or analytical tables. On phone layouts, 12px is the minimum forced size for compact labels. Narrative Markdown may use a 0.95rem semantic subhead. The CSS-independent fatal error boundary separately uses 1.125rem title, 0.75rem body, and 0.875rem action text so it remains legible if the application stylesheet fails.
+Report Studio, research exhibits, print views, and research deliverables use a deliberate paper scale rather than workspace labels: **Output Title** (650, 21px), **Output Section** (650, 14px), **Output Body** (400, 13px, 1.6), **Output Meta** (500, 8.5px, mono), **Output Table Label** (600, 7.8px, mono), and a 26px filed-copy watermark. The full-model appendix is an intentional fit-to-page exception with a 14px title, 7px metadata, 6.5px submetadata, and a 5.2–5.9px table scale. These sizes are valid only inside paper/output roots; they must not leak into navigation, buttons, panel headers, or analytical tables. On phone layouts, 12px is the minimum forced size for compact labels. Narrative Markdown may use a 0.95rem semantic subhead. The CSS-independent fatal error boundary separately uses 1.125rem title, 0.75rem body, and 0.875rem action text so it remains legible if the application stylesheet fails.
 
 ### Named Rules
 
@@ -344,7 +344,7 @@ CAOS is flat by default and uses tonal layering before shadow. Depth is created 
 
 ### Enterprise Workbench Anatomy
 
-Every route uses the same ordered contract: identity and source status, exactly one page-level primary action, optional collapsible decision context, one dominant work region, contextual evidence, and an optional sticky finalization bar. Surface kinds preserve specialist behavior: worklists own batch/filter anatomy; analytical objects own conclusion state; Model, Query, and Report Studio retain their editor overflow.
+Every route uses the same ordered contract: identity and source status, exactly one page-level primary action, optional collapsible decision context, one dominant work region, contextual evidence, and an optional sticky finalization bar. Surface kinds preserve specialist behavior: worklists own batch/filter anatomy; analytical objects own conclusion state; Model Builder and Report Studio retain their editor overflow.
 
 - **Decision states:** `loading`, `ready`, `observed-empty`, `stale`, `partial`, `offline`, `error`, and `unavailable` are visually and semantically distinct. “No material change” is legal only for a successful timestamped `observed-empty` response.
 - **Authority:** Every ready conclusion carries observation time, origin, method, approval/ratification, and freshness. `LIVE` describes source origin only.
