@@ -223,7 +223,7 @@ Works alongside:
 - `REF_CP-4_01-02_LegalSourceGate.md` (Step 1 — consumes this)
 - `REF_CP-4_01-02_LegalSourceGate.md` (Step 2 — ranks what this returns)
 - `REF_CP-4_03_CovenantFeatureRegister.md` (Step 3 — built from the executed text)
-- The CP-4 source-authority references in this bundle (why EDGAR is an allowed public filing source)
+- `caos/docs/AGENT_SKILLS_REVIEW.md` §2–§3 (why EDGAR over a paid aggregator)
 
 > **Provenance note:** the *filing → covenant-document* taxonomy in §3 is lifted
 > from the open (MIT) Octagon SEC skill methodology. Only the **free methodology**
@@ -361,7 +361,7 @@ wrapper (`caos/mcp/edgar/`) surfaces the same four tools to an agent. Off until
 
 | Version | Date | Notes |
 |---|---|---|
-| 1.0 | 2026-06-15 | Initial EDGAR covenant source-retrieval map. Free (no-paid-services constraint); lifts the open Octagon SEC filing→covenant taxonomy; binds it to the CP-4 6-rank authority hierarchy and the CP-5A/CP-5 provenance gate. |
+| 1.0 | 2026-06-15 | Initial EDGAR covenant source-retrieval map. Free (no-paid-services constraint); lifts the open Octagon SEC filing→covenant taxonomy; binds it to the CP-4 6-rank authority hierarchy and the CP-5A/CP-5 provenance gate. See `caos/docs/AGENT_SKILLS_REVIEW.md`. |
 
 <!-- EMBEDDED:MODULE_RUNBOOK.md -->
 # Embedded method — MODULE_RUNBOOK.md
