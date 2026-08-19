@@ -30,6 +30,8 @@ pathways are Full Credit, Earnings Update, Covenant & Refinancing, Relative
 Value, Distressed & Restructuring and source-bound Deep Research. Screen and
 Full are the user terms; Deploy V LITE/FULL profile identities remain internal.
 
-The official CP-MODEL workbook remains blocked until the signed Deploy V
-authority resolves the CP-2B/CP-2A artifact-owner mismatch. No provisional
-workbook is labelled as an official model output.
+The official CP-MODEL workbook remains blocked by a signed-authority mismatch:
+its contract still requires CP-2B as an upstream owner while the signed module
+catalog marks CP-2B as absorbed by CP-2A. Only a new signed Deploy V bundle (or
+signed reconciliation) can unblock that path. No provisional workbook is
+labelled as an official model output.

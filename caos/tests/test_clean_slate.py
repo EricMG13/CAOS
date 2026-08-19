@@ -18,11 +18,11 @@ from caos.store import MemoryStore
 from caos.workflows.domain import WorkflowRuntime
 
 
-DEPLOY_V = Path("/Users/ericguei/Documents/Deploy V")
+DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
 
 
 def make_client(tmp_path: Path) -> TestClient:
-    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v")
+    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
     return TestClient(create_app(settings, MemoryStore()))
 
 
