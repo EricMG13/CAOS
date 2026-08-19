@@ -1,0 +1,4 @@
+CP CANONICAL CREDIT IMPLICATION TAXONOMY (NEW, resolves N5)
+13 VALUES: Positive-Deleveraging | Positive-Margin Expansion | Positive-Revenue Growth | Positive-Liquidity Improvement | Positive-Covenant Headroom Expansion | Neutral-Stable | Negative-Leverage Increase | Negative-Margin Compression | Negative-Revenue Decline | Negative-Liquidity Deterioration | Negative-Covenant Erosion | Negative-Refinancing Risk | Insufficient Information
+CP-4 SUBSET (8): Positive-Covenant Headroom Expansion, Positive-Deleveraging, Neutral-Stable, Negative-Covenant Erosion, Negative-Leverage Increase, Negative-Refinancing Risk, Negative-Liquidity Deterioration, Insufficient Information
+DEPRECATED: Positive(unqualified)->specify | Mixed->split | Not Assessable->Insufficient Information

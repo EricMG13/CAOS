@@ -1,0 +1,55 @@
+CP SYSTEM QA GATES v2.0
+Updated: 08 June 2026
+Resolves: Audit L-3
+
+SCHEMA (S1-S7):
+S1: allOf/$ref to CP_MODULE_PAYLOAD_BASE.schema.txt mandated.
+S2: module_id, module_name, owned_object must match CP_ROUTING_INDEX_v2.2.
+S3: schema_family: Nested (analytical/orchestrator) or Infrastructure.
+S4: source_basis REMOVED (U2). Must not appear in any schema.
+S5: No amendment blocks in payload schemas.
+S6: runtime_output must contain module-specific fields matching instruction file FINAL_OUTPUT_STRUCTURE.
+S7: Every module in CP_ROUTING_INDEX must have a corresponding payload schema.
+
+TAXONOMY (T1-T8):
+T1: credit_implication — canonical 13 values. Module subsets permitted.
+T2: Decision posture — per-module subsets of canonical 9.
+T3: extraction_type — 13 values per CP_CANONICAL_EVIDENCE_CLASSIFICATION.
+T4: lineage_class — 8 values per CP_CANONICAL_EVIDENCE_CLASSIFICATION.
+T5: All status enums — canonical per CP_CANONICAL_STATUS_TAXONOMY.
+T6: VE exception codes — 20 codes per CP_VALIDATION_EXCEPTION_TAXONOMY.
+T7: No M-prefix anywhere. CP- prefix only.
+T8: Module-specific enums must be documented in the module instruction or support files.
+
+ROUTING (R1-R5):
+R1: CP_ROUTING_INDEX <-> CP-X_ROUTE_GRAPH — bidirectional consistency.
+R2: No CP-6, CP-7, or M-prefix references. Use CP-6A/6E, CP-DB.
+R3: CP_ORCHESTRATOR_SPEC is design-time only. No payload, no agent, no node.
+R4: CP-0 and CP-X are non-overlapping. CP-0 determines readiness; CP-X plans execution path.
+R5: All upstream/downstream declarations must match route graph edges.
+
+EXPORT (E1-E7):
+E1: 6 canonical JSON blocks in every analytical .docx appendix.
+E2: Block names are canonical.
+E3: CP-EXTRACT performs syntax normalization only — no content modification.
+E4: CP-DB receives input ONLY from CP-EXTRACT.
+E5: No separate .json/.jsonl/.yaml/.md artifacts from analytical modules.
+E6: CP-RENDER produces committee reports without analytical JSON appendices.
+E7: CP-EXTRACT and CP-DB are the only modules exempt from single-.docx contract.
+
+CROSS-MODULE (X1-X7):
+X1: One-owner-per-object enforced. CP-X validates at runtime.
+X2: All downstream consumers declared and bidirectionally consistent.
+X3: CP-1 feeds CP-1B, CP-1C, and CP-4C.
+X4: No circular dependencies in route graph.
+X5: CP-6E depends on CP-3C.
+X6: CP-4C feeds both CP-6A and CP-6E.
+X7: CP-SR <-> CP-MON CYCLE TERMINATION:
+    The CP-SR <-> CP-MON bidirectional data flow is the only sanctioned exception to X4.
+    X7.1 MAX_ROUND_TRIPS = 2.
+    X7.2 CONVERGENCE_CHECK: if signal_register delta < 5% and no new CRITICAL severity signals, terminate early.
+    X7.3 HARD_TIMEOUT = 3 iterations.
+    X7.4 AUDIT_TRAIL: each iteration must include iteration_number, convergence_delta, and termination_reason in CP_EXPORT_MANIFEST_JSON.
+    X7.5 TERMINATION_REASONS: converged, max_round_trips, hard_timeout, no_new_signals, manual_stop.
+
+--- END OF QA GATES v2.0 ---

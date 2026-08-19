@@ -1,0 +1,63 @@
+def _interest_runway_months(
+    disclosed_liquidity: Optional[float], cp1: Optional[ModulePayload]
+) -> Tuple[Optional[float], Optional[float]]:
+    """Months of *cash interest* the disclosed liquidity alone could service.
+
+    The credit question: if operating cash flow went to zero, how long could the
+    borrower keep paying interest out of liquidity on hand? This is a
+    LIQUIDITY-STRESS LENS (the EBITDA->0 case), NOT a full months-to-empty — a
+    true runway would also burn amortisation, capex and maturities, uses the
+    engine does not source, so we deliberately understate nothing but model only
+    the interest line.
+
+    Inputs (all in $mm, sourced from CP-1's canonical/normalized financials):
+      - disclosed_liquidity : undrawn revolver + cash on hand, as quantified upstream.
+      - latest(adj_ebitda)  : most recent LTM adjusted EBITDA.
+      - interest_coverage_ltm : EBITDA / cash interest (the LTM coverage ratio).
+
+    The math an analyst can re-derive by hand:
+      coverage = EBITDA / interest        =>  annual cash interest = EBITDA / coverage
+      monthly interest = annual / 12
+      runway (months)  = liquidity / monthly = liquidity * 12 / annual cash interest
+
+    Worked check: EBITDA 421, coverage 2.1x  =>  interest = 421/2.1 ~ 200.5;
+      liquidity 500  =>  500 * 12 / 200.5 ~ 29.9 months (~2.5 yrs of interest cover).
+
+    Rounding note (load-bearing): annual cash interest is rounded to one decimal
+    FIRST, then runway is computed from that rounded figure — we report the same
+    interest number we divide by, so the two outputs reconcile. (round() is
+    banker's/half-even, matching CP-1 presentation.)
+
+    Degrade-don't-invent: each guard below returns (None, None) so the module
+    falls back to "Insufficient" rather than fabricating a runway. Returns
+    (annual_cash_interest_musd, runway_months) on success.
+    """
+    # Guard (a): liquidity was never quantified, or CP-1 is absent — no inputs.
+    if not isinstance(disclosed_liquidity, (int, float)) or cp1 is None:
+        return None, None
+
+    nf = (cp1.runtime_output or {}).get("normalized_financials") or {}
+    ebitda = latest(nf.get("adj_ebitda") or {})  # latest LTM adj. EBITDA ($mm)
+    coverage = nf.get("interest_coverage_ltm")   # EBITDA / cash interest (x)
+
+    # Guard (b): missing EBITDA/coverage, or coverage == 0 (would divide by zero
+    # backing out interest — and a 0x coverage carries no interest burden anyway).
+    if not (
+        isinstance(ebitda, (int, float))
+        and isinstance(coverage, (int, float))
+        and coverage
+    ):
+        return None, None
+
+    # Back out implied annual cash interest from coverage, rounded for reporting.
+    annual_cash_interest = round(ebitda / coverage, 1)
+
+    # Guard (c): implied interest rounds to 0.0 — no interest line to amortise
+    # liquidity against (and it would be the denominator of the runway divide).
+    if not annual_cash_interest:
+        return None, None
+
+    # Runway = liquidity / monthly interest = liquidity * 12 / annual interest.
+    # No output guard by design: zero liquidity -> 0.0 months; negative liquidity
+    # or negative coverage flow straight through as signed months/interest.
+    return annual_cash_interest, round(disclosed_liquidity * 12 / annual_cash_interest, 1)

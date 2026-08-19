@@ -1,0 +1,45 @@
+### EVIDENCE_TRACE_GUIDE__Knowledge.txt
+
+Source basis: active chat instructions, prior package audit findings, and uploaded file CP prompts and Copilot agent.docx. External/non-attached enterprise source contents were not assumed. Design inferences are explicitly implementation design choices for the CP Agent Credit Analysis OS.
+
+#### Function
+
+Raw evidence → fact → metric → inference → conclusion → QA-cleared claim lineage.
+
+#### Required analytical table fields
+(Inherited from CP_REASONING_STANDARD_v2.0.txt and CP_CORE_SYSTEM_PROMPT_v2.1.txt)
+
+| Field | Requirement |
+|-------|-------------|
+| Claim/metric/provision | Named precisely |
+| Evidence | Source title, period, page/section/line if available |
+| Risk mechanic | Causal transmission into creditor risk |
+| Credit implication | Mapped to creditor dimensions |
+| Confidence | High / Medium / Low / Insufficient Information |
+| Limitation | Explicit if any |
+| QA status | Not Reviewed / Passed / Restricted / Blocked |
+
+#### Non-negotiable
+(Inherited from CP_REASONING_STANDARD_v2.0.txt and CP_CORE_SYSTEM_PROMPT_v2.1.txt)
+
+Every material conclusion must follow Evidence → Risk Mechanic → Credit Implication.
+Credit implications must map to one or more of:
+- PD
+- LGD
+- liquidity
+- debt service capacity
+- FCF durability
+- refinancing capacity
+- covenant capacity
+- recovery
+- relative value
+- security selection
+- position sizing
+- monitoring posture
+- committee readiness
+
+If evidence is unavailable, write:
+[Insufficient Information]
+If a metric lacks formula, numerator, denominator, period, source trace, or normalization, write:
+Not Calculable from Provided Materials
+Null values must remain null/blank, not zero.

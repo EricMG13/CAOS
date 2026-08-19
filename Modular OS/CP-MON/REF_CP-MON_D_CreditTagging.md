@@ -1,0 +1,2 @@
+# REF_CP-MON_D — Credit Tagging
+Fragility drivers: Revenue, Margin, Cash-conversion, Liquidity, Capital-structure, Legal/structural, Governance/sponsor, Macro. Implications: PD, LGD, liquidity, debt service, FCF, refinancing, covenant, recovery, RV, security selection, sizing, monitoring, committee readiness. Evidence: Source Fact, Calculation, Analyst Inference, Insufficient Information, Directional Only.

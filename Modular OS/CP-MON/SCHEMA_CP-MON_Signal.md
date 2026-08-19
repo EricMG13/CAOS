@@ -1,0 +1,2 @@
+# SCHEMA_CP-MON_Signal
+Required: signal_id, issuer_id, issuer_name, source_id, source_category, source_authority_weight, raw_text, extracted_claims, theme, credit_implication_tags, signal_type, evidence_status, materiality_score, temporal_tier, alert_tier, retrieval_timestamp, signal_date. Optional: issuer_lei, gate scores, boosters, penalties, cluster, corroboration, routing, delta_flags, feedback_action.

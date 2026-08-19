@@ -1,0 +1,2198 @@
+{
+  "base": "http://127.0.0.1:4176",
+  "generatedAt": "2026-07-20T07:20:57.915Z",
+  "profiles": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "cpuRate": 1,
+      "network": null,
+      "scanErrors": 0,
+      "summary": {
+        "readyMs": {
+          "median": 510.3,
+          "p75": 520.4,
+          "p95": 527,
+          "worstRoute": "/command"
+        },
+        "fcpMs": {
+          "median": 28,
+          "p75": 32,
+          "p95": 36,
+          "worstRoute": "/command"
+        },
+        "lcpMs": {
+          "median": 168,
+          "p75": 172,
+          "p95": 176,
+          "worstRoute": "/command"
+        },
+        "tbtMs": {
+          "median": 0,
+          "p75": 0,
+          "p95": 0,
+          "worstRoute": "/command"
+        },
+        "cls": {
+          "median": 0.09,
+          "p75": 0.091,
+          "p95": 0.095,
+          "worstRoute": "/command"
+        },
+        "encodedKb": {
+          "median": 391.4,
+          "p75": 392.6,
+          "p95": 392.6,
+          "worstRoute": "/command"
+        },
+        "jsKb": {
+          "median": 280.5,
+          "p75": 280.5,
+          "p95": 280.5,
+          "worstRoute": "/command"
+        },
+        "cssKb": {
+          "median": 24.8,
+          "p75": 24.8,
+          "p95": 24.8,
+          "worstRoute": "/command"
+        },
+        "domNodes": {
+          "median": 378,
+          "p75": 378,
+          "p95": 378,
+          "worstRoute": "/command"
+        },
+        "heapMb": {
+          "median": 8.3,
+          "p75": 8.8,
+          "p95": 9.4,
+          "worstRoute": "/command"
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 527,
+      "url": "/command",
+      "ttfbMs": 5,
+      "domContentLoadedMs": 29.8,
+      "loadMs": 73.2,
+      "fcpMs": 36,
+      "lcpMs": 176,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.078,
+      "layoutShifts": [
+        {
+          "value": 0.06378277575331952,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings0Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 296.21875,
+                "width": 240,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 363.46875,
+                "width": 240,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 296.21875,
+                "width": 220,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 363.46875,
+                "width": 220,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 296.21875,
+                "width": 706.5625,
+                "height": 105,
+                "top": 296.21875,
+                "right": 940.921875,
+                "bottom": 401.21875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 363.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 363.46875,
+                "right": 940.921875,
+                "bottom": 451.46875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.011856001639660494,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings1Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 364.46875,
+                "width": 240,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 428.96875,
+                "width": 240,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 364.46875,
+                "width": 220,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 428.96875,
+                "width": 220,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 364.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 364.46875,
+                "right": 940.921875,
+                "bottom": 452.46875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 428.96875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 428.96875,
+                "right": 940.921875,
+                "bottom": 516.96875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 347.28125,
+                "y": 11.5,
+                "width": 94.921875,
+                "height": 20,
+                "top": 11.5,
+                "right": 442.203125,
+                "bottom": 31.5,
+                "left": 347.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 167,
+      "encodedKb": 392.6,
+      "transferredKb": 441.5,
+      "jsKb": 280.5,
+      "cssKb": 24.8,
+      "domNodes": 377,
+      "heapMb": 8.3,
+      "taskDurationMs": 439.5,
+      "scriptDurationMs": 195.9,
+      "layoutDurationMs": 56.4,
+      "recalcStyleDurationMs": 17.4
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 509.3,
+      "url": "/command",
+      "ttfbMs": 1.7,
+      "domContentLoadedMs": 9.6,
+      "loadMs": 65.5,
+      "fcpMs": 28,
+      "lcpMs": 168,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.08,
+      "layoutShifts": [
+        {
+          "value": 0.06378277575331952,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings0Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 296.21875,
+                "width": 240,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 363.46875,
+                "width": 240,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 296.21875,
+                "width": 220,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 363.46875,
+                "width": 220,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 296.21875,
+                "width": 706.5625,
+                "height": 105,
+                "top": 296.21875,
+                "right": 940.921875,
+                "bottom": 401.21875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 363.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 363.46875,
+                "right": 940.921875,
+                "bottom": 451.46875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.011856001639660494,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings1Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 364.46875,
+                "width": 240,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 428.96875,
+                "width": 240,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 364.46875,
+                "width": 220,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 428.96875,
+                "width": 220,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 364.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 364.46875,
+                "right": 940.921875,
+                "bottom": 452.46875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 428.96875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 428.96875,
+                "right": 940.921875,
+                "bottom": 516.96875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 347.28125,
+                "y": 11.5,
+                "width": 94.921875,
+                "height": 20,
+                "top": 11.5,
+                "right": 442.203125,
+                "bottom": 31.5,
+                "left": 347.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 165,
+      "encodedKb": 391.4,
+      "transferredKb": 439.7,
+      "jsKb": 280.5,
+      "cssKb": 24.8,
+      "domNodes": 378,
+      "heapMb": 7,
+      "taskDurationMs": 431.3,
+      "scriptDurationMs": 191.7,
+      "layoutDurationMs": 55.6,
+      "recalcStyleDurationMs": 17.1
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 520.4,
+      "url": "/command",
+      "ttfbMs": 3.6,
+      "domContentLoadedMs": 12.4,
+      "loadMs": 67.5,
+      "fcpMs": 32,
+      "lcpMs": 168,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.091,
+      "layoutShifts": [
+        {
+          "value": 0.06378277575331952,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings0Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 296.21875,
+                "width": 240,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 363.46875,
+                "width": 240,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 296.21875,
+                "width": 220,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 363.46875,
+                "width": 220,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 296.21875,
+                "width": 706.5625,
+                "height": 105,
+                "top": 296.21875,
+                "right": 940.921875,
+                "bottom": 401.21875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 363.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 363.46875,
+                "right": 940.921875,
+                "bottom": 451.46875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.02250063575357403,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings1Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 364.46875,
+                "width": 240,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 428.96875,
+                "width": 240,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 364.46875,
+                "width": 220,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 428.96875,
+                "width": 220,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 364.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 364.46875,
+                "right": 940.921875,
+                "bottom": 452.46875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 428.96875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 428.96875,
+                "right": 940.921875,
+                "bottom": 516.96875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 348.34375,
+                "y": 11.5,
+                "width": 95.90625,
+                "height": 20,
+                "top": 11.5,
+                "right": 444.25,
+                "bottom": 31.5,
+                "left": 348.34375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 165,
+      "encodedKb": 391.4,
+      "transferredKb": 439.7,
+      "jsKb": 280.5,
+      "cssKb": 24.8,
+      "domNodes": 378,
+      "heapMb": 7.2,
+      "taskDurationMs": 441.3,
+      "scriptDurationMs": 197.9,
+      "layoutDurationMs": 56.1,
+      "recalcStyleDurationMs": 17.1
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 510.3,
+      "url": "/command",
+      "ttfbMs": 2,
+      "domContentLoadedMs": 23.2,
+      "loadMs": 65.3,
+      "fcpMs": 28,
+      "lcpMs": 160,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.095,
+      "layoutShifts": [
+        {
+          "value": 0.054405593633455505,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings1Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 349.71875,
+                "width": 240,
+                "height": 512.203125,
+                "top": 349.71875,
+                "right": 1421.640625,
+                "bottom": 861.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 364.46875,
+                "width": 240,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 349.71875,
+                "width": 220,
+                "height": 512.203125,
+                "top": 349.71875,
+                "right": 1171.28125,
+                "bottom": 861.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 364.46875,
+                "width": 220,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 349.71875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 349.71875,
+                "right": 940.921875,
+                "bottom": 437.71875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 364.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 364.46875,
+                "right": 940.921875,
+                "bottom": 452.46875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 258.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 258.359375,
+                "right": 695.484375,
+                "bottom": 277.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 283.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 283.859375,
+                "right": 785.3125,
+                "bottom": 322.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 258.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 258.359375,
+                "right": 459.984375,
+                "bottom": 277.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 283.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 283.859375,
+                "right": 488.484375,
+                "bottom": 322.859375,
+                "left": 246.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.02250063575357403,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings1Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 364.46875,
+                "width": 240,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 428.96875,
+                "width": 240,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 364.46875,
+                "width": 220,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 428.96875,
+                "width": 220,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 364.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 364.46875,
+                "right": 940.921875,
+                "bottom": 452.46875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 428.96875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 428.96875,
+                "right": 940.921875,
+                "bottom": 516.96875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 348.34375,
+                "y": 11.5,
+                "width": 95.90625,
+                "height": 20,
+                "top": 11.5,
+                "right": 444.25,
+                "bottom": 31.5,
+                "left": 348.34375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.013480723967375579,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings0Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 296.21875,
+                "width": 240,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 348.71875,
+                "width": 240,
+                "height": 512.203125,
+                "top": 348.71875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 296.21875,
+                "width": 220,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 348.71875,
+                "width": 220,
+                "height": 512.203125,
+                "top": 348.71875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 296.21875,
+                "width": 706.5625,
+                "height": 105,
+                "top": 296.21875,
+                "right": 940.921875,
+                "bottom": 401.21875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 348.71875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 348.71875,
+                "right": 940.921875,
+                "bottom": 436.71875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": "page-actions",
+              "className": "shrink-0",
+              "text": "Open top change",
+              "previousRect": {
+                "x": 1253.640625,
+                "y": 6.5,
+                "width": 170.359375,
+                "height": 30,
+                "top": 6.5,
+                "right": 1424,
+                "bottom": 36.5,
+                "left": 1253.640625
+              },
+              "currentRect": {
+                "x": 1246.6875,
+                "y": 6.5,
+                "width": 177.3125,
+                "height": 30,
+                "top": 6.5,
+                "right": 1424,
+                "bottom": 36.5,
+                "left": 1246.6875
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "relative shrink-0",
+              "text": "⋯ Command utilities",
+              "previousRect": {
+                "x": 1097.796875,
+                "y": 5.5,
+                "width": 143.84375,
+                "height": 32,
+                "top": 5.5,
+                "right": 1241.640625,
+                "bottom": 37.5,
+                "left": 1097.796875
+              },
+              "currentRect": {
+                "x": 1090.84375,
+                "y": 5.5,
+                "width": 143.84375,
+                "height": 32,
+                "top": 5.5,
+                "right": 1234.6875,
+                "bottom": 37.5,
+                "left": 1090.84375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 167,
+      "encodedKb": 392.6,
+      "transferredKb": 441.5,
+      "jsKb": 280.5,
+      "cssKb": 24.8,
+      "domNodes": 378,
+      "heapMb": 9.4,
+      "taskDurationMs": 437.2,
+      "scriptDurationMs": 196.7,
+      "layoutDurationMs": 55.8,
+      "recalcStyleDurationMs": 17
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 504.4,
+      "url": "/command",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 9.3,
+      "loadMs": 64.6,
+      "fcpMs": 28,
+      "lcpMs": 172,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.09,
+      "layoutShifts": [
+        {
+          "value": 0.06378277575331952,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings0Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 296.21875,
+                "width": 240,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 363.46875,
+                "width": 240,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 296.21875,
+                "width": 220,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 363.46875,
+                "width": 220,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 296.21875,
+                "width": 706.5625,
+                "height": 105,
+                "top": 296.21875,
+                "right": 940.921875,
+                "bottom": 401.21875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 363.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 363.46875,
+                "right": 940.921875,
+                "bottom": 451.46875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.02250063575357403,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings1Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 364.46875,
+                "width": 240,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 428.96875,
+                "width": 240,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 364.46875,
+                "width": 220,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 428.96875,
+                "width": 220,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 364.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 364.46875,
+                "right": 940.921875,
+                "bottom": 452.46875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 428.96875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 428.96875,
+                "right": 940.921875,
+                "bottom": 516.96875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 348.34375,
+                "y": 11.5,
+                "width": 95.90625,
+                "height": 20,
+                "top": 11.5,
+                "right": 444.25,
+                "bottom": 31.5,
+                "left": 348.34375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 161,
+      "encodedKb": 388.9,
+      "transferredKb": 436,
+      "jsKb": 280.5,
+      "cssKb": 24.8,
+      "domNodes": 378,
+      "heapMb": 8.8,
+      "taskDurationMs": 429.5,
+      "scriptDurationMs": 190.8,
+      "layoutDurationMs": 55,
+      "recalcStyleDurationMs": 16.9
+    }
+  ]
+}

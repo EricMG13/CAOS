@@ -1,0 +1,20 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "CP-4D_ACTIVE_PROMPT.md": "355b73aa48968d1c0c8637cc1aad8863298a12515c72e79fbf95b25439898974",
+    "REF_CP-4D_01_SourceGateEntityEvidence.md": "c5e8551653a41fe9949ed4421dadd48b840269ec265c843b279dddd17b2e16c3",
+    "REF_CP-4D_02_LegalEntityPerimeterRegister.md": "ace175773bfa1ce640be9d30124dd364f714e5c4536b0f7a752ec9cea2bc0834",
+    "REF_CP-4D_03_GuaranteePackageMap.md": "dcb97180d8230147ce310e6c998dc274db401707b2c44f968af1d00ae42a84aa",
+    "REF_CP-4D_04_SecurityCollateralMap.md": "55a8ec5f64a0629887e2789ff92a35a5603afefdc5a3abfb85251d371909facf",
+    "REF_CP-4D_05_StructuralSubordinationAnalysis.md": "c139ab58dd253820055cd3c9a3db90deba203c9b5657d1a561b9bdd9a03a695e",
+    "REF_CP-4D_06_LeakageRouteRegister.md": "967ef77ebf077fc7afcda87dec09e8742aadbeb9f05f4e34efba51da82f9c53c",
+    "REF_CP-4D_07_TrapdoorUptierVulnerability.md": "1ee09113ac73f8ddfeb420ed7c4755cd8b59ed7ba4d907934038b55495bc252a",
+    "REF_CP-4D_08_GapsLedger.md": "18be3a8355d65faeb9b3d949169d4def3ddb1174aa98a8445840b291b5a3ae05",
+    "REF_CP-4D_09_OverallStructuralView.md": "02dca5ac9ede969ee0acca28006cf555965fd6fbff234572b11990e7b50769c7",
+    "REF_CP-4D_Discipline.md": "6f9f4a96ded6b318f2bf7761ff60c357d85111bd382a45047336e6a989aeb368",
+    "REF_CP-4D_StyleAndFormat.md": "b450a09f1a6e632e8186008a218a40a476a807a19bef90e9526c1aec955e0568",
+    "REF_CP-4D_Workflow.md": "b4c8b402b5432393704849f2a65055a863c8449312fd383c219c8948cb917175",
+    "SCHEMA_REFERENCE.md": "2064c103b8a4c7cf5fd848a4447ccd16f104e9aae81c020c7390759457d8efd4",
+    "SYSTEM_REFERENCE.md": "0259074affa7a5dbeb9b17c71bb88fc69dbbf99ed5737fabadd6a5be09bd53aa"
+  }
+}

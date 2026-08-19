@@ -1,0 +1,591 @@
+{
+  "base": "http://localhost:3010",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21a",
+    "wcag21aa",
+    "wcag22aa",
+    "best-practice"
+  ],
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    }
+  ],
+  "total_nodes": 0,
+  "scan_errors": 0,
+  "layout_failures": 0,
+  "byImpact": {},
+  "routes": {
+    "/@1440x900": {
+      "url": "/issuers",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/command@1440x900": {
+      "url": "/command",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/decisions@1440x900": {
+      "url": "/decisions",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/deepdive@1440x900": {
+      "url": "/deepdive",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/issuers@1440x900": {
+      "url": "/issuers",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/issuers/profile?id=39b6c6ca-b68a-4ca1-8138-dccdc7a644d2@1440x900": {
+      "url": "/issuers/profile",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 228,
+            "right": 1428,
+            "width": 1200,
+            "client_width": 1200,
+            "scroll_width": 1200,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 228,
+            "right": 1143,
+            "width": 915,
+            "client_width": 915,
+            "scroll_width": 915,
+            "overflow_x": "visible"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/model@1440x900": {
+      "url": "/model",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/monitor@1440x900": {
+      "url": "/monitor",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 949,
+            "width": 723,
+            "client_width": 723,
+            "scroll_width": 723,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/pipeline@1440x900": {
+      "url": "/pipeline",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/portfolios@1440x900": {
+      "url": "/portfolios",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/query@1440x900": {
+      "url": "/query",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 949,
+            "width": 723,
+            "client_width": 723,
+            "scroll_width": 723,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/reports@1440x900": {
+      "url": "/reports",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/research@1440x900": {
+      "url": "/research",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 1144,
+            "width": 918,
+            "client_width": 918,
+            "scroll_width": 918,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/sector@1440x900": {
+      "url": "/sector",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/sector-rv@1440x900": {
+      "url": "/sector-rv",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/settings@1440x900": {
+      "url": "/settings",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/sponsors@1440x900": {
+      "url": "/sponsors",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    },
+    "/upload@1440x900": {
+      "url": "/upload",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "page_overflow_px": 0,
+        "unexpected_horizontal_offsets": [],
+        "unexpected_supporting_horizontal_overflow": [],
+        "diagnostic_regions": [
+          {
+            "selector": ".caos-enterprise-page",
+            "left": 216,
+            "right": 1440,
+            "width": 1224,
+            "client_width": 1224,
+            "scroll_width": 1224,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": "[data-testid=\"persona-workbench\"]",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "visible"
+          },
+          {
+            "selector": ".persona-workbench__slot--primary",
+            "left": 226,
+            "right": 1430,
+            "width": 1203,
+            "client_width": 1203,
+            "scroll_width": 1203,
+            "overflow_x": "auto"
+          }
+        ],
+        "clipped_controls": [],
+        "target_size_failures": [],
+        "overlay_collisions": []
+      },
+      "violations": []
+    }
+  }
+}

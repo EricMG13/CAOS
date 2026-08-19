@@ -1,0 +1,29 @@
+--- a/caos/server/engine/earnings.py
++++ b/caos/server/engine/earnings.py
+@@ -37,11 +37,24 @@ def _yoy(rows: List[dict], key: str) -> Optional[Tuple[float, str, str]]:
+ def compute_deltas(normalized_financials: dict) -> dict:
+     """Period rows + the YoY delta summary + monitoring signals (pure)."""
++    import math
++
+     rev = normalized_financials.get("revenue") or {}
+     eb = normalized_financials.get("adj_ebitda") or {}
+     periods = sorted(set(rev) | set(eb), key=sort_key)
+
++    def _finite(x):
++        # Treat a non-finite (NaN/±inf) value the same as missing/non-numeric:
++        # a NaN passes isinstance(x, (int, float)) and bool(NaN) is True, so an
++        # unsanitized NaN leaks through the margin guard (round(100*e/r,1)=NaN)
++        # and the _yoy/margins filters into revenue_growth_pct / ebitda_growth_pct
++        # / margin_change_pp — poisoning the CP-1B summary and the CP-2B feed.
++        # Collapse it to None at row construction so every downstream guard skips
++        # it naturally (margin -> None; _yoy/margins isinstance(...) filter drops
++        # the period). bool/int/float that are finite pass through unchanged.
++        return x if isinstance(x, (int, float)) and math.isfinite(x) else None
++
+     rows: List[dict] = []
+     for p in periods:
+-        r, e = rev.get(p), eb.get(p)
++        r, e = _finite(rev.get(p)), _finite(eb.get(p))
+         margin = (round(100 * e / r, 1)
+                   if isinstance(r, (int, float)) and r and isinstance(e, (int, float)) else None)
+         rows.append({"period": p, "revenue": r, "adj_ebitda": e, "ebitda_margin": margin})

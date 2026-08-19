@@ -1,0 +1,72 @@
+allOf $ref CP_MODULE_PAYLOAD_BASE.schema.txt
+properties
+  module_id const CP-0
+  module_name const SourceReadiness
+  owned_object const source_readiness_register
+  schema_family const Nested
+  runtime_output type object properties
+    input_gate type object properties
+      run_id type string
+      issuer type string null
+      period type string null
+      source_status enum Received Partial Missing
+      limitation type string null
+    source_register type array items type object
+      additionalProperties false
+      required file_id file_name file_type quality_label reliability_tier
+        coverage usability_verdict
+      properties
+        file_id type string
+        file_name type string
+        file_type type string
+        primary_category type string
+        secondary_category type string null
+        quality_label enum Primary-Verified Primary-Unverified
+          Secondary-Reputable Secondary-Unverified Tertiary
+          User-Provided Not Available
+        reliability_tier enum 1 2 3 4
+        source_date_or_period type string null
+        issuer_or_entity_covered type string null
+        coverage type string
+        gaps type string null
+        extraction_confidence enum High Medium Low Failed
+        legal_analytical_reliability enum Primary Strong Secondary
+          Secondary Limited Not Usable
+        usability_verdict enum Usable Usable with Limitations
+          Conditional Not Usable
+        downstream_modules_supported type array items type string
+        limitation_flag type string null
+    readiness_summary type object properties
+      overall_readiness enum READY READY WITH LIMITATIONS CONDITIONAL BLOCKED
+      critical_gaps type array items type string
+      source_count type integer
+    entity_universe type array items type object properties
+      entity_name type string
+      entity_type type string
+      source_supported type boolean
+    routing_recommendation type array items type object properties
+      module_id type string
+      routing_status enum Recommended Blocked Conditional
+      readiness_effect type string
+      content_basis type string
+      limitation type string null
+    gaps_ledger type array items type object properties
+      gap_id type string
+      type type string
+      severity enum CRITICAL MATERIAL MINOR
+      affected_modules type array items type string
+      remediation type string null
+    conflict_ledger type array items type object properties
+      conflict_id type string
+      type type string
+      severity enum CRITICAL MATERIAL MINOR
+      affected_modules type array items type string
+      description type string
+    master_index_state type object properties
+      master_index_id type string
+      issuer_id_name type string
+      modules type array items type object properties
+        module_id type string
+        module_name type string
+        module_status type string
+        execution_mode type string null

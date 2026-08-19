@@ -1,0 +1,10 @@
+# Ruff — Python lint gate for the FastAPI backend (caos/server) and its tests.
+# Mirrors CI: `ruff check caos/server caos/tests`. Default rule set (E4/E7/E9/F):
+# pyflakes (unused imports, redefinitions) + a curated pycodestyle subset.
+target-version = "py311"
+extend-exclude = ["caos/server/.venv"]
+
+[lint.per-file-ignores]
+# Tests bootstrap sys.path + env vars before importing the app (E402), and use
+# short throwaway names (l/I/O) in fixtures and lambdas (E741).
+"caos/tests/**" = ["E402", "E741"]

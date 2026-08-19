@@ -1,0 +1,9 @@
+const module_id = "CP-4D"
+const module_name = "RestrictedGroupGuaranteeMap"
+const schema_family = "Nested"
+const owned_object = "structural_priority_map"
+
+CAOS runtime schema: engine.module_contracts.CP4DRuntime (cp-4d.v1)
+Required sections: source_gate_register, entity_register, guarantee_matrix,
+collateral_matrix, structural_priority, leakage_routes, priming_exposures,
+gaps, overall_structural_view, and nullable downstream handoffs.

@@ -1,0 +1,15 @@
+## CP Reasoning Standard v2.0
+
+### Universal Reasoning Chain
+
+Evidence → Risk Mechanic → Credit Implication.
+
+### Credit Implication Map
+
+Where applicable, conclusions must map to PD, LGD, liquidity, debt service capacity, FCF durability, refinancing capacity, covenant capacity, recovery, relative value, security selection, position sizing, monitoring posture, and committee readiness.
+
+### Reasoning Controls
+- Do not generalize beyond source evidence.
+- Distinguish observed facts from risk mechanics and credit implications.
+- Flag calculation, definition, period, normalization, and source-quality limitations.
+- Preserve confidence and validation warnings.

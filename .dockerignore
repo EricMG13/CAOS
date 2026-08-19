@@ -1,0 +1,80 @@
+# App-image build context policy. Deny everything first; the negations below
+# are the complete build-input API for caos/deploy/Dockerfile.
+**
+
+!.dockerignore
+
+# Frontend dependency manifests and production build inputs.
+!caos/
+caos/**
+!caos/frontend/
+caos/frontend/**
+!caos/frontend/package.json
+!caos/frontend/package-lock.json
+!caos/frontend/next.config.js
+!caos/frontend/postcss.config.js
+!caos/frontend/tailwind.config.js
+!caos/frontend/tsconfig.json
+!caos/frontend/next-env.d.ts
+!caos/frontend/src/
+caos/frontend/src/**
+!caos/frontend/src/**
+!caos/frontend/app/
+caos/frontend/app/**
+!caos/frontend/app/**
+caos/frontend/src/**/__tests__/**
+caos/frontend/src/**/*.test.*
+caos/frontend/src/**/*.spec.*
+caos/frontend/src/**/.impeccable/**
+
+# Runtime Python/data. Exclude tests, scripts, checked-in static output, local
+# databases, environment files, caches, and virtual environments by omission.
+!caos/server/
+caos/server/**
+!caos/server/requirements.lock
+!caos/server/requirements.txt
+!caos/server/*.py
+!caos/server/caos/
+caos/server/caos/**
+!caos/server/caos/**
+caos/server/caos/**/__pycache__/
+caos/server/caos/**/*.pyc
+!caos/server/alembic.ini
+!caos/server/deepresearch_demo.md
+!caos/server/engine/
+caos/server/engine/**
+!caos/server/engine/**/*.py
+!caos/server/routes/
+caos/server/routes/**
+!caos/server/routes/**/*.py
+!caos/server/migrations/
+caos/server/migrations/**
+!caos/server/migrations/**/*.py
+!caos/server/migrations/**/*.sql
+!caos/server/vendor/
+caos/server/vendor/**
+!caos/server/vendor/**/*.py
+
+# App Dockerfile and the runtime-resource contract probe only. Backup images
+# retain their existing caos/ context and caos/.dockerignore in this tranche.
+!caos/deploy/
+caos/deploy/**
+!caos/deploy/Dockerfile
+!caos/deploy/verify_image_resources.py
+
+# Runtime methodology: legacy active prompts, the complete governed CP-2G and
+# CP-4D bundles, and their shared governance preamble.
+!Modular OS/
+Modular OS/**
+!Modular OS/*/
+Modular OS/*/**
+!Modular OS/*/*_ACTIVE_PROMPT.md
+!Modular OS/CP-2G/
+!Modular OS/CP-2G/**
+!Modular OS/CP-4D/
+!Modular OS/CP-4D/**
+!Modular OS/KNOWLEDGE SOURCES/
+Modular OS/KNOWLEDGE SOURCES/**
+!Modular OS/KNOWLEDGE SOURCES/00_GOVERNANCE/
+Modular OS/KNOWLEDGE SOURCES/00_GOVERNANCE/**
+!Modular OS/KNOWLEDGE SOURCES/00_GOVERNANCE/CP-COMMON_PREAMBLE.md

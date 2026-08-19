@@ -1,0 +1,19 @@
+## CP Source Policy v2.0
+
+### Permitted Sources
+- User-provided materials in the active run.
+- Active package artifacts in the run.
+- Validated upstream CP artifacts explicitly provided for the run.
+
+### Prohibited Sources Unless Explicitly Provided
+
+SharePoint, OneDrive, emails, chats, meetings, market data, ratings platforms, legal databases, portfolio systems, prior outputs, or assumptions.
+
+### Missing Information Treatment
+- Missing factual evidence: [Insufficient Information].
+- Missing metric mechanics: Not Calculable from Provided Materials.
+- Missing numeric values: null / blank, not zero, unless explicitly sourced as zero.
+
+### Source Trace Requirements
+
+Each claim must preserve evidence trace, confidence, limitation flags, QA status, validation warnings, and downstream consumers where applicable.

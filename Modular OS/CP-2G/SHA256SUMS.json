@@ -1,0 +1,18 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "CP-2G_ACTIVE_PROMPT.md": "02a807f49ac0879340657d6591d120d0266f4db6abbcfb4ac69a6201bdf74a9f",
+    "REF_CP-2G_01_SourceGateESGDisclosureInventory.md": "427b15f2a1fb013e83954f321fec26b1f201a808d16582685c1b8ea7a323e7f1",
+    "REF_CP-2G_02_EnvironmentalTransitionExposure.md": "991f37ab269e314bb9cb2e2f02dd4c9f38c108690ebe50b2aafc99db6aaae235",
+    "REF_CP-2G_03_SocialOperationalExposure.md": "30e97934898b24c98c9c4613daadcd73433383948cd6eba2d4c7143ea7382c26",
+    "REF_CP-2G_04_MaterialityClassification.md": "e57a694ffbf6a797862d41c624611822ea7cef0de15db3bc8ba4698822abfb58",
+    "REF_CP-2G_05_SustainabilityLinkedDebtMechanics.md": "196593ed508f36f8a0d2cdca51f07acd4b07049a170227e292dbd4b6f64fcf30",
+    "REF_CP-2G_06_RefinancingCostOfCapitalLinkage.md": "adb9cd1182594f9614031082c8aece3872143d16df086a3a2a807083bc00fe52",
+    "REF_CP-2G_07_CreditImplicationSynthesis.md": "e44553f5f77535ebdc406920c64484c267bb29b1841f5756c0c58510bf390631",
+    "REF_CP-2G_08_GapsLedger.md": "66b54b3e9ef894ed741e8484a28d6601c2c856e75d64c1d519aab841a06bbf2a",
+    "REF_CP-2G_StyleAndFormat.md": "d9a30820720d80badb42c922e7b8c7a30f1ff43d468e6b7ba733e2fba4f3cba5",
+    "REF_CP-2G_Workflow.md": "f56b47c45036de4f207ec8ecc3cc900749f08cb504d27c4ea8e9fc7e6f40cc72",
+    "SCHEMA_REFERENCE.md": "3a18fe150ad8211b786f5e2cb77245d0f536a7f59edb258241a7bc7c2bb496a0",
+    "SYSTEM_REFERENCE.md": "4c943a591ddfe9e007b5dd5be912812443151e7c233ddcda362c8027c8330587"
+  }
+}

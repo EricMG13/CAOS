@@ -1,0 +1,5 @@
+CP CANONICAL STATE RULES (vNext)
+SEC1 PRINCIPLES: State explicit, monotonic within run.
+SEC2 REQUIRED FIELDS: module_id, module_name, owned_object, schema_family, runtime_output, evidence_trace, confidence(High|Medium|Low|Insufficient Information), limitation_flags, qa_status(Not Reviewed|Passed|Restricted|Blocked), validation_warnings, downstream_consumers. REMOVED: source_basis (U2).
+SEC3 TRANSITIONS: qa_status: Not Reviewed->Passed|Restricted|Blocked. committee_status: Draft Only->Committee Ready|Restricted|Blocked|Requires More Work|Insufficient Information.
+SEC4 HARD STOPS: Upstream unavailable->Blocked+UPSTREAM_DEPENDENCY_MISSING. CP-2B: stop if CP-1+CP-2 both unavailable.

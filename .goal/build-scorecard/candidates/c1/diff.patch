@@ -1,0 +1,5 @@
+# minimal-diff candidate c1: identity rewrite — no textual change over
+# caos/server/engine/relval.py lines 20-38. The original already satisfies
+# every contract point (banker's rounding, 60/40 bands, bool-as-percentile,
+# type-preserving percentile passthrough, .get() optionals, "peers" default),
+# so the smallest equivalent change is zero change. Empty unified diff below.

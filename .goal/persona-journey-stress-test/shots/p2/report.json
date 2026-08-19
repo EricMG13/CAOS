@@ -1,0 +1,117 @@
+{
+  "persona": "p2",
+  "base": "http://localhost:3020",
+  "steps": [
+    {
+      "route": "/command",
+      "label": "/command",
+      "status": 200,
+      "ms": 8693,
+      "url": "http://localhost:3020/command?context=82ea49ed-0809-49d9-b89c-052344ddd81a",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 984,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nCommand Center\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nCommand Center\nPortfolio command\nObserved 2026-07-26 06:48 UTC\nPOSITIONS\n—\nLIVE COVERAGE\n0/0\n⋯ Command utilities\nSTART DOCUMENT INTAKE\nACTIVE ANALYSIS\nPortfolio command\ncross-coverage · 0 findings\nDECISION BRIEF\nCHANGE · IMPACT · ACTION · EVIDENCE\n−\nWHAT CHANGED\n—\nLive activity unavailable\nWHY IT MATTERS\n—\nPortfolio impact unavailable\nREQUIRED ACTION\n0 QA findings · 0 source gaps\nas of 2026-07-26 06:48 UTC\nLIVE\nCURRENT\nDERIVED\nUNRATIFIED\nEVIDENCE HEALTH\n—\nCentral evidence freshness unavailable\nPORTFOLIO POSTURE · NOT CONFIGURED\n\nCreate or import a portfolio to establish a holdings posture.\n\nNO OBSERVED DATA\nNo live coverage\n\nStart document intake from the page action to establish the first governed coverage run.",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Command Center"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p2/_command.png",
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/portfolios",
+      "label": "/portfolios",
+      "status": 200,
+      "ms": 7791,
+      "url": "http://localhost:3020/portfolios?context=b8e8e38b-152c-49c3-b761-42a1a3943cdf",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 530,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nPortfolio Lab\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nPortfolio Lab\nCP-PORT\nPortfolio Lab\nNo portfolio selected\nNo page actions available\nACTIVE ANALYSIS\nPortfolio Lab\ncross-coverage · 0 findings\nNO OBSERVED DATA\nNo portfolios are configured\n\nCreate or import a portfolio in Settings before opening the lab.\n\nOpen Settings",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Portfolio Lab",
+        "No portfolios are configured"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p2/_portfolios.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/decisions",
+      "label": "/decisions",
+      "status": 200,
+      "ms": 7766,
+      "url": "http://localhost:3020/decisions?context=39af6676-e32d-4834-a9b3-00781e82c3ed",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 787,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nIC Book\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nIC Book\nIC\nIC Book\n0 agenda items\nADD AGENDA ITEM\nACTIVE ANALYSIS\nIC Book\ncross-coverage · 0 findings\n\nPrepare agenda items, inspect evidence and record committee votes.\n\nAGENDA\nDECISION HISTORY\nSTATUS\nAll statuses\nDraft\nReady\nDecided\nCancelled\nREFRESH\n▾ INSPECTOR\nDECISION BRIEF\nCHANGE · IMPACT · ACTION · EVIDENCE\n+\nNO OBSERVED DATA\nNo agenda items yet\n\nUse Add agenda item in the page header to begin the book.\n\nSelect an agenda item or decision to inspect its thesis, conditions, lineage and governance record.\nAgenda item form",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "IC Book",
+        "No agenda items yet"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p2/_decisions.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/reports",
+      "label": "/reports",
+      "status": 200,
+      "ms": 8040,
+      "url": "http://localhost:3020/reports",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 489,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nReport Studio\nCP-RENDER\nReport Studio — committee deliverables\nOPEN REFERENCE REPORT\nANALYSIS CONTEXT · RESOLVING\nNO OBSERVED DATA\nSelect an issuer report\n\nOpen Report Studio from an issuer or choose the explicitly labelled reference report.",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Report Studio",
+        "Select an issuer report"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p2/_reports.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/monitor",
+      "label": "/monitor",
+      "status": 200,
+      "ms": 14115,
+      "url": "http://localhost:3020/monitor?context=792216d7-bb87-45d4-ac9e-9f51b6049810",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 1791,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAlert Monitor\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nAlert Monitor\nCP-MON\nLIVE\nMonitor — live alert worklist\n⋯ Monitor shortcuts\nACKNOWLEDGE SELECTED\nNo persisted alerts to acknowledge.\nACTIVE ANALYSIS\nAlert oversight\ncross-coverage · 0 findings\nAlert worklist\nLIVE WORKLIST\n0 persisted alerts\n\nAcknowledge, assign and hand off persisted alert events; phone remains triage-only.\n\n▾ CONTEXT\n▾ INSPECTOR\nDECISION BRIEF\nCHANGE · IMPACT · ACTION · EVIDENCE\n−\nENTIRE BRIEF\n○\nNo persisted alert events observed\nOBSERVATION AUTHORITY\nas of no persisted event timestamp\nLIVE\nDERIVED\nAlert inbox · persisted events\nALERTS\nGOVERNANCE\n\n0 persisted alerts\nAll 0\nOpen 0\nAcknowledged 0\nResolved 0\nNO OBSERVED DATA\nNo persisted alerts observed\n\nThe persisted alert-event read completed; Reference fixtures remain separate.\n\nAlert rule controls\nWATCH RULES\nOFFLINE\nWatch rules disabled\n\nThe deployment activation flag is default-off. Historical persisted alerts remain available.\n\nRecheck watch-rule activation\nGovernance navigation\nGovernance summary\nCP-5 findings\n0\nFailed gates\n0\nSource gaps\n0\nMixed origin\n0\nStale sources\nUnavailable\n\nQueues are observed-empty — the first completed run populates them.\n\nOPEN GOVERNANCE QUEUE\nSource intake health\nZERO-CHUNK DOCUMENTS · VAULTED, UNUSABLE\nNo zero-chunk documents — every vaulted source produced usable text.\nOCR-LANE DOCUMENTS · LOWER FIDELITY\nNo OCR-derived documents — every extraction used a native text layer.\nORIGIN ROLLUP · LATEST RUN OWNER\nNo vaulted sources to attribute.\nCited alert brief\nGENERATE CITED BRIEF\n\nNo cited brief generated.",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Alert Monitor",
+        "Alert worklist",
+        "Alert inbox · persisted events",
+        "Alert rule controls",
+        "Governance summary",
+        "Source intake health",
+        "Cited alert brief"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p2/_monitor.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    }
+  ]
+}

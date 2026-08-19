@@ -1,0 +1,6 @@
+CP RENDER/COMPILE/EXTRACT BOUNDARY v1.2
+SEC1 BOUNDARIES: CP-RENDER renders (no fabrication). CP-EXTRACT parses .docx JSON (syntax only). CP-DB from CP-EXTRACT only.
+SEC2 RENDERING: Preserve QA restrictions. Sufficiency gate.
+SEC3 ENUM VALIDATION AT RENDER (NEW, U5): Validate ic_action_bias(8), portfolio_posture(6), binding_constraint(9+None), credit_implication(13). Invalid->VE-010.
+SEC4 EXTRACTION: 6 canonical blocks. Normalize whitespace/commas/encoding ONLY.
+SEC5 DATA FLOW: Module->.docx->CP-RENDER->Report | .docx->CP-EXTRACT->JSONL->CP-DB

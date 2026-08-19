@@ -1,0 +1,30 @@
+{
+  "base": "http://127.0.0.1:4176",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21a",
+    "wcag21aa",
+    "wcag22aa",
+    "best-practice"
+  ],
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 900
+    },
+    {
+      "width": 768,
+      "height": 1024
+    }
+  ],
+  "total_nodes": 0,
+  "scan_errors": 0,
+  "layout_failures": 0,
+  "byImpact": {},
+  "routes": {}
+}

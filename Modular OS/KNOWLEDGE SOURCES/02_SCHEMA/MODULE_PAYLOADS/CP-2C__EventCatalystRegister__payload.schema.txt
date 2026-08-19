@@ -1,0 +1,31 @@
+CP-2C_PAYLOAD.schema.txt
+Module: CP-2C | EventCatalystRegister
+Schema Family: Nested (analytical)
+Version: 2.0 | Updated: 08 June 2026
+Resolves: Audit M-4
+
+{
+  "allOf": [{ "$ref": "CP_MODULE_PAYLOAD_BASE.schema.txt" }],
+  "properties": {
+    "module_id": { "const": "CP-2C" },
+    "module_name": { "const": "EventCatalystRegister" },
+    "owned_object": { "const": "event_catalyst_register" },
+    "layer": { "const": "L2" },
+    "runtime_output": {
+      "type": "object",
+      "required": ["issuer_id", "analysis_date", "currency", "event_register", "catalyst_timeline", "net_catalyst_assessment", "credit_implication_map", "evidence_trace", "limitations", "downstream_readiness"],
+      "properties": {
+        "issuer_id": { "type": "string" },
+        "analysis_date": { "type": "string", "format": "date" },
+        "currency": { "type": "string" },
+        "event_register": { "type": "array", "items": { "type": "object", "required": ["event_id", "event_type", "description", "probability_band", "timing_horizon", "credit_direction", "severity"], "properties": { "event_id": { "type": "string" }, "event_type": { "type": "string", "enum": ["m_and_a", "divestiture", "ipo", "refinancing", "dividend_recap", "management_change", "regulatory", "litigation", "covenant_breach", "restructuring", "rating_action", "market_event", "other"] }, "description": { "type": "string" }, "probability_band": { "type": "string", "enum": ["high", "moderate", "low", "speculative", "not_assessable"] }, "timing_horizon": { "type": "string", "enum": ["0_3_months", "3_6_months", "6_12_months", "12_24_months", "beyond_24_months", "unknown"] }, "credit_direction": { "type": "string", "enum": ["positive", "negative", "neutral", "mixed", "uncertain"] }, "severity": { "type": "string", "enum": ["critical", "material", "moderate", "minor", "informational"] }, "affected_instruments": { "type": "array", "items": { "type": "string" } }, "evidence_refs": { "type": "array", "items": { "type": "string" } } } } },
+        "catalyst_timeline": { "type": "array", "items": { "type": "object", "required": ["period", "events_in_period", "net_direction"], "properties": { "period": { "type": "string" }, "events_in_period": { "type": "array", "items": { "type": "string" } }, "net_direction": { "type": "string", "enum": ["positive", "negative", "neutral", "mixed"] } } } },
+        "net_catalyst_assessment": { "type": "object", "required": ["overall_direction", "narrative", "key_risk_events", "key_positive_events"], "properties": { "overall_direction": { "type": "string", "enum": ["net_positive", "net_negative", "balanced", "uncertain"] }, "narrative": { "type": "string" }, "key_risk_events": { "type": "array", "items": { "type": "string" } }, "key_positive_events": { "type": "array", "items": { "type": "string" } } } },
+        "credit_implication_map": { "type": "array" },
+        "evidence_trace": { "type": "array" },
+        "limitations": { "type": "array" },
+        "downstream_readiness": { "type": "object", "required": ["CP-6A"], "properties": { "CP-6A": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] } } }
+      }
+    }
+  }
+}

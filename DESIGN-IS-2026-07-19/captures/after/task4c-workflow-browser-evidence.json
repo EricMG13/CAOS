@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-07-20T00:08:48.209Z",
+  "base": "http://127.0.0.1:4176",
+  "fixtureIdentity": {
+    "id": "task4c-workflow",
+    "email": "task4c-workflow@local.dev",
+    "full_name": "Task 4C Workflow Gate",
+    "role": "analyst",
+    "role_view": "qa",
+    "is_active": true,
+    "source": "local"
+  },
+  "httpFailures": [],
+  "results": [
+    { "route": "/pipeline?mode=reference", "viewport": { "width": 1440, "height": 900 }, "state": "CP-2 selected by keyboard; ordered stage table mirrors selection", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/monitor", "viewport": { "width": 1440, "height": 900 }, "state": "QA governance/control plane leads; populated live alert retained", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/settings?tab=models", "viewport": { "width": 1440, "height": 900 }, "state": "legacy alias resolved; workspace tab and diagnostics opened by keyboard", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/pipeline?mode=reference", "viewport": { "width": 1280, "height": 900 }, "state": "CP-2 selected by keyboard; ordered stage table mirrors selection", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/monitor", "viewport": { "width": 1280, "height": 900 }, "state": "QA governance/control plane leads; populated live alert retained", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/settings?tab=models", "viewport": { "width": 1280, "height": 900 }, "state": "legacy alias resolved; workspace tab and diagnostics opened by keyboard", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/pipeline?mode=reference", "viewport": { "width": 1024, "height": 768 }, "state": "CP-2 selected by keyboard; ordered stage table mirrors selection", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/monitor", "viewport": { "width": 1024, "height": 768 }, "state": "QA governance/control plane leads; populated live alert retained", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/settings?tab=models", "viewport": { "width": 1024, "height": 768 }, "state": "legacy alias resolved; workspace tab and diagnostics opened by keyboard", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/pipeline?mode=reference", "viewport": { "width": 768, "height": 1024 }, "state": "CP-2 selected by keyboard; ordered stage table mirrors selection", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/monitor", "viewport": { "width": 768, "height": 1024 }, "state": "QA governance/control plane leads; populated live alert retained", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/settings?tab=models", "viewport": { "width": 768, "height": 1024 }, "state": "legacy alias resolved; workspace tab and diagnostics opened by keyboard", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } }
+  ],
+  "reducedMotionResults": [
+    { "route": "/pipeline?mode=reference", "viewport": { "width": 1024, "height": 768 }, "state": "populated ordered pipeline; reduced motion active", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/monitor", "viewport": { "width": 1024, "height": 768 }, "state": "populated QA governance; reduced motion active", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } },
+    { "route": "/settings?tab=models", "viewport": { "width": 1024, "height": 768 }, "state": "legacy alias populated Preferences; reduced motion active", "httpFailures": [], "violations": [], "layout": { "documentOverflow": 0, "clippedControls": [] } }
+  ],
+  "phoneCoarse": {
+    "pointerCoarse": true,
+    "phoneAskCount": 1,
+    "compactAskCount": 0,
+    "labels": ["Ask CAOS phone utility"],
+    "httpFailures": []
+  }
+}

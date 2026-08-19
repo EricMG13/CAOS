@@ -1,0 +1,79 @@
+def _shock_scenario(
+    net_debt: float, base_interest: Optional[float], ebitda: float, shock_bps: int
+) -> dict:
+    """One +shock_bps scenario: incremental interest and the stressed coverage.
+
+    Rounding happens step by step and each rounded value feeds the next, so the
+    output matches a desk calc done on rounded figures rather than full-precision
+    intermediates:
+      - incremental interest -> 1 decimal ($M)
+      - stressed interest    -> 1 decimal (rounded base + rounded incremental)
+      - stressed coverage    -> 2 decimals (EBITDA / rounded stressed interest)
+    """
+    # Extra annual interest if the base rate rises by shock_bps on all net debt.
+    # No sign guard on purpose: negative net debt yields negative incremental
+    # interest (a rate rise then *helps* coverage), which is the intended read.
+    incremental_interest = round(net_debt * shock_bps / 10000, 1)
+
+    # Coverage can only be re-struck when we actually have a base interest figure
+    # to add to. `base_interest` is None whenever coverage was missing/zero, and
+    # we also skip a 0.0 stressed interest to avoid dividing by zero.
+    if base_interest:
+        stressed_interest = round(base_interest + incremental_interest, 1)
+    else:
+        stressed_interest = None
+
+    if stressed_interest:
+        stressed_coverage = round(ebitda / stressed_interest, 2)
+    else:
+        stressed_coverage = None
+
+    return {
+        "rate_shock_bps": shock_bps,
+        "incremental_interest_musd": incremental_interest,
+        "stressed_interest_coverage": stressed_coverage,
+    }
+
+
+def compute_rate_sensitivity(nf: dict) -> Optional[dict]:
+    """Interest / coverage under base-rate shocks, or None if CP-1 lacks net debt."""
+    net_debt = nf.get("net_debt_ltm")
+    ebitda = latest(nf.get("adj_ebitda") or {})
+
+    # Need a numeric net debt and a *non-zero* numeric EBITDA: EBITDA is the
+    # divisor for every coverage figure below, so a falsy 0 is unusable here.
+    if (
+        not isinstance(net_debt, (int, float))
+        or not isinstance(ebitda, (int, float))
+        or not ebitda
+    ):
+        return None
+
+    coverage = nf.get("interest_coverage_ltm")
+
+    # Base annual interest implied by EBITDA / coverage. Requires coverage to be
+    # numeric *and* truthy — a 0 coverage would divide by zero, so we leave the
+    # base interest unknown (None) in that case.
+    base_interest = (
+        round(ebitda / coverage, 1)
+        if isinstance(coverage, (int, float)) and coverage
+        else None
+    )
+
+    scenarios = [
+        _shock_scenario(net_debt, base_interest, ebitda, bps) for bps in _SHOCKS_BPS
+    ]
+
+    return {
+        "net_debt_musd": round(float(net_debt), 1),
+        "base_interest_musd": base_interest,
+        # ASYMMETRY (intentional, do not "tidy"): the reported base coverage echoes
+        # whatever CP-1 gave us as long as it is numeric — it is NOT gated on
+        # truthiness. So coverage == 0 surfaces here as 0 even though
+        # base_interest_musd is None (the 0 made that division impossible). The two
+        # fields answer different questions: this one reports the input coverage,
+        # base_interest_musd reports a value we could actually compute.
+        "base_interest_coverage": coverage if isinstance(coverage, (int, float)) else None,
+        "scenarios": scenarios,
+        "assumption": "Assumes 100% floating-rate and unhedged (no hedge register ingested).",
+    }

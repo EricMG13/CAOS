@@ -1,0 +1,32 @@
+CP-3B_PAYLOAD.schema.txt
+Module: CP-3B | RecoveryInstrumentPreference
+Schema Family: Nested (analytical)
+Version: 2.0 | Updated: 08 June 2026
+Resolves: Audit M-4
+
+{
+  "allOf": [{ "$ref": "CP_MODULE_PAYLOAD_BASE.schema.txt" }],
+  "properties": {
+    "module_id": { "const": "CP-3B" },
+    "module_name": { "const": "RecoveryInstrumentPreference" },
+    "owned_object": { "const": "recovery_instrument_assessment" },
+    "layer": { "const": "L3" },
+    "runtime_output": {
+      "type": "object",
+      "required": ["issuer_id", "analysis_date", "currency", "capital_structure_snapshot", "instrument_recovery_analysis", "recovery_ranking", "preferred_instrument", "credit_implication_map", "evidence_trace", "limitations", "downstream_readiness"],
+      "properties": {
+        "issuer_id": { "type": "string" },
+        "analysis_date": { "type": "string", "format": "date" },
+        "currency": { "type": "string" },
+        "capital_structure_snapshot": { "type": "object", "required": ["total_debt", "secured_debt", "unsecured_debt", "enterprise_value_estimate"], "properties": { "total_debt": { "type": ["number", "null"] }, "secured_debt": { "type": ["number", "null"] }, "unsecured_debt": { "type": ["number", "null"] }, "subordinated_debt": { "type": ["number", "null"] }, "enterprise_value_estimate": { "type": ["number", "null"] }, "calculation_status": { "type": "string", "enum": ["calculated", "estimated", "not_calculable", "insufficient_information"] } } },
+        "instrument_recovery_analysis": { "type": "array", "items": { "type": "object", "required": ["instrument_id", "instrument_type", "seniority_rank", "estimated_recovery_pct", "recovery_band", "waterfall_position"], "properties": { "instrument_id": { "type": "string" }, "instrument_type": { "type": "string", "enum": ["senior_secured_loan", "senior_secured_bond", "senior_unsecured_bond", "subordinated_bond", "second_lien", "holdco_note", "pik_toggle", "other"] }, "seniority_rank": { "type": "integer", "minimum": 1 }, "estimated_recovery_pct": { "type": ["number", "null"] }, "recovery_band": { "type": "string", "enum": ["90_100", "70_90", "50_70", "30_50", "10_30", "0_10", "not_calculable"] }, "waterfall_position": { "type": "string" }, "collateral_coverage": { "type": ["number", "null"] }, "structural_subordination_risk": { "type": "string", "enum": ["low", "moderate", "high", "critical", "not_applicable"] }, "evidence_refs": { "type": "array", "items": { "type": "string" } } } } },
+        "recovery_ranking": { "type": "array", "items": { "type": "object", "required": ["rank", "instrument_id", "rationale"], "properties": { "rank": { "type": "integer", "minimum": 1 }, "instrument_id": { "type": "string" }, "rationale": { "type": "string" } } } },
+        "preferred_instrument": { "type": "object", "required": ["instrument_id", "rationale", "decision_posture"], "properties": { "instrument_id": { "type": "string" }, "rationale": { "type": "string" }, "decision_posture": { "type": "string", "enum": ["strong_conviction_buy", "buy", "lean_buy", "hold", "lean_sell", "sell", "avoid", "monitor", "insufficient_data"] } } },
+        "credit_implication_map": { "type": "array" },
+        "evidence_trace": { "type": "array" },
+        "limitations": { "type": "array" },
+        "downstream_readiness": { "type": "object", "required": ["CP-6A"], "properties": { "CP-6A": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] } } }
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+CP-3_PAYLOAD.schema.txt
+Module: CP-3 | RelativeValueSecuritySelection
+Schema Family: Nested (analytical)
+Version: 2.0 | Updated: 08 June 2026
+Resolves: Audit M-4
+
+{
+  "allOf": [{ "$ref": "CP_MODULE_PAYLOAD_BASE.schema.txt" }],
+  "properties": {
+    "module_id": { "const": "CP-3" },
+    "module_name": { "const": "RelativeValueSecuritySelection" },
+    "owned_object": { "const": "relative_value_assessment" },
+    "layer": { "const": "L3" },
+    "runtime_output": {
+      "type": "object",
+      "required": ["execution_mode", "issuer_id", "analysis_date", "currency", "securities_assessed", "rv_summary", "recommendation", "credit_implication_map", "evidence_trace", "limitations", "downstream_readiness"],
+      "properties": {
+        "execution_mode": { "type": "string", "enum": ["CLO_SCREENING", "SINGLE_NAME_RV", "CAPITAL_STRUCTURE_RV", "WATCHLIST_MONITORING"] },
+        "issuer_id": { "type": "string" },
+        "analysis_date": { "type": "string", "format": "date" },
+        "currency": { "type": "string" },
+        "securities_assessed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["security_id", "instrument_type", "spread_current_bps", "spread_fair_value_bps", "spread_direction", "rv_score", "rv_label", "credit_tier", "recommendation_label"],
+            "properties": {
+              "security_id": { "type": "string" },
+              "instrument_type": { "type": "string", "enum": ["senior_secured_loan", "senior_secured_bond", "senior_unsecured_bond", "subordinated_bond", "second_lien", "holdco_note", "pik_toggle", "other"] },
+              "spread_current_bps": { "type": ["number", "null"] },
+              "spread_fair_value_bps": { "type": ["number", "null"] },
+              "spread_direction": { "type": "string", "enum": ["tight_to_fair_value", "wide_to_fair_value", "at_fair_value", "not_calculable"] },
+              "rv_score": { "type": "integer", "minimum": 1, "maximum": 5 },
+              "rv_label": { "type": "string", "enum": ["strong_sell", "underweight", "neutral", "overweight", "strong_buy"] },
+              "credit_tier": { "type": "string", "enum": ["CCC_and_below", "single_B_minus", "single_B", "single_B_plus", "BB_minus", "BB", "BB_plus", "crossover"] },
+              "recommendation_label": { "type": "string", "enum": ["buy", "add", "hold", "reduce", "sell", "avoid", "monitor"] },
+              "calculation_status": { "type": "string", "enum": ["calculated", "estimated", "not_calculable", "insufficient_information"] },
+              "evidence_refs": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "rv_summary": { "type": "object", "required": ["narrative", "key_spread_drivers", "relative_positioning"], "properties": { "narrative": { "type": "string" }, "key_spread_drivers": { "type": "array", "items": { "type": "string" } }, "relative_positioning": { "type": "string" } } },
+        "recommendation": { "type": "object", "required": ["primary_pick", "rationale", "decision_posture"], "properties": { "primary_pick": { "type": ["string", "null"] }, "rationale": { "type": "string" }, "decision_posture": { "type": "string", "enum": ["strong_conviction_buy", "buy", "lean_buy", "hold", "lean_sell", "sell", "avoid", "monitor", "insufficient_data"] } } },
+        "credit_implication_map": { "type": "array", "items": { "type": "object", "required": ["dimension", "assessment", "evidence_ref"], "properties": { "dimension": { "type": "string" }, "assessment": { "type": "string" }, "evidence_ref": { "type": "string" } } } },
+        "evidence_trace": { "type": "array", "items": { "type": "object", "required": ["evidence_id", "source_id", "extraction_type", "lineage_class", "content_summary"], "properties": { "evidence_id": { "type": "string" }, "source_id": { "type": "string" }, "extraction_type": { "type": "string" }, "lineage_class": { "type": "string" }, "content_summary": { "type": "string" } } } },
+        "limitations": { "type": "array", "items": { "type": "object", "required": ["limitation_code", "description"], "properties": { "limitation_code": { "type": "string" }, "description": { "type": "string" } } } },
+        "downstream_readiness": { "type": "object", "required": ["CP-3B", "CP-3C", "CP-6A"], "properties": { "CP-3B": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] }, "CP-3C": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] }, "CP-6A": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] } } }
+      }
+    }
+  }
+}

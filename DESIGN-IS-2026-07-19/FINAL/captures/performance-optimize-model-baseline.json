@@ -1,0 +1,217 @@
+{
+  "base": "http://127.0.0.1:4176",
+  "generatedAt": "2026-07-20T07:18:51.571Z",
+  "profiles": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "cpuRate": 1,
+      "network": null,
+      "scanErrors": 0,
+      "summary": {
+        "readyMs": {
+          "median": 1321.2,
+          "p75": 1321.2,
+          "p95": 1321.2,
+          "worstRoute": "/model?mode=reference"
+        },
+        "fcpMs": {
+          "median": 36,
+          "p75": 36,
+          "p95": 36,
+          "worstRoute": "/model?mode=reference"
+        },
+        "lcpMs": {
+          "median": 116,
+          "p75": 116,
+          "p95": 116,
+          "worstRoute": "/model?mode=reference"
+        },
+        "tbtMs": {
+          "median": 23,
+          "p75": 23,
+          "p95": 23,
+          "worstRoute": "/model?mode=reference"
+        },
+        "cls": {
+          "median": 0,
+          "p75": 0,
+          "p95": 0,
+          "worstRoute": "/model?mode=reference"
+        },
+        "encodedKb": {
+          "median": 349.5,
+          "p75": 349.5,
+          "p95": 349.5,
+          "worstRoute": "/model?mode=reference"
+        },
+        "jsKb": {
+          "median": 298.6,
+          "p75": 298.6,
+          "p95": 298.6,
+          "worstRoute": "/model?mode=reference"
+        },
+        "cssKb": {
+          "median": 24.8,
+          "p75": 24.8,
+          "p95": 24.8,
+          "worstRoute": "/model?mode=reference"
+        },
+        "domNodes": {
+          "median": 3980,
+          "p75": 3980,
+          "p95": 3980,
+          "worstRoute": "/model?mode=reference"
+        },
+        "heapMb": {
+          "median": 23.7,
+          "p75": 23.7,
+          "p95": 23.7,
+          "worstRoute": "/model?mode=reference"
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "profile": "desktop",
+      "route": "/model?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 1321.2,
+      "url": "/model",
+      "ttfbMs": 5.7,
+      "domContentLoadedMs": 14.7,
+      "loadMs": 76,
+      "fcpMs": 36,
+      "lcpMs": 116,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 max-w-[70ch] text-caos-md leading-relaxed text-caos-muted text-pretty [overflow-wrap:anywhere]",
+        "text": "Checking the persisted workspace capability before loading a calculator."
+      },
+      "cls": 0,
+      "layoutShifts": [
+        {
+          "value": 0.000056229068876457475,
+          "sources": [
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Atlas Forge Industrials — cash-flow model",
+              "previousRect": {
+                "x": 588.609375,
+                "y": 11.5,
+                "width": 119.71875,
+                "height": 20,
+                "top": 11.5,
+                "right": 708.328125,
+                "bottom": 31.5,
+                "left": 588.609375
+              },
+              "currentRect": {
+                "x": 591.734375,
+                "y": 11.5,
+                "width": 132.03125,
+                "height": 20,
+                "top": 11.5,
+                "right": 723.765625,
+                "bottom": 31.5,
+                "left": 591.734375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Model draftExecExecutionCompletePersistPersistenceDraftApprovalApprovalN/AFreshFreshnessUnknownAnchor 2026-05-31 · refer",
+              "previousRect": {
+                "x": 787.21875,
+                "y": 13.25,
+                "width": 92.71875,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 787.21875
+              },
+              "currentRect": {
+                "x": 807.078125,
+                "y": 13.25,
+                "width": 72.859375,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 807.078125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-detail flex min-w-0 items-center gap-3 overflow-hidden",
+              "text": "· linking engine…",
+              "previousRect": {
+                "x": 720.328125,
+                "y": 13.25,
+                "width": 42.890625,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 763.21875,
+                "bottom": 29.75,
+                "left": 720.328125
+              },
+              "currentRect": {
+                "x": 735.765625,
+                "y": 13.25,
+                "width": 47.3125,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 783.078125,
+                "bottom": 29.75,
+                "left": 735.765625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 23,
+      "longestTaskMs": 73,
+      "longTaskDetails": [
+        {
+          "startTime": 404,
+          "duration": 73,
+          "attribution": [
+            {
+              "name": "unknown",
+              "entryType": "taskattribution",
+              "containerType": "window",
+              "containerName": "",
+              "containerId": "",
+              "containerSrc": ""
+            }
+          ]
+        }
+      ],
+      "maxEventMs": 0,
+      "requests": 65,
+      "encodedKb": 349.5,
+      "transferredKb": 368.6,
+      "jsKb": 298.6,
+      "cssKb": 24.8,
+      "domNodes": 3980,
+      "heapMb": 23.7,
+      "taskDurationMs": 1076,
+      "scriptDurationMs": 901.7,
+      "layoutDurationMs": 19.2,
+      "recalcStyleDurationMs": 42.7
+    }
+  ]
+}

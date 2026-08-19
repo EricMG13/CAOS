@@ -1,0 +1,2083 @@
+{
+  "base": "http://127.0.0.1:4175",
+  "generatedAt": "2026-07-20T06:52:41.577Z",
+  "profiles": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "cpuRate": 1,
+      "network": null,
+      "scanErrors": 0,
+      "summary": {
+        "readyMs": {
+          "median": 471,
+          "p75": 491.2,
+          "p95": 1293,
+          "worstRoute": "/model?mode=reference"
+        },
+        "fcpMs": {
+          "median": 24,
+          "p75": 28,
+          "p95": 52,
+          "worstRoute": "/issuers"
+        },
+        "lcpMs": {
+          "median": 104,
+          "p75": 124,
+          "p95": 412,
+          "worstRoute": "/research?mode=reference"
+        },
+        "tbtMs": {
+          "median": 0,
+          "p75": 0,
+          "p95": 21,
+          "worstRoute": "/model?mode=reference"
+        },
+        "cls": {
+          "median": 0.002,
+          "p75": 0.019,
+          "p95": 0.08,
+          "worstRoute": "/command"
+        },
+        "encodedKb": {
+          "median": 319.6,
+          "p75": 403,
+          "p95": 658.3,
+          "worstRoute": "/issuers/profile?id=iss-1"
+        },
+        "jsKb": {
+          "median": 280.5,
+          "p75": 342,
+          "p95": 596.2,
+          "worstRoute": "/portfolios"
+        },
+        "cssKb": {
+          "median": 24.6,
+          "p75": 24.6,
+          "p95": 24.6,
+          "worstRoute": "/"
+        },
+        "domNodes": {
+          "median": 245,
+          "p75": 463,
+          "p95": 3980,
+          "worstRoute": "/model?mode=reference"
+        },
+        "heapMb": {
+          "median": 6.3,
+          "p75": 7.8,
+          "p95": 24.8,
+          "worstRoute": "/model?mode=reference"
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "profile": "desktop",
+      "route": "/",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 491.2,
+      "url": "/issuers",
+      "ttfbMs": 3.6,
+      "domContentLoadedMs": 23.1,
+      "loadMs": 50,
+      "fcpMs": 28,
+      "lcpMs": 124,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "caos-workbench-description mt-1 text-caos-md leading-relaxed text-caos-muted",
+        "text": "Filter, select and route covered names without losing issuer context."
+      },
+      "cls": 0,
+      "layoutShifts": [],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 43,
+      "encodedKb": 403,
+      "transferredKb": 415.6,
+      "jsKb": 366.8,
+      "cssKb": 24.6,
+      "domNodes": 233,
+      "heapMb": 6.4,
+      "taskDurationMs": 145.1,
+      "scriptDurationMs": 43.5,
+      "layoutDurationMs": 29.4,
+      "recalcStyleDurationMs": 5.1
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 480.1,
+      "url": "/command",
+      "ttfbMs": 1.6,
+      "domContentLoadedMs": 20.9,
+      "loadMs": 57.8,
+      "fcpMs": 24,
+      "lcpMs": 148,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.08,
+      "layoutShifts": [
+        {
+          "value": 0.06378277575331952,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings0Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 296.21875,
+                "width": 240,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 363.46875,
+                "width": 240,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 296.21875,
+                "width": 220,
+                "height": 564.703125,
+                "top": 296.21875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 363.46875,
+                "width": 220,
+                "height": 497.453125,
+                "top": 363.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 296.21875,
+                "width": 706.5625,
+                "height": 105,
+                "top": 296.21875,
+                "right": 940.921875,
+                "bottom": 401.21875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 363.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 363.46875,
+                "right": 940.921875,
+                "bottom": 451.46875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.011856001639660494,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector ",
+              "text": "Governance summaryCP-5 findings1Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueCited decision ",
+              "previousRect": {
+                "x": 1181.640625,
+                "y": 364.46875,
+                "width": 240,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              },
+              "currentRect": {
+                "x": 1181.640625,
+                "y": 428.96875,
+                "width": 240,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1421.640625,
+                "bottom": 860.921875,
+                "left": 1181.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_1_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "Daily Digest · coverage & ratings● LIVEWARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1",
+              "previousRect": {
+                "x": 951.28125,
+                "y": 364.46875,
+                "width": 220,
+                "height": 496.453125,
+                "top": 364.46875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              },
+              "currentRect": {
+                "x": 951.28125,
+                "y": 428.96875,
+                "width": 220,
+                "height": 431.953125,
+                "top": 428.96875,
+                "right": 1171.28125,
+                "bottom": 860.921875,
+                "left": 951.28125
+              }
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "Live CoverageChangesPositionsLive coverageGovernanceUse Up and Down Arrow to move between issuer rows. Press Enter or Sp",
+              "previousRect": {
+                "x": 234.359375,
+                "y": 364.46875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 364.46875,
+                "right": 940.921875,
+                "bottom": 452.46875,
+                "left": 234.359375
+              },
+              "currentRect": {
+                "x": 234.359375,
+                "y": 428.96875,
+                "width": 706.5625,
+                "height": 88,
+                "top": 428.96875,
+                "right": 940.921875,
+                "bottom": 516.96875,
+                "left": 234.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 347.28125,
+                "y": 11.5,
+                "width": 94.921875,
+                "height": 20,
+                "top": 11.5,
+                "right": 442.203125,
+                "bottom": 31.5,
+                "left": 347.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 214,
+      "encodedKb": 421.7,
+      "transferredKb": 484.4,
+      "jsKb": 280.5,
+      "cssKb": 24.6,
+      "domNodes": 378,
+      "heapMb": 8.9,
+      "taskDurationMs": 428.5,
+      "scriptDurationMs": 204.1,
+      "layoutDurationMs": 50.9,
+      "recalcStyleDurationMs": 15.7
+    },
+    {
+      "profile": "desktop",
+      "route": "/decisions",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 467.8,
+      "url": "/decisions",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 8.1,
+      "loadMs": 46,
+      "fcpMs": 48,
+      "lcpMs": 92,
+      "lcpElement": {
+        "tag": "div",
+        "id": null,
+        "className": "ic-book__empty",
+        "text": "Select an agenda item or decision to inspect its thesis, conditions, lineage and governance record."
+      },
+      "cls": 0,
+      "layoutShifts": [],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 29,
+      "encodedKb": 252.9,
+      "transferredKb": 261.4,
+      "jsKb": 221.4,
+      "cssKb": 24.6,
+      "domNodes": 198,
+      "heapMb": 5.8,
+      "taskDurationMs": 97,
+      "scriptDurationMs": 36.6,
+      "layoutDurationMs": 7.5,
+      "recalcStyleDurationMs": 7.5
+    },
+    {
+      "profile": "desktop",
+      "route": "/deepdive?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 493.9,
+      "url": "/deepdive",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 20.5,
+      "loadMs": 58.5,
+      "fcpMs": 24,
+      "lcpMs": 128,
+      "lcpElement": {
+        "tag": "div",
+        "id": null,
+        "className": "text-caos-lg text-caos-muted leading-relaxed",
+        "text": "The Chair finds the bear case on EBITDA quality persuasive but fully priced at +388bps; the bull case on aftermarket durability survives cross-examination intac"
+      },
+      "cls": 0,
+      "layoutShifts": [],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 31,
+      "encodedKb": 367.1,
+      "transferredKb": 376.1,
+      "jsKb": 336.1,
+      "cssKb": 24.6,
+      "domNodes": 552,
+      "heapMb": 6.3,
+      "taskDurationMs": 142.3,
+      "scriptDurationMs": 34.9,
+      "layoutDurationMs": 29.1,
+      "recalcStyleDurationMs": 9.3
+    },
+    {
+      "profile": "desktop",
+      "route": "/issuers",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 467.1,
+      "url": "/issuers",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 8.6,
+      "loadMs": 52.5,
+      "fcpMs": 52,
+      "lcpMs": 100,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "caos-workbench-description mt-1 text-caos-md leading-relaxed text-caos-muted",
+        "text": "Filter, select and route covered names without losing issuer context."
+      },
+      "cls": 0,
+      "layoutShifts": [],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 38,
+      "encodedKb": 335.8,
+      "transferredKb": 347,
+      "jsKb": 301.6,
+      "cssKb": 24.6,
+      "domNodes": 229,
+      "heapMb": 6.1,
+      "taskDurationMs": 128.6,
+      "scriptDurationMs": 32.6,
+      "layoutDurationMs": 25.2,
+      "recalcStyleDurationMs": 7.5
+    },
+    {
+      "profile": "desktop",
+      "route": "/issuers/profile?id=iss-1",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 471,
+      "url": "/issuers/profile",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 8.4,
+      "loadMs": 47.7,
+      "fcpMs": 24,
+      "lcpMs": 100,
+      "lcpElement": {
+        "tag": "span",
+        "id": null,
+        "className": "min-w-0 [overflow-wrap:anywhere]",
+        "text": "Latest run surfaced no period-over-period earnings delta — read trajectory off the trend cards above."
+      },
+      "cls": 0,
+      "layoutShifts": [],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 251,
+      "encodedKb": 658.3,
+      "transferredKb": 731.9,
+      "jsKb": 517.5,
+      "cssKb": 24.6,
+      "domNodes": 463,
+      "heapMb": 7.8,
+      "taskDurationMs": 406.4,
+      "scriptDurationMs": 233.6,
+      "layoutDurationMs": 8.1,
+      "recalcStyleDurationMs": 7.4
+    },
+    {
+      "profile": "desktop",
+      "route": "/model?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 1293,
+      "url": "/model",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 20.1,
+      "loadMs": 61.1,
+      "fcpMs": 24,
+      "lcpMs": 100,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 max-w-[70ch] text-caos-md leading-relaxed text-caos-muted text-pretty [overflow-wrap:anywhere]",
+        "text": "Checking the persisted workspace capability before loading a calculator."
+      },
+      "cls": 0,
+      "layoutShifts": [
+        {
+          "value": 0.000056229068876457475,
+          "sources": [
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Atlas Forge Industrials — cash-flow model",
+              "previousRect": {
+                "x": 588.609375,
+                "y": 11.5,
+                "width": 119.71875,
+                "height": 20,
+                "top": 11.5,
+                "right": 708.328125,
+                "bottom": 31.5,
+                "left": 588.609375
+              },
+              "currentRect": {
+                "x": 591.734375,
+                "y": 11.5,
+                "width": 132.03125,
+                "height": 20,
+                "top": 11.5,
+                "right": 723.765625,
+                "bottom": 31.5,
+                "left": 591.734375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Model draftExecExecutionCompletePersistPersistenceDraftApprovalApprovalN/AFreshFreshnessUnknownAnchor 2026-05-31 · refer",
+              "previousRect": {
+                "x": 787.21875,
+                "y": 13.25,
+                "width": 92.71875,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 787.21875
+              },
+              "currentRect": {
+                "x": 807.078125,
+                "y": 13.25,
+                "width": 72.859375,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 807.078125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-detail flex min-w-0 items-center gap-3 overflow-hidden",
+              "text": "· linking engine…",
+              "previousRect": {
+                "x": 720.328125,
+                "y": 13.25,
+                "width": 42.890625,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 763.21875,
+                "bottom": 29.75,
+                "left": 720.328125
+              },
+              "currentRect": {
+                "x": 735.765625,
+                "y": 13.25,
+                "width": 47.3125,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 783.078125,
+                "bottom": 29.75,
+                "left": 735.765625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 21,
+      "longestTaskMs": 71,
+      "longTaskDetails": [
+        {
+          "startTime": 388,
+          "duration": 71,
+          "attribution": [
+            {
+              "name": "unknown",
+              "entryType": "taskattribution",
+              "containerType": "window",
+              "containerName": "",
+              "containerId": "",
+              "containerSrc": ""
+            }
+          ]
+        }
+      ],
+      "maxEventMs": 0,
+      "requests": 67,
+      "encodedKb": 350.5,
+      "transferredKb": 370.2,
+      "jsKb": 298.6,
+      "cssKb": 24.6,
+      "domNodes": 3980,
+      "heapMb": 24.8,
+      "taskDurationMs": 1050.4,
+      "scriptDurationMs": 895.5,
+      "layoutDurationMs": 18.1,
+      "recalcStyleDurationMs": 34.3
+    },
+    {
+      "profile": "desktop",
+      "route": "/monitor",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 487.3,
+      "url": "/monitor",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 8.3,
+      "loadMs": 57.4,
+      "fcpMs": 24,
+      "lcpMs": 112,
+      "lcpElement": {
+        "tag": "div",
+        "id": null,
+        "className": "px-3 py-4 tabular text-caos-xs text-caos-muted",
+        "text": "No zero-chunk documents — every vaulted source produced usable text."
+      },
+      "cls": 0.014,
+      "layoutShifts": [
+        {
+          "value": 0.009956379756221065,
+          "sources": [
+            {
+              "tag": "section",
+              "id": "_r_3_",
+              "className": "persona-workbench__slot persona-workbench__slot--inspector  focus-ring",
+              "text": "Governance summaryCP-5 findings0Failed gates0Source gaps0Mixed origin0Stale sources0Open governance queueSource intake h",
+              "previousRect": {
+                "x": 1189.640625,
+                "y": 280.21875,
+                "width": 240,
+                "height": 588.703125,
+                "top": 280.21875,
+                "right": 1429.640625,
+                "bottom": 868.921875,
+                "left": 1189.640625
+              },
+              "currentRect": {
+                "x": 1189.640625,
+                "y": 333.71875,
+                "width": 240,
+                "height": 535.203125,
+                "top": 333.71875,
+                "right": 1429.640625,
+                "bottom": 868.921875,
+                "left": 1189.640625
+              }
+            },
+            {
+              "tag": "section",
+              "id": "_r_2_",
+              "className": "persona-workbench__slot persona-workbench__slot--context ",
+              "text": "",
+              "previousRect": {
+                "x": 959.28125,
+                "y": 280.21875,
+                "width": 220,
+                "height": 588.703125,
+                "top": 280.21875,
+                "right": 1179.28125,
+                "bottom": 868.921875,
+                "left": 959.28125
+              },
+              "currentRect": {
+                "x": 959.28125,
+                "y": 333.71875,
+                "width": 220,
+                "height": 535.203125,
+                "top": 333.71875,
+                "right": 1179.28125,
+                "bottom": 868.921875,
+                "left": 959.28125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "Liquidity headroom narrowed after the latest reporting update",
+              "previousRect": {
+                "x": 256.359375,
+                "y": 241.359375,
+                "width": 151.703125,
+                "height": 19.5,
+                "top": 241.359375,
+                "right": 408.0625,
+                "bottom": 260.859375,
+                "left": 256.359375
+              },
+              "currentRect": {
+                "x": 238.359375,
+                "y": 241.359375,
+                "width": 245.734375,
+                "height": 39,
+                "top": 241.359375,
+                "right": 484.09375,
+                "bottom": 280.359375,
+                "left": 238.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0045344007201646086,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Cited alert briefGenerate cited briefNo cited brief generated.",
+              "previousRect": {
+                "x": 1189.640625,
+                "y": 618.21875,
+                "width": 240,
+                "height": 96.5,
+                "top": 618.21875,
+                "right": 1429.640625,
+                "bottom": 714.71875,
+                "left": 1189.640625
+              },
+              "currentRect": {
+                "x": 0,
+                "y": 0,
+                "width": 0,
+                "height": 0,
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 34,
+      "encodedKb": 260.9,
+      "transferredKb": 270.9,
+      "jsKb": 228.3,
+      "cssKb": 24.6,
+      "domNodes": 292,
+      "heapMb": 5.2,
+      "taskDurationMs": 125.5,
+      "scriptDurationMs": 28.6,
+      "layoutDurationMs": 27.2,
+      "recalcStyleDurationMs": 8.2
+    },
+    {
+      "profile": "desktop",
+      "route": "/pipeline?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 484.9,
+      "url": "/pipeline",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 20.2,
+      "loadMs": 50.7,
+      "fcpMs": 24,
+      "lcpMs": 120,
+      "lcpElement": {
+        "tag": "div",
+        "id": null,
+        "className": "p-4 text-caos-xl text-caos-muted leading-relaxed max-w-[50ch]",
+        "text": "Module InspectorSelect a module in the dependency map or stage lanes to trace source inputs, affected modules, run details, and QA findings or limitations.COMMI"
+      },
+      "cls": 0,
+      "layoutShifts": [],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 48,
+      "encodedKb": 377.2,
+      "transferredKb": 391.3,
+      "jsKb": 342,
+      "cssKb": 24.6,
+      "domNodes": 785,
+      "heapMb": 7.1,
+      "taskDurationMs": 141.4,
+      "scriptDurationMs": 35.3,
+      "layoutDurationMs": 26.9,
+      "recalcStyleDurationMs": 9.1
+    },
+    {
+      "profile": "desktop",
+      "route": "/portfolios",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 472,
+      "url": "/portfolios",
+      "ttfbMs": 1.3,
+      "domContentLoadedMs": 8,
+      "loadMs": 45.9,
+      "fcpMs": 48,
+      "lcpMs": 120,
+      "lcpElement": {
+        "tag": "p",
+        "id": "_r_7_",
+        "className": "semantic-visualization__summary",
+        "text": "Telecom is the largest reported sector at 100% across 1 obligor."
+      },
+      "cls": 0.064,
+      "layoutShifts": [
+        {
+          "value": 0.04296367097077546,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "persona-workbench__composition persona-workbench__composition--supports-2",
+              "text": "Sizing workbenchCredit Fund IAs of2026-06-30Positions—AuthorityLoadingPositionsConstraintsPortfolioCredit Fund ISearchSe",
+              "previousRect": {
+                "x": 216,
+                "y": 76,
+                "width": 1224,
+                "height": 84.328125,
+                "top": 76,
+                "right": 1440,
+                "bottom": 160.328125,
+                "left": 216
+              },
+              "currentRect": {
+                "x": 216,
+                "y": 112,
+                "width": 1224,
+                "height": 540.578125,
+                "top": 112,
+                "right": 1440,
+                "bottom": 652.578125,
+                "left": 216
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Fund",
+              "previousRect": {
+                "x": 1306.015625,
+                "y": 12.5,
+                "width": 117.984375,
+                "height": 18,
+                "top": 12.5,
+                "right": 1424,
+                "bottom": 30.5,
+                "left": 1306.015625
+              },
+              "currentRect": {
+                "x": 1192.90625,
+                "y": 12.5,
+                "width": 27.875,
+                "height": 18,
+                "top": 12.5,
+                "right": 1220.78125,
+                "bottom": 30.5,
+                "left": 1192.90625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.021061439043209874,
+          "sources": [
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--utility ",
+              "text": "Deterministic scenarioBase downsidePreview stressNo persisted stress snapshots.",
+              "previousRect": {
+                "x": 216,
+                "y": 555.96875,
+                "width": 1224,
+                "height": 87.25,
+                "top": 555.96875,
+                "right": 1440,
+                "bottom": 643.21875,
+                "left": 216
+              },
+              "currentRect": {
+                "x": 216,
+                "y": 739.46875,
+                "width": 1224,
+                "height": 87.25,
+                "top": 739.46875,
+                "right": 1440,
+                "bottom": 826.71875,
+                "left": 216
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 30,
+      "encodedKb": 628.6,
+      "transferredKb": 637.4,
+      "jsKb": 596.2,
+      "cssKb": 24.6,
+      "domNodes": 269,
+      "heapMb": 11.3,
+      "taskDurationMs": 173.4,
+      "scriptDurationMs": 48.9,
+      "layoutDurationMs": 9,
+      "recalcStyleDurationMs": 8.3
+    },
+    {
+      "profile": "desktop",
+      "route": "/query",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 462,
+      "url": "/query",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 8.6,
+      "loadMs": 59.2,
+      "fcpMs": 24,
+      "lcpMs": 92,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mx-auto mt-2 max-w-[65ch] text-caos-sm leading-relaxed text-caos-muted",
+        "text": "The lane is declared before execution. No graph, model overlay or report is generated until you run it."
+      },
+      "cls": 0.042,
+      "layoutShifts": [
+        {
+          "value": 0.041912935208293145,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "w-full max-w-2xl text-center",
+              "text": "Investigation readyAsk one cross-coverage question.The lane is declared before execution. No graph, model overlay or rep",
+              "previousRect": {
+                "x": 251.640625,
+                "y": 327.9375,
+                "width": 672,
+                "height": 380.75,
+                "top": 327.9375,
+                "right": 923.640625,
+                "bottom": 708.6875,
+                "left": 251.640625
+              },
+              "currentRect": {
+                "x": 251.640625,
+                "y": 363.6875,
+                "width": 672,
+                "height": 308.25,
+                "top": 363.6875,
+                "right": 923.640625,
+                "bottom": 671.9375,
+                "left": 251.640625
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Shared governed workspace",
+              "previousRect": {
+                "x": 888.4375,
+                "y": 14,
+                "width": 97,
+                "height": 15,
+                "top": 14,
+                "right": 985.4375,
+                "bottom": 29,
+                "left": 888.4375
+              },
+              "currentRect": {
+                "x": 834.25,
+                "y": 14,
+                "width": 150.515625,
+                "height": 15,
+                "top": 14,
+                "right": 984.765625,
+                "bottom": 29,
+                "left": 834.25
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 28,
+      "encodedKb": 271.3,
+      "transferredKb": 279.5,
+      "jsKb": 240.5,
+      "cssKb": 24.6,
+      "domNodes": 186,
+      "heapMb": 5.7,
+      "taskDurationMs": 94.4,
+      "scriptDurationMs": 23.7,
+      "layoutDurationMs": 7.8,
+      "recalcStyleDurationMs": 7
+    },
+    {
+      "profile": "desktop",
+      "route": "/reports?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 555.6,
+      "url": "/reports",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 8.5,
+      "loadMs": 53.5,
+      "fcpMs": 28,
+      "lcpMs": 140,
+      "lcpElement": {
+        "tag": "span",
+        "id": null,
+        "className": "",
+        "text": "Kestrel Fund V 68.4% · co-invest 22.4% · mgmt 9.2%"
+      },
+      "cls": 0.004,
+      "layoutShifts": [
+        {
+          "value": 0.0026863003954475306,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 563.703125,
+                "width": 300,
+                "height": 250.21875,
+                "top": 563.703125,
+                "right": 1421.640625,
+                "bottom": 813.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0010294094007201645,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 613.515625,
+                "width": 300,
+                "height": 199.40625,
+                "top": 613.515625,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Compose7/7 sections✓COMPANY PROFILE · RECOMMENDATION✓TRANSACTION SUMMARY AND NEW DEBT ISSUES✓CAPITAL STRUCTURE✓SENIORITY",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 447.9375,
+                "width": 300,
+                "height": 174.609375,
+                "top": 447.9375,
+                "right": 1421.640625,
+                "bottom": 622.546875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 437.015625,
+                "width": 300,
+                "height": 168.5,
+                "top": 437.015625,
+                "right": 1421.640625,
+                "bottom": 605.515625,
+                "left": 1121.640625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 35,
+      "encodedKb": 293,
+      "transferredKb": 303.3,
+      "jsKb": 261.3,
+      "cssKb": 24.6,
+      "domNodes": 1042,
+      "heapMb": 8.6,
+      "taskDurationMs": 202.1,
+      "scriptDurationMs": 101.7,
+      "layoutDurationMs": 33.1,
+      "recalcStyleDurationMs": 10
+    },
+    {
+      "profile": "desktop",
+      "route": "/research?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 464.3,
+      "url": "/research",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 8.8,
+      "loadMs": 50.4,
+      "fcpMs": 24,
+      "lcpMs": 412,
+      "lcpElement": {
+        "tag": "li",
+        "id": null,
+        "className": "",
+        "text": "Leverage, liquidity, covenant capacity, and refinancing risk are shown only as illustrative analytical categories."
+      },
+      "cls": 0.032,
+      "layoutShifts": [
+        {
+          "value": 0.03117472190072016,
+          "sources": [
+            {
+              "tag": "section",
+              "id": null,
+              "className": "rdoc-sources",
+              "text": "Sources (2)Illustrative credit agreement extractIllustrative quarterly filing extract",
+              "previousRect": {
+                "x": 349.171875,
+                "y": 319.90625,
+                "width": 672,
+                "height": 83.875,
+                "top": 319.90625,
+                "right": 1021.171875,
+                "bottom": 403.78125,
+                "left": 349.171875
+              },
+              "currentRect": {
+                "x": 349.171875,
+                "y": 717.046875,
+                "width": 672,
+                "height": 83.875,
+                "top": 717.046875,
+                "right": 1021.171875,
+                "bottom": 800.921875,
+                "left": 349.171875
+              }
+            },
+            {
+              "tag": "footer",
+              "id": null,
+              "className": "rdoc-foot",
+              "text": "Generated by CREDIT OS · DEEP RESEARCHREFERENCE · seeded example · no live sources",
+              "previousRect": {
+                "x": 349.171875,
+                "y": 425.78125,
+                "width": 672,
+                "height": 25,
+                "top": 425.78125,
+                "right": 1021.171875,
+                "bottom": 450.78125,
+                "left": 349.171875
+              },
+              "currentRect": {
+                "x": 349.171875,
+                "y": 822.921875,
+                "width": 672,
+                "height": 25,
+                "top": 822.921875,
+                "right": 1021.171875,
+                "bottom": 847.921875,
+                "left": 349.171875
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0009082111625514404,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex flex-col gap-3",
+              "text": "ScopesectorissuerSector / theme",
+              "previousRect": {
+                "x": 1167.34375,
+                "y": 211.21875,
+                "width": 249.296875,
+                "height": 122.5,
+                "top": 211.21875,
+                "right": 1416.640625,
+                "bottom": 333.71875,
+                "left": 1167.34375
+              },
+              "currentRect": {
+                "x": 1167.34375,
+                "y": 178.71875,
+                "width": 249.296875,
+                "height": 122.5,
+                "top": 178.71875,
+                "right": 1416.640625,
+                "bottom": 301.21875,
+                "left": 1167.34375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex flex-col gap-2 mt-auto pt-1",
+              "text": "Reference research is loaded for format review only.",
+              "previousRect": {
+                "x": 1167.34375,
+                "y": 384.71875,
+                "width": 249.296875,
+                "height": 16.5,
+                "top": 384.71875,
+                "right": 1416.640625,
+                "bottom": 401.21875,
+                "left": 1167.34375
+              },
+              "currentRect": {
+                "x": 1167.34375,
+                "y": 352.21875,
+                "width": 249.296875,
+                "height": 37,
+                "top": 352.21875,
+                "right": 1416.640625,
+                "bottom": 389.21875,
+                "left": 1167.34375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex flex-col gap-3",
+              "text": "Advanced brief",
+              "previousRect": {
+                "x": 1163.34375,
+                "y": 349.71875,
+                "width": 253.296875,
+                "height": 19,
+                "top": 349.71875,
+                "right": 1416.640625,
+                "bottom": 368.71875,
+                "left": 1163.34375
+              },
+              "currentRect": {
+                "x": 1163.34375,
+                "y": 317.21875,
+                "width": 253.296875,
+                "height": 19,
+                "top": 317.21875,
+                "right": 1416.640625,
+                "bottom": 336.21875,
+                "left": 1163.34375
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 55,
+      "encodedKb": 419.1,
+      "transferredKb": 435.2,
+      "jsKb": 381.5,
+      "cssKb": 24.6,
+      "domNodes": 245,
+      "heapMb": 7.2,
+      "taskDurationMs": 127.7,
+      "scriptDurationMs": 45.4,
+      "layoutDurationMs": 9,
+      "recalcStyleDurationMs": 8.1
+    },
+    {
+      "profile": "desktop",
+      "route": "/sector",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 491.3,
+      "url": "/sector",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 19.7,
+      "loadMs": 46.5,
+      "fcpMs": 24,
+      "lcpMs": 124,
+      "lcpElement": {
+        "tag": "span",
+        "id": null,
+        "className": "min-w-0 [overflow-wrap:anywhere]",
+        "text": "No impact assessment yet — run a review to establish one."
+      },
+      "cls": 0.019,
+      "layoutShifts": [
+        {
+          "value": 0.018634403935185184,
+          "sources": [
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--primary persona-workbench__slot--emphasized",
+              "text": "TelecomOverviewSignalsComparablesRisksMoreEarly WarningSourcesNot yet runNo versioned dossierRequest a refresh to create",
+              "previousRect": {
+                "x": 226.359375,
+                "y": 186.21875,
+                "width": 1203.28125,
+                "height": 636.703125,
+                "top": 186.21875,
+                "right": 1429.640625,
+                "bottom": 822.921875,
+                "left": 226.359375
+              },
+              "currentRect": {
+                "x": 226.359375,
+                "y": 231.21875,
+                "width": 1203.28125,
+                "height": 590.703125,
+                "top": 231.21875,
+                "right": 1429.640625,
+                "bottom": 821.921875,
+                "left": 226.359375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No change observation — no versioned review in this context.",
+              "previousRect": {
+                "x": 256.359375,
+                "y": 147.359375,
+                "width": 132.828125,
+                "height": 19.5,
+                "top": 147.359375,
+                "right": 389.1875,
+                "bottom": 166.859375,
+                "left": 256.359375
+              },
+              "currentRect": {
+                "x": 238.359375,
+                "y": 172.859375,
+                "width": 245.734375,
+                "height": 39,
+                "top": 172.859375,
+                "right": 484.09375,
+                "bottom": 211.859375,
+                "left": 238.359375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00009247685185185185,
+          "sources": [
+            {
+              "tag": "footer",
+              "id": null,
+              "className": "caos-finalization-bar",
+              "text": "No draftOpen sector in RVInvestigate in Query",
+              "previousRect": {
+                "x": 216,
+                "y": 856,
+                "width": 1224,
+                "height": 44,
+                "top": 856,
+                "right": 1440,
+                "bottom": 900,
+                "left": 216
+              },
+              "currentRect": {
+                "x": 216,
+                "y": 853,
+                "width": 1224,
+                "height": 47,
+                "top": 853,
+                "right": 1440,
+                "bottom": 900,
+                "left": 216
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 46,
+      "encodedKb": 319.6,
+      "transferredKb": 333.1,
+      "jsKb": 284.4,
+      "cssKb": 24.6,
+      "domNodes": 223,
+      "heapMb": 6.3,
+      "taskDurationMs": 125,
+      "scriptDurationMs": 37.1,
+      "layoutDurationMs": 25.7,
+      "recalcStyleDurationMs": 6.9
+    },
+    {
+      "profile": "desktop",
+      "route": "/sector-rv",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 453.6,
+      "url": "/sector-rv",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 8.5,
+      "loadMs": 57.3,
+      "fcpMs": 24,
+      "lcpMs": 84,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 max-w-[70ch] text-caos-md leading-relaxed text-caos-muted text-pretty [overflow-wrap:anywhere]",
+        "text": "Run the screen to normalize the reference pricing sheet. Reference observations can surface candidates but can never produce an actionable recommendation."
+      },
+      "cls": 0.002,
+      "layoutShifts": [
+        {
+          "value": 0.0024112140922389405,
+          "sources": [
+            {
+              "tag": "section",
+              "id": null,
+              "className": "min-w-0 rounded-md border border-caos-border bg-caos-bg/45 px-3 py-3.5 m-auto max-w-xl",
+              "text": "Not yet runImmutable snapshot requiredRun the screen to normalize the reference pricing sheet. Reference observations ca",
+              "previousRect": {
+                "x": 630.09375,
+                "y": 435.578125,
+                "width": 395.796875,
+                "height": 94.5,
+                "top": 435.578125,
+                "right": 1025.890625,
+                "bottom": 530.078125,
+                "left": 630.09375
+              },
+              "currentRect": {
+                "x": 557.265625,
+                "y": 425.828125,
+                "width": 541.453125,
+                "height": 114,
+                "top": 425.828125,
+                "right": 1098.71875,
+                "bottom": 539.828125,
+                "left": 557.265625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 23,
+      "encodedKb": 249.1,
+      "transferredKb": 255.9,
+      "jsKb": 218.8,
+      "cssKb": 24.6,
+      "domNodes": 164,
+      "heapMb": 5,
+      "taskDurationMs": 87.5,
+      "scriptDurationMs": 21,
+      "layoutDurationMs": 6.8,
+      "recalcStyleDurationMs": 6.5
+    },
+    {
+      "profile": "desktop",
+      "route": "/settings",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 464.7,
+      "url": "/settings",
+      "ttfbMs": 1.3,
+      "domContentLoadedMs": 21.7,
+      "loadMs": 54.3,
+      "fcpMs": 24,
+      "lcpMs": 92,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "tabular text-caos-2xs text-caos-muted leading-snug",
+        "text": "Choose the balance of turnaround time and analytical depth used for synthesis, review, issuer questions, and investigations. Each saved run records the choice. "
+      },
+      "cls": 0.008,
+      "layoutShifts": [
+        {
+          "value": 0.007753812679505315,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Query answer sourceTHIS BROWSERChoose how answers are produced for Compare metrics, Map relationships, Research with cit",
+              "previousRect": {
+                "x": 380,
+                "y": 456.09375,
+                "width": 896,
+                "height": 163.75,
+                "top": 456.09375,
+                "right": 1276,
+                "bottom": 619.84375,
+                "left": 380
+              },
+              "currentRect": {
+                "x": 380,
+                "y": 431.59375,
+                "width": 896,
+                "height": 199.75,
+                "top": 431.59375,
+                "right": 1276,
+                "bottom": 631.34375,
+                "left": 380
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Research defaultsTHIS BROWSERResetSaveThe standing lens the Research page seeds new briefs with. Blank fields fall back ",
+              "previousRect": {
+                "x": 380,
+                "y": 721.34375,
+                "width": 896,
+                "height": 147.578125,
+                "top": 721.34375,
+                "right": 1276,
+                "bottom": 868.921875,
+                "left": 380
+              },
+              "currentRect": {
+                "x": 380,
+                "y": 732.84375,
+                "width": 896,
+                "height": 136.078125,
+                "top": 732.84375,
+                "right": 1276,
+                "bottom": 868.921875,
+                "left": 380
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Task-specific analysis preferencesANALYST PROFILEPlanned — task-specific preferences will become available after workspa",
+              "previousRect": {
+                "x": 380,
+                "y": 627.84375,
+                "width": 896,
+                "height": 85.5,
+                "top": 627.84375,
+                "right": 1276,
+                "bottom": 713.34375,
+                "left": 380
+              },
+              "currentRect": {
+                "x": 380,
+                "y": 639.34375,
+                "width": 896,
+                "height": 85.5,
+                "top": 639.34375,
+                "right": 1276,
+                "bottom": 724.84375,
+                "left": 380
+              }
+            },
+            {
+              "tag": "label",
+              "id": null,
+              "className": "flex items-start justify-between gap-4 py-1",
+              "text": "Warn before leaving unsaved model editsGuards internal navigation and browser exit while Model Engine v2 edits are pendi",
+              "previousRect": {
+                "x": 393,
+                "y": 387.21875,
+                "width": 870,
+                "height": 35.375,
+                "top": 387.21875,
+                "right": 1263,
+                "bottom": 422.59375,
+                "left": 393
+              },
+              "currentRect": {
+                "x": 393,
+                "y": 362.71875,
+                "width": 870,
+                "height": 47.875,
+                "top": 362.71875,
+                "right": 1263,
+                "bottom": 410.59375,
+                "left": 393
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 24,
+      "encodedKb": 266.5,
+      "transferredKb": 273.5,
+      "jsKb": 236.4,
+      "cssKb": 24.6,
+      "domNodes": 260,
+      "heapMb": 5.6,
+      "taskDurationMs": 88.4,
+      "scriptDurationMs": 22.4,
+      "layoutDurationMs": 8.1,
+      "recalcStyleDurationMs": 7.4
+    },
+    {
+      "profile": "desktop",
+      "route": "/sponsors",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 452.3,
+      "url": "/sponsors",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 20.6,
+      "loadMs": 51.3,
+      "fcpMs": 24,
+      "lcpMs": 88,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 max-w-[70ch] text-caos-md leading-relaxed text-caos-muted text-pretty [overflow-wrap:anywhere]",
+        "text": "Set Sponsor / PE owner on an issuer. Track records aggregate observed CP-2D reviews across that sponsor’s covered names."
+      },
+      "cls": 0.001,
+      "layoutShifts": [
+        {
+          "value": 0.0005914678377379115,
+          "sources": [
+            {
+              "tag": "h2",
+              "id": null,
+              "className": "mt-1.5 text-caos-metric font-semibold leading-tight text-caos-text text-balance [overflow-wrap:anywhere]",
+              "text": "No sponsors on file",
+              "previousRect": {
+                "x": 237.359375,
+                "y": 125.71875,
+                "width": 554,
+                "height": 17,
+                "top": 125.71875,
+                "right": 791.359375,
+                "bottom": 142.71875,
+                "left": 237.359375
+              },
+              "currentRect": {
+                "x": 239.359375,
+                "y": 133.71875,
+                "width": 550,
+                "height": 20,
+                "top": 133.71875,
+                "right": 789.359375,
+                "bottom": 153.71875,
+                "left": 239.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex items-center gap-1.5 tabular text-caos-2xs uppercase tracking-wider",
+              "text": "No observed data",
+              "previousRect": {
+                "x": 237.359375,
+                "y": 106.71875,
+                "width": 554,
+                "height": 15,
+                "top": 106.71875,
+                "right": 791.359375,
+                "bottom": 121.71875,
+                "left": 237.359375
+              },
+              "currentRect": {
+                "x": 239.359375,
+                "y": 112.71875,
+                "width": 550,
+                "height": 15,
+                "top": 112.71875,
+                "right": 789.359375,
+                "bottom": 127.71875,
+                "left": 239.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex items-center gap-2 shrink-0",
+              "text": "0 sponsors",
+              "previousRect": {
+                "x": 1318.03125,
+                "y": 13.25,
+                "width": 105.96875,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 1424,
+                "bottom": 29.75,
+                "left": 1318.03125
+              },
+              "currentRect": {
+                "x": 1357.765625,
+                "y": 13.25,
+                "width": 66.234375,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 1424,
+                "bottom": 29.75,
+                "left": 1357.765625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 35,
+      "encodedKb": 308.2,
+      "transferredKb": 318.4,
+      "jsKb": 274.7,
+      "cssKb": 24.6,
+      "domNodes": 157,
+      "heapMb": 5.8,
+      "taskDurationMs": 92.6,
+      "scriptDurationMs": 24,
+      "layoutDurationMs": 6.5,
+      "recalcStyleDurationMs": 6.9
+    },
+    {
+      "profile": "desktop",
+      "route": "/upload",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 469.5,
+      "url": "/upload",
+      "ttfbMs": 1.3,
+      "domContentLoadedMs": 8.7,
+      "loadMs": 53.7,
+      "fcpMs": 28,
+      "lcpMs": 104,
+      "lcpElement": {
+        "tag": "div",
+        "id": null,
+        "className": "text-caos-lg text-caos-muted leading-snug flex-1",
+        "text": "Drop all of an issuer's deal documents at once — CP-0 classifies and dates each on ingest. Pick a run mode and the engine routes the matching modules."
+      },
+      "cls": 0.006,
+      "layoutShifts": [
+        {
+          "value": 0.00602837791495199,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Select issuer1 registeredVMO2VMO2SELECT →+ ADD NEW ISSUER",
+              "previousRect": {
+                "x": 380,
+                "y": 261.96875,
+                "width": 896,
+                "height": 144,
+                "top": 261.96875,
+                "right": 1276,
+                "bottom": 405.96875,
+                "left": 380
+              },
+              "currentRect": {
+                "x": 380,
+                "y": 200.71875,
+                "width": 896,
+                "height": 178.5,
+                "top": 200.71875,
+                "right": 1276,
+                "bottom": 379.21875,
+                "left": 380
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 27,
+      "encodedKb": 267.6,
+      "transferredKb": 275.5,
+      "jsKb": 236.9,
+      "cssKb": 24.6,
+      "domNodes": 184,
+      "heapMb": 5.5,
+      "taskDurationMs": 108.9,
+      "scriptDurationMs": 23.6,
+      "layoutDurationMs": 25.2,
+      "recalcStyleDurationMs": 7.8
+    }
+  ]
+}

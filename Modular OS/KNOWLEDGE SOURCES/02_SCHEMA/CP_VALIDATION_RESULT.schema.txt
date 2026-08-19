@@ -1,0 +1,12 @@
+$schema https://json-schema.org/draft/2020-12/schema
+$id CP_VALIDATION_RESULT.schema.txt
+type object
+additionalProperties false
+required artifact_id schema_name validation_status validation_errors validation_warnings validation_exception
+properties
+  artifact_id type string
+  schema_name type string
+  validation_status enum Passed Restricted Blocked Not Executed
+  validation_errors type array items type string
+  validation_warnings type array items type string
+  validation_exception type string null

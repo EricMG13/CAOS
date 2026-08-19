@@ -1,0 +1,15 @@
+## CP Shared Context Policy v2.0
+
+### Purpose
+
+Shared context may be used only to pass source-grounded facts, structured handoffs, evidence trace, limitation flags, QA status, and validation warnings between modules.
+
+### Controls
+- Shared context is not a memory substitute.
+- Shared context must not introduce external assumptions.
+- Downstream modules may consume upstream outputs only where evidence trace and QA status are preserved.
+- Module-specific ownership remains binding even when context is shared.
+
+### Required Shared Fields
+
+module_id, module_name, evidence_trace, confidence, limitation_flags, qa_status, validation_warnings, downstream_consumers.

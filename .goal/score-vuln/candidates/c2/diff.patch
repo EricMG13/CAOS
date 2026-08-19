@@ -1,0 +1,97 @@
+--- a/caos/server/engine/refinancing.py
++++ b/caos/server/engine/refinancing.py
+@@ -16,21 +16,80 @@
+ _MAX_SCORE = 10
+
+
+-def score_vulnerability(leverage: Optional[float], fragility: Optional[str]) -> Tuple[int, str, List[str]]:
+-    score = 0
+-    drivers: List[str] = []
+-    if isinstance(leverage, (int, float)):
+-        if leverage >= 6.0:
+-            score += 4
+-            drivers.append(f"high leverage {leverage:g}x")
+-        elif leverage >= 5.0:
+-            score += 2
+-            drivers.append(f"elevated leverage {leverage:g}x")
+-    if fragility == "HIGH":
+-        score += 4
+-        drivers.append("high downside fragility")
+-    elif fragility == "MODERATE":
+-        score += 2
+-        drivers.append("moderate downside fragility")
+-    score = min(_MAX_SCORE, score)
+-    band = "HIGH" if score >= 6 else "MODERATE" if score >= 3 else "LOW"
+-    return score, band, drivers
++# Leverage thresholds (turns of net debt / EBITDA) and the points each band adds.
++_HIGH_LEVERAGE_TURNS = 6.0
++_HIGH_LEVERAGE_POINTS = 4
++_ELEVATED_LEVERAGE_TURNS = 5.0
++_ELEVATED_LEVERAGE_POINTS = 2
++
++# Downside-fragility labels (from CP-2B) and the points each adds.
++_HIGH_FRAGILITY_POINTS = 4
++_MODERATE_FRAGILITY_POINTS = 2
++
++# Score thresholds that map a raw point total onto the reported band.
++_HIGH_BAND_MIN = 6
++_MODERATE_BAND_MIN = 3
++
++
++def _leverage_contribution(leverage: Optional[float]) -> Tuple[int, Optional[str]]:
++    """Points and driver text contributed by leverage, or (0, None) if it does not qualify.
++
++    Only numeric leverage is scored; ``None`` or a non-numeric value contributes
++    nothing. The two bands are mutually exclusive, so high leverage is checked first.
++    """
++    if not isinstance(leverage, (int, float)):
++        return 0, None
++    if leverage >= _HIGH_LEVERAGE_TURNS:
++        return _HIGH_LEVERAGE_POINTS, f"high leverage {leverage:g}x"
++    if leverage >= _ELEVATED_LEVERAGE_TURNS:
++        return _ELEVATED_LEVERAGE_POINTS, f"elevated leverage {leverage:g}x"
++    return 0, None
++
++
++def _fragility_contribution(fragility: Optional[str]) -> Tuple[int, Optional[str]]:
++    """Points and driver text contributed by downside fragility, or (0, None).
++
++    Labels are matched exactly and case-sensitively; anything other than the two
++    recognised labels contributes nothing.
++    """
++    if fragility == "HIGH":
++        return _HIGH_FRAGILITY_POINTS, "high downside fragility"
++    if fragility == "MODERATE":
++        return _MODERATE_FRAGILITY_POINTS, "moderate downside fragility"
++    return 0, None
++
++
++def score_vulnerability(leverage: Optional[float], fragility: Optional[str]) -> Tuple[int, str, List[str]]:
++    """Score refinancing / LME vulnerability from leverage and downside fragility.
++
++    Returns ``(score, band, drivers)`` where ``score`` is capped at ``_MAX_SCORE``,
++    ``band`` is ``"HIGH"``/``"MODERATE"``/``"LOW"``, and ``drivers`` lists the
++    human-readable reasons in evaluation order (leverage first, then fragility).
++    """
++    score = 0
++    drivers: List[str] = []
++
++    # Each structural driver adds points and, when it qualifies, a reason string.
++    for points, driver in (
++        _leverage_contribution(leverage),
++        _fragility_contribution(fragility),
++    ):
++        score += points
++        if driver is not None:
++            drivers.append(driver)
++
++    # Cap the raw total, then map it onto the reported band.
++    score = min(_MAX_SCORE, score)
++    if score >= _HIGH_BAND_MIN:
++        band = "HIGH"
++    elif score >= _MODERATE_BAND_MIN:
++        band = "MODERATE"
++    else:
++        band = "LOW"
++
++    return score, band, drivers

@@ -1,0 +1,58 @@
+--- a/caos/server/engine/liquidity.py
++++ b/caos/server/engine/liquidity.py
+@@ -11,6 +11,7 @@
+ from __future__ import annotations
+
+ import re
++import math
+ from typing import List, Optional, Tuple
+
+ from engine.periods import latest
+@@ -35,21 +36,53 @@
+             for (label, pattern), cid, text in scan(chunks, _SOURCES)]
+
+
++def _finite_number(x) -> bool:
++    """True only for a real, finite int/float. bool is intentionally kept (it is an
++    int subclass, and False→0 is a valid liquidity that must yield 0.0 months).
++    Rejects NaN and +/-inf, which `isinstance` alone lets through and which would
++    otherwise propagate into the division as garbage. `math.isfinite` accepts any
++    int/float (and bool) and returns False for NaN/inf."""
++    return isinstance(x, (int, float)) and math.isfinite(x)
++
++
+ def _interest_runway_months(disclosed_liquidity: Optional[float], cp1: Optional[ModulePayload]):
+     """Months the disclosed liquidity alone would service cash interest, from CP-1's
+     canonical financials. A liquidity-stress lens (EBITDA→0), NOT a full
+     months-to-empty — that needs amort/capex/maturity uses we don't source. Returns
+     (annual_cash_interest_musd, months) or (None, None) when inputs are absent."""
+-    if not isinstance(disclosed_liquidity, (int, float)) or cp1 is None:
++    # Guard (a): liquidity must be a finite number; cp1 must exist. Widened from the
++    # original isinstance only by also requiring finiteness — every valid (finite)
++    # liquidity, including 0, -500 and False, still passes; NaN/inf liquidity now
++    # degrades to (None, None) instead of producing a NaN/inf month count.
++    if not _finite_number(disclosed_liquidity) or cp1 is None:
+         return None, None
+-    nf = (cp1.runtime_output or {}).get("normalized_financials") or {}
++    # Tolerate a cp1 with no `runtime_output` attribute (getattr, not attribute
++    # access). The live caller passes a real ModulePayload, so this never alters
++    # valid-input behaviour; `... or {}` preserves runtime_output=None → {}.
++    nf = (getattr(cp1, "runtime_output", None) or {}).get("normalized_financials") or {}
+     eb, cov = latest(nf.get("adj_ebitda") or {}), nf.get("interest_coverage_ltm")
+-    if not (isinstance(eb, (int, float)) and isinstance(cov, (int, float)) and cov):
++    # Guard (b): eb and cov finite numbers and cov truthy (non-zero). Finiteness is
++    # the only addition — NaN coverage previously passed isinstance and bool(NaN)
++    # truthiness and yielded eb/NaN = NaN garbage; now rejected. All frozen cases
++    # are finite and unaffected.
++    if not (_finite_number(eb) and _finite_number(cov) and cov):
+         return None, None
+     cash_interest = round(eb / cov, 1)
++    # Guard (c): cash_interest falsy → (None, None). With eb/cov finite and cov
++    # non-zero, cash_interest is finite, so this is the original falsy-zero check
++    # (e.g. eb=0.04/cov=1 → round(0.04,1)=0.0).
+     if not cash_interest:
+         return None, None
++    # months divides by the ALREADY-ROUNDED cash_interest, not raw eb/cov — kept
++    # exactly. Inputs are finite and cash_interest non-zero, so the result cannot
++    # be NaN/inf; no output guard is added (signed zero/negative outputs stay).
+     return cash_interest, round(disclosed_liquidity * 12 / cash_interest, 1)

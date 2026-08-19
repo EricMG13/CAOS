@@ -1,0 +1,90 @@
+--- a/caos/server/engine/downside.py
++++ b/caos/server/engine/downside.py
+@@ -19,46 +19,72 @@ _BREACH_X = 7.0
+
+
++def _stress_scenario(lev: float, cov: Optional[float], shock: float) -> dict:
++    """One EBITDA-decline scenario row (pure, deterministic).
++
++    Net debt is held fixed under the shock, so stressed leverage is just
++    ``lev / (1 - shock)`` — the standard first-order downside sensitivity.
++    Coverage scales linearly with EBITDA; ``None`` if coverage is unavailable.
++    """
++    return {
++        "ebitda_shock_pct": round(shock * 100),
++        "stressed_net_leverage": round(lev / (1 - shock), 2),
++        "stressed_interest_coverage": (
++            round(cov * (1 - shock), 2) if isinstance(cov, (int, float)) else None
++        ),
++    }
++
++
++def _shock_to_breach(scenarios: list) -> Optional[int]:
++    """First scenario's ``ebitda_shock_pct`` whose stressed leverage breaches
++    ``_BREACH_X`` (inclusive), else ``None``.
++
++    Reads the already-rounded ``stressed_net_leverage`` off each row so the
++    breach test matches exactly the figure shown to the analyst.
++    """
++    for row in scenarios:
++        if row["stressed_net_leverage"] >= _BREACH_X:
++            return row["ebitda_shock_pct"]
++    return None
++
++
++def _fragility(lev: float, shock_to_breach: Optional[int]) -> str:
++    """Map current leverage + breach shock onto a fragility band (pure).
++
++    HIGH when already distressed or one mild (<=10%) shock from it; MODERATE
++    when a moderate (<=20%) shock breaches; LOW otherwise.
++    """
++    if lev >= _BREACH_X or (shock_to_breach is not None and shock_to_breach <= 10):
++        return "HIGH"
++    if shock_to_breach is not None and shock_to_breach <= 20:
++        return "MODERATE"
++    return "LOW"
++
++
+ def compute_pathways(nf: dict) -> Optional[dict]:
+     """Leverage/coverage under EBITDA stress, or None if CP-1 gave no leverage.
+
+     Net debt is held fixed under the EBITDA shock, so stressed leverage is just
+     ``current / (1 - shock)`` — the standard first-order downside sensitivity.
++    Composed from pure helpers (``_stress_scenario`` / ``_shock_to_breach`` /
++    ``_fragility``) so each step is independently testable.
+     """
+     lev = nf.get("net_leverage_adj_ltm")
+     if not isinstance(lev, (int, float)):
+         return None
+     cov = nf.get("interest_coverage_ltm")
+
+-    scenarios = []
+-    shock_to_breach: Optional[int] = None
+-    for s in _SHOCKS:
+-        sl = round(lev / (1 - s), 2)
+-        sc = round(cov * (1 - s), 2) if isinstance(cov, (int, float)) else None
+-        scenarios.append({
+-            "ebitda_shock_pct": round(s * 100),
+-            "stressed_net_leverage": sl,
+-            "stressed_interest_coverage": sc,
+-        })
+-        if shock_to_breach is None and sl >= _BREACH_X:
+-            shock_to_breach = round(s * 100)
+-
+-    if lev >= _BREACH_X or (shock_to_breach is not None and shock_to_breach <= 10):
+-        fragility = "HIGH"
+-    elif shock_to_breach is not None and shock_to_breach <= 20:
+-        fragility = "MODERATE"
+-    else:
+-        fragility = "LOW"
++    scenarios = [_stress_scenario(lev, cov, s) for s in _SHOCKS]
++    shock_to_breach = _shock_to_breach(scenarios)
+
+     return {
+         "current_net_leverage": round(float(lev), 2),
+         "breach_threshold_x": _BREACH_X,
+         "scenarios": scenarios,
+         "shock_to_breach_pct": shock_to_breach,
+-        "fragility": fragility,
++        "fragility": _fragility(lev, shock_to_breach),
+     }

@@ -1,0 +1,11 @@
+{$CAOS_DOMAIN} {
+    encode gzip
+    request_body { max_size {$MAX_UPLOAD_MB:250}MiB }
+    request_header -X-Forwarded-User
+    request_header -X-Forwarded-Email
+    request_header -X-Forwarded-Groups
+    request_header -X-Edge-Authorization
+    reverse_proxy oauth2-proxy:4180 {
+        header_up X-Edge-Authorization {$EDGE_PROXY_SECRET}
+    }
+}

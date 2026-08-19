@@ -1,0 +1,43 @@
+def altman_z_double_prime(
+    *,
+    current_assets: float,
+    current_liabilities: float,
+    total_assets: float,
+    retained_earnings: float,
+    ebit: float,
+    total_liabilities: float,
+    book_equity: float,
+) -> Optional[Tuple[float, str]]:
+    """Altman Z''-Score (double-prime / EM-score) and its credit zone.
+
+    Balance-sheet-only distress signal. Returns None when a denominator is
+    unusable (total assets or total liabilities <= 0 — the ratios would be
+    meaningless), otherwise (Z'', zone).
+
+        Z'' = 3.25 + 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4
+
+    where each X-term is a standard balance-sheet ratio:
+
+        X1 = working capital / total assets
+           = (current assets − current liabilities) / total assets   (liquidity)
+        X2 = retained earnings / total assets                        (cumulative profitability / age)
+        X3 = EBIT / total assets                                     (operating return on assets)
+        X4 = book equity / total liabilities                         (leverage / solvency cushion)
+
+    Note X4 divides by total LIABILITIES (not total assets) — that is the
+    book-equity-to-debt cushion, the double-prime variant's distinguishing term.
+
+    Zones use the published Z'' cutoffs (strict inequalities; both boundaries
+    fall in grey): Z'' > 2.6 → safe · 1.1 ≤ Z'' ≤ 2.6 → grey · Z'' < 1.1 → distress.
+    """
+    if total_assets <= 0 or total_liabilities <= 0:
+        return None
+
+    working_capital = current_assets - current_liabilities
+    x1 = working_capital / total_assets        # liquidity
+    x2 = retained_earnings / total_assets       # cumulative profitability
+    x3 = ebit / total_assets                    # operating return on assets
+    x4 = book_equity / total_liabilities        # solvency cushion (equity / DEBT)
+
+    z = round(3.25 + 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4, 2)
+    return z, zone_for(z)

@@ -1,0 +1,60 @@
+allOf $ref CP_MODULE_PAYLOAD_BASE.schema.txt
+properties
+  module_id const CP-X
+  module_name const PlannerRouter
+  owned_object const route_plan
+  schema_family const Nested
+  runtime_output type object properties
+    source_gate type object properties
+      cp0_available type boolean
+      cp0_status enum Complete Partial Blocked
+      cpx_gate_status enum Full Run Ready with Limitations Blocked
+    execution_sequence type array items type object
+      additionalProperties false
+      required order module_id module_name layer readiness depends_on
+      properties
+        order type integer
+        module_id type string
+        module_name type string
+        layer type string
+        readiness enum Full Run Ready with Limitations Blocked
+        depends_on type array items type string
+    module_readiness_register type array items type object
+      additionalProperties false
+      required module_id module_name readiness_status source_dependencies_met
+        limitation_flags blocking_reason
+      properties
+        module_id type string
+        module_name type string
+        readiness_status enum Full Run Ready with Limitations Blocked
+        source_dependencies_met enum Yes Partial No
+        limitation_flags type array items type string
+        blocking_reason type string null
+    ownership_validation type array items type object
+      additionalProperties false
+      required owned_object owning_module conflict_detected resolution
+      properties
+        owned_object type string
+        owning_module type string
+        conflict_detected type boolean
+        resolution type string null
+    source_routing_map type array items type object properties
+      source_document type string
+      source_quality type string
+      modules_supported type array items type string
+      limitation type string null
+    limitation_propagation type array items type object properties
+      limitation type string
+      source type string
+      affected_modules type array items type string
+      impact type string
+      propagated_flag type string
+    route_plan_summary type object properties
+      total_modules type integer
+      full_run_count type integer
+      limited_count type integer
+      blocked_count type integer
+      first_module type string
+      last_module type string
+      ownership_conflicts type integer
+      limitations_propagated type integer

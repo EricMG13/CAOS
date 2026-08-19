@@ -1,0 +1,37 @@
+{
+  "base": "http://127.0.0.1:4176",
+  "nativeZoom": 2,
+  "httpFailures": [],
+  "results": [
+    {
+      "route": "/pipeline",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": { "dpr": 4, "innerWidth": 720, "innerHeight": 456, "outerWidth": 1440, "outerHeight": 1000, "visualScale": 1, "visualWidth": 720 },
+      "layout": { "documentOverflow": 0, "clippedControls": [], "askRegionCount": 1, "phoneAskCount": 0, "askEntries": [{ "label": "Ask CAOS utility", "tag": "BUTTON", "disabled": false }] },
+      "shortcutEvent": { "key": "k", "code": "KeyK", "altKey": true },
+      "askDialog": "ATLF · Issuer Q&A",
+      "askOpenedByAltK": true
+    },
+    {
+      "route": "/monitor",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": { "dpr": 4, "innerWidth": 720, "innerHeight": 456, "outerWidth": 1440, "outerHeight": 1000, "visualScale": 1, "visualWidth": 720 },
+      "layout": { "documentOverflow": 0, "clippedControls": [], "askRegionCount": 1, "phoneAskCount": 0, "askEntries": [{ "label": "Ask CAOS utility", "tag": "BUTTON", "disabled": false }] },
+      "shortcutEvent": { "key": "k", "code": "KeyK", "altKey": true },
+      "askDialog": "Ask with Query",
+      "askOpenedByAltK": true
+    },
+    {
+      "route": "/settings",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": { "dpr": 4, "innerWidth": 720, "innerHeight": 456, "outerWidth": 1440, "outerHeight": 1000, "visualScale": 1, "visualWidth": 720 },
+      "layout": { "documentOverflow": 0, "clippedControls": [], "askRegionCount": 1, "phoneAskCount": 0, "askEntries": [{ "label": "Ask CAOS utility", "tag": "BUTTON", "disabled": false }] },
+      "shortcutEvent": { "key": "k", "code": "KeyK", "altKey": true },
+      "askDialog": "Ask with Query",
+      "askOpenedByAltK": true
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# Append-only logs: take both sides instead of conflicting.
+#
+# CLAUDE.md requires every branch to append to these two files — a red-team critic
+# pass before any architecture decision, and a skill observation whenever guidance
+# proves wrong. Doing what the guide asks therefore guaranteed a merge conflict:
+# every branch appends at the tail, so every branch collides there with every other.
+#
+# On 2026-07-26 all three of the live conflicting PRs (#219, #220, #221) conflicted
+# on redteam.md and nothing else. Each was a pure append — 19, 146 and 19 lines
+# added, zero deleted. The conflicts carried no information; they were an artifact of
+# two branches growing the same list.
+#
+# `merge=union` is a git built-in that keeps both sides' lines. It suits these files
+# precisely because the edits are append-only: with no deletions there is nothing for
+# union to mangle.
+#
+# Caveat, so nobody is surprised: union is line-based and structure-blind. If two
+# branches ever *edit* the same existing entry rather than appending a new one, union
+# keeps both versions and you get a duplicated passage instead of a conflict marker
+# telling you to choose. For a growing log that trade is worth it; do not extend
+# merge=union to source files, where a silent both-sides merge is how you get code
+# that compiles and is wrong.
+.agent-reviews/redteam.md merge=union
+skill-observations/observation-log.md merge=union

@@ -1,0 +1,15 @@
+{
+  "generatedAt": "2026-07-19T20:06:19.865Z",
+  "harness": "caos/frontend/scripts/validate-task4a-portfolio-sector.mjs",
+  "base": "http://127.0.0.1:4175",
+  "viewportMatrix": [
+    { "width": 1440, "height": 900, "documentOverflow": 0, "menuRect": { "left": 1280.640625, "right": 1424.640625, "top": 272.21875, "bottom": 346.21875, "width": 144, "height": 74 }, "fullyVisible": true, "ownerIsHorizontalScroller": false },
+    { "width": 1280, "height": 900, "documentOverflow": 0, "menuRect": { "left": 1121.796875, "right": 1265.796875, "top": 269.90625, "bottom": 343.90625, "width": 144, "height": 74 }, "fullyVisible": true, "ownerIsHorizontalScroller": false },
+    { "width": 1024, "height": 900, "documentOverflow": 0, "menuRect": { "left": 867, "right": 1011, "top": 267.5, "bottom": 341.5, "width": 144, "height": 74 }, "fullyVisible": true, "ownerIsHorizontalScroller": false },
+    { "width": 768, "height": 900, "documentOverflow": 0, "menuRect": { "left": 611, "right": 755, "top": 304.5, "bottom": 378.5, "width": 144, "height": 74 }, "fullyVisible": true, "ownerIsHorizontalScroller": false }
+  ],
+  "nativeZoom": [
+    { "route": "/portfolios", "nativeZoomControl": 2, "observedZoom": 2, "metrics": { "innerWidth": 720, "innerHeight": 456, "outerWidth": 1440, "outerHeight": 1000, "dpr": 4, "visualScale": 1, "documentOverflow": 0 }, "bespokeEyebrows": 0 },
+    { "route": "/sector", "nativeZoomControl": 2, "observedZoom": 2, "metrics": { "innerWidth": 720, "innerHeight": 456, "outerWidth": 1440, "outerHeight": 1000, "dpr": 4, "visualScale": 1, "documentOverflow": 0 }, "menuRect": { "left": 556, "right": 700, "top": 255.75, "bottom": 353.75, "width": 144, "height": 98 }, "fullyVisible": true, "ownerIsHorizontalScroller": false }
+  ]
+}

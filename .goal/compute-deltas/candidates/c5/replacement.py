@@ -1,0 +1,83 @@
+def _margin(r, e) -> Optional[float]:
+    """EBITDA margin for one period, or None.
+
+    ``round(100 * e / r, 1)`` iff the revenue ``r`` is numeric *and truthy* and
+    the EBITDA ``e`` is numeric; else None. The truthy ``r`` guard rejects a 0 (or
+    0.0) revenue — which would otherwise divide-by-zero — and a negative ``r``
+    yields a negative margin, matching the original expression byte-for-byte.
+    Pure and independently testable: no rows, no period context.
+    """
+    if isinstance(r, (int, float)) and r and isinstance(e, (int, float)):
+        return round(100 * e / r, 1)
+    return None
+
+
+def _signals(
+    rev_yoy: Optional[Tuple[float, str, str]],
+    eb_yoy: Optional[Tuple[float, str, str]],
+    margin_change: Optional[float],
+) -> List[str]:
+    """The deterioration monitoring strings, in canonical order.
+
+    Order is fixed: revenue decline, then EBITDA decline, then margin
+    compression. A ``*_yoy`` triple is ``(pct, prior, latest)`` (see ``_yoy``) or
+    None; ``margin_change`` is the YoY margin delta in points or None. Each branch
+    reproduces the original f-strings exactly (``:g`` formatting, the ``→``
+    arrow, the ``%``/``pp`` units). Pure: depends only on its three arguments, so
+    every emitted string is exercisable in isolation.
+    """
+    out: List[str] = []
+    if rev_yoy and rev_yoy[0] < 0:
+        out.append(f"Revenue declined {abs(rev_yoy[0]):g}% YoY ({rev_yoy[1]}→{rev_yoy[2]}).")
+    if eb_yoy and eb_yoy[0] < 0:
+        out.append(f"Adjusted EBITDA declined {abs(eb_yoy[0]):g}% YoY ({eb_yoy[1]}→{eb_yoy[2]}).")
+    if margin_change is not None and margin_change <= -_MARGIN_COMPRESSION_PP:
+        out.append(f"EBITDA margin compressed {abs(margin_change):g}pp YoY.")
+    return out
+
+
+def _margin_change(rows: List[dict]) -> Optional[float]:
+    """YoY change in EBITDA margin (points) over the last two numeric margins,
+    rounded half-even, or None when fewer than two periods carry a margin. Pure."""
+    margins = [r["ebitda_margin"] for r in rows if isinstance(r.get("ebitda_margin"), (int, float))]
+    if len(margins) < 2:
+        return None
+    return round(margins[-1] - margins[-2], 1)
+
+
+def compute_deltas(normalized_financials: dict) -> dict:
+    """Period rows + the YoY delta summary + monitoring signals (pure).
+
+    Composes the independently-testable pieces: ``_margin`` per period,
+    ``_yoy`` for each series, ``_margin_change`` over the rows, and ``_signals``
+    for the deterioration strings. No hidden state; deterministic.
+    """
+    rev = normalized_financials.get("revenue") or {}
+    eb = normalized_financials.get("adj_ebitda") or {}
+    periods = sorted(set(rev) | set(eb), key=sort_key)
+
+    rows: List[dict] = [
+        {
+            "period": p,
+            "revenue": rev.get(p),
+            "adj_ebitda": eb.get(p),
+            "ebitda_margin": _margin(rev.get(p), eb.get(p)),
+        }
+        for p in periods
+    ]
+
+    rev_yoy = _yoy(rows, "revenue")
+    eb_yoy = _yoy(rows, "adj_ebitda")
+    margin_change = _margin_change(rows)
+
+    summary = {
+        "revenue_growth_pct": rev_yoy[0] if rev_yoy else None,
+        "ebitda_growth_pct": eb_yoy[0] if eb_yoy else None,
+        "margin_change_pp": margin_change,
+        "latest_period": rows[-1]["period"] if rows else None,
+        "prior_period": rows[-2]["period"] if len(rows) >= 2 else None,
+    }
+
+    signals = _signals(rev_yoy, eb_yoy, margin_change)
+
+    return {"periods": rows, "summary": summary, "monitoring_signals": signals}

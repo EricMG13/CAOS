@@ -1,0 +1,23 @@
+{
+  "projectId": "ad22b2d1-c6f5-45cb-acf8-51e178925ab6",
+  "shape": "package",
+  "pkg": "caos-frontend",
+  "globalName": "CAOS",
+  "srcDir": "src/components",
+  "cssEntry": ".ds-tailwind.css",
+  "tsconfig": "tsconfig.sync.json",
+  "readmeHeader": ".design-sync/conventions.md",
+  "componentSrcMap": {
+    "LineagePanel": null,
+    "G2Chart": null,
+    "EvChip": null
+  },
+  "overrides": {
+    "Panel": { "cardMode": "column" },
+    "SectionHeader": { "cardMode": "column" },
+    "PageSubHeader": { "cardMode": "column" }
+  },
+  "libOverrides": {
+    "source-kit.mjs": "synth entry: explicit per-component re-exports so default exports and ESM-ambiguous duplicate names bind to window.CAOS"
+  }
+}

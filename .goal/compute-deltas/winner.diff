@@ -1,0 +1,135 @@
+--- a/caos/server/engine/earnings.py
++++ b/caos/server/engine/earnings.py
+@@ -35,38 +35,110 @@
+ 
+ 
+ def compute_deltas(normalized_financials: dict) -> dict:
+-    """Period rows + the YoY delta summary + monitoring signals (pure)."""
+-    rev = normalized_financials.get("revenue") or {}
+-    eb = normalized_financials.get("adj_ebitda") or {}
+-    periods = sorted(set(rev) | set(eb), key=sort_key)
++    """Period rows + the YoY delta summary + monitoring signals (pure).
+ 
++    Reads CP-1's multi-period revenue and adjusted-EBITDA series and reports the
++    "what changed" view a credit analyst tracks period over period:
++
++      * **EBITDA margin** for each period — adjusted EBITDA as a percent of
++        revenue (``100 * adj_ebitda / revenue``), the unit profitability read.
++      * **YoY growth** for revenue and adjusted EBITDA — the *percent* change
++        between the last two comparable periods (each carrying a numeric value).
++      * **Margin change** — the latest margin minus the prior margin, measured in
++        percentage *points* (``pp``). This is deliberately distinct from the
++        growth figures: a margin moving 25.0% -> 22.2% is a 2.8pp compression, not
++        an 11% drop. Points vs. percent must never be conflated on a credit desk.
++
++    Then it raises the three early-warning deterioration signals an analyst
++    watches, in the order they read on a tear sheet: declining revenue, declining
++    adjusted EBITDA, and margin compression of at least the watch threshold
++    (``_MARGIN_COMPRESSION_PP`` = 1.0pp). These feed CP-2/CP-2B and the
++    informational CP-1B-MONITOR finding.
++    """
++    # --- CP-1 inputs: revenue and adjusted-EBITDA series keyed by period -----
++    revenue_by_period = normalized_financials.get("revenue") or {}
++    adj_ebitda_by_period = normalized_financials.get("adj_ebitda") or {}
++
++    # Every period either series mentions, ordered oldest -> newest by the
++    # corpus period ordering (FY23 before FY24, Q1 before Q2, ...).
++    periods = sorted(
++        set(revenue_by_period) | set(adj_ebitda_by_period), key=sort_key
++    )
++
++    # --- Per-period rows, each carrying its EBITDA margin --------------------
+     rows: List[dict] = []
+-    for p in periods:
+-        r, e = rev.get(p), eb.get(p)
+-        margin = (round(100 * e / r, 1)
+-                  if isinstance(r, (int, float)) and r and isinstance(e, (int, float)) else None)
+-        rows.append({"period": p, "revenue": r, "adj_ebitda": e, "ebitda_margin": margin})
++    for period in periods:
++        revenue = revenue_by_period.get(period)
++        adj_ebitda = adj_ebitda_by_period.get(period)
+ 
+-    rev_yoy = _yoy(rows, "revenue")
+-    eb_yoy = _yoy(rows, "adj_ebitda")
+-    margins = [r["ebitda_margin"] for r in rows if isinstance(r.get("ebitda_margin"), (int, float))]
+-    margin_change = round(margins[-1] - margins[-2], 1) if len(margins) >= 2 else None
++        # EBITDA margin = adj EBITDA as a % of revenue. Computable only when
++        # revenue is numeric AND non-zero (the ÷0 guard — a zero/None top line
++        # has no margin) and EBITDA is numeric. Non-numeric values are skipped,
++        # not coerced; a negative revenue legitimately yields a negative margin.
++        if (
++            isinstance(revenue, (int, float))
++            and revenue
++            and isinstance(adj_ebitda, (int, float))
++        ):
++            ebitda_margin = round(100 * adj_ebitda / revenue, 1)
++        else:
++            ebitda_margin = None
+ 
++        rows.append(
++            {
++                "period": period,
++                "revenue": revenue,
++                "adj_ebitda": adj_ebitda,
++                "ebitda_margin": ebitda_margin,
++            }
++        )
++
++    # --- YoY growth (percent change over the last two comparable periods) ----
++    revenue_yoy = _yoy(rows, "revenue")
++    ebitda_yoy = _yoy(rows, "adj_ebitda")
++
++    # --- Margin change in percentage POINTS (latest margin - prior margin) ---
++    # Difference of two margins, not a percent change — so it is reported in pp.
++    comparable_margins = [
++        row["ebitda_margin"]
++        for row in rows
++        if isinstance(row.get("ebitda_margin"), (int, float))
++    ]
++    if len(comparable_margins) >= 2:
++        margin_change_pp = round(comparable_margins[-1] - comparable_margins[-2], 1)
++    else:
++        margin_change_pp = None
++
+     summary = {
+-        "revenue_growth_pct": rev_yoy[0] if rev_yoy else None,
+-        "ebitda_growth_pct": eb_yoy[0] if eb_yoy else None,
+-        "margin_change_pp": margin_change,
++        "revenue_growth_pct": revenue_yoy[0] if revenue_yoy else None,
++        "ebitda_growth_pct": ebitda_yoy[0] if ebitda_yoy else None,
++        "margin_change_pp": margin_change_pp,
+         "latest_period": rows[-1]["period"] if rows else None,
+         "prior_period": rows[-2]["period"] if len(rows) >= 2 else None,
+     }
+ 
++    # --- Deterioration signals an analyst watches (order is intentional) -----
+     signals: List[str] = []
+-    if rev_yoy and rev_yoy[0] < 0:
+-        signals.append(f"Revenue declined {abs(rev_yoy[0]):g}% YoY ({rev_yoy[1]}→{rev_yoy[2]}).")
+-    if eb_yoy and eb_yoy[0] < 0:
+-        signals.append(f"Adjusted EBITDA declined {abs(eb_yoy[0]):g}% YoY ({eb_yoy[1]}→{eb_yoy[2]}).")
+-    if margin_change is not None and margin_change <= -_MARGIN_COMPRESSION_PP:
+-        signals.append(f"EBITDA margin compressed {abs(margin_change):g}pp YoY.")
++    # 1. Top line shrinking YoY.
++    if revenue_yoy and revenue_yoy[0] < 0:
++        signals.append(
++            f"Revenue declined {abs(revenue_yoy[0]):g}% YoY "
++            f"({revenue_yoy[1]}→{revenue_yoy[2]})."
++        )
++    # 2. Earnings shrinking YoY.
++    if ebitda_yoy and ebitda_yoy[0] < 0:
++        signals.append(
++            f"Adjusted EBITDA declined {abs(ebitda_yoy[0]):g}% YoY "
++            f"({ebitda_yoy[1]}→{ebitda_yoy[2]})."
++        )
++    # 3. Margin compressing by at least the watch threshold (inclusive at 1.0pp).
++    if (
++        margin_change_pp is not None
++        and margin_change_pp <= -_MARGIN_COMPRESSION_PP
++    ):
++        signals.append(
++            f"EBITDA margin compressed {abs(margin_change_pp):g}pp YoY."
++        )
+ 
+     return {"periods": rows, "summary": summary, "monitoring_signals": signals}
+ 

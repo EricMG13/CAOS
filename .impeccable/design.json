@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-28T23:41:10Z",
+  "title": "Design System: CAOS - Credit Agent OS",
+  "extensions": {
+    "colorMeta": {
+      "workspace-bg": {
+        "role": "neutral",
+        "displayName": "Black Workspace",
+        "canonical": "#0a0a0f",
+        "tonalRamp": ["#050507", "#0a0a0f", "#11131d", "#1d2030", "#34384a", "#3f3f46", "#a1a1b5", "#e6e6ef"]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Panel Surface",
+        "canonical": "#11131d",
+        "tonalRamp": ["#050507", "#0a0a0f", "#11131d", "#1d2030", "#34384a", "#3f3f46", "#a1a1b5", "#e6e6ef"]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Desk Accent",
+        "canonical": "#63a1ff",
+        "tonalRamp": ["#061226", "#102a55", "#1f579f", "#3b7ee6", "#63a1ff", "#99c2ff", "#cce0ff", "#edf4ff"]
+      },
+      "warning": {
+        "role": "status",
+        "displayName": "Warning Amber",
+        "canonical": "#f5a524",
+        "tonalRamp": ["#251504", "#4a2a07", "#7a470d", "#b97015", "#f5a524", "#f8bf55", "#fadf9c", "#fff7df"]
+      },
+      "critical": {
+        "role": "status",
+        "displayName": "Critical Red",
+        "canonical": "#ef4444",
+        "tonalRamp": ["#2b0707", "#5a1111", "#911d1d", "#c93131", "#ef4444", "#f87171", "#fecaca", "#fff1f1"]
+      },
+      "success": {
+        "role": "status",
+        "displayName": "Success Green",
+        "canonical": "#22c55e",
+        "tonalRamp": ["#041c0d", "#073819", "#0d6b31", "#16a34a", "#22c55e", "#4ade80", "#bbf7d0", "#f0fdf4"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Filed Paper",
+        "canonical": "#f7f5ee",
+        "tonalRamp": ["#16161e", "#5c5c66", "#8e8c80", "#b9b6aa", "#e0ddd2", "#f7f5ee", "#fbfaf6", "#ffffff"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Single focal answer only: verdicts, anchor metrics, or committee decisions."
+      },
+      "body": {
+        "displayName": "Dense Body",
+        "purpose": "Workspace cells, rails, panels, and tool copy."
+      },
+      "label": {
+        "displayName": "Mono Label",
+        "purpose": "Captions, ids, dates, ratings, and tabular financial metadata."
+      },
+      "output-title": {
+        "displayName": "Filed Output Title",
+        "purpose": "21px paper-only report and research deliverable title. Never workspace chrome."
+      },
+      "output-section": {
+        "displayName": "Filed Output Section",
+        "purpose": "14px paper-only section hierarchy for print and filed output."
+      },
+      "output-body": {
+        "displayName": "Filed Output Body",
+        "purpose": "13px paper-only narrative copy with print-readable leading."
+      },
+      "output-meta": {
+        "displayName": "Filed Output Meta",
+        "purpose": "8.5px mono paper-only mastheads, dates, ids, and source metadata."
+      },
+      "output-table-label": {
+        "displayName": "Filed Output Table Label",
+        "purpose": "7.8px mono paper-only compact table headers."
+      },
+      "appendix-micro-scale": {
+        "displayName": "Full Model Appendix Micro Scale",
+        "purpose": "Fit-to-page exception: 14px title, 7px metadata, 6.5px submetadata, and 5.2 to 5.9px table text."
+      },
+      "emergency-scale": {
+        "displayName": "CSS Independent Emergency Scale",
+        "purpose": "Root error boundary only: 1.125rem title, 0.75rem body, and 0.875rem action when application CSS is unavailable."
+      },
+      "mobile-readable-min": {
+        "displayName": "Mobile Readable Minimum",
+        "purpose": "12px forced minimum for compact labels at phone breakpoints."
+      },
+      "narrative-subhead": {
+        "displayName": "Narrative Subhead",
+        "purpose": "0.95rem semantic heading inside rendered Markdown narrative."
+      },
+      "output-watermark": {
+        "displayName": "Filed Output Watermark",
+        "purpose": "26px mono watermark inside filed paper output only."
+      }
+    },
+    "shadows": [
+      {
+        "name": "modal",
+        "value": "0 24px 80px -24px rgba(0, 0, 0, 0.9)",
+        "purpose": "Large dialogs and evidence modals."
+      },
+      {
+        "name": "popover",
+        "value": "0 8px 28px -10px rgba(0, 0, 0, 0.8)",
+        "purpose": "Filters, menus, and compact floating tools."
+      },
+      {
+        "name": "paper",
+        "value": "0 24px 70px -24px rgba(0,0,0,0.85)",
+        "purpose": "Report Studio and research document sheets."
+      }
+    ],
+    "motion": [
+      {
+        "name": "transition-caos",
+        "value": "160ms ease-out",
+        "purpose": "Default state change timing for background, border, color, shadow, and transform."
+      },
+      {
+        "name": "running-pulse",
+        "value": "1.6s ease-in-out infinite",
+        "purpose": "Live/running state only; disabled under reduced motion."
+      }
+    ],
+    "breakpoints": [
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" },
+      { "name": "2xl", "value": "1536px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "The canonical CAOS frame: fixed header, bordered panel, focusable scroll body.",
+      "html": "<section class=\"ds-panel\"><header class=\"ds-panel-head\"><h2>Coverage</h2><span>LIVE</span></header><div class=\"ds-panel-body\">Panel content</div></section>",
+      "css": ".ds-panel{background:var(--caos-panel);color:var(--caos-text);border:1px solid var(--caos-border);border-radius:6px;display:flex;flex-direction:column;min-height:120px;overflow:hidden}.ds-panel-head{height:32px;padding:0 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--caos-border)}.ds-panel-head h2{margin:0;flex:1;color:var(--caos-muted);font:600 10.5px var(--font-sans),system-ui,sans-serif;letter-spacing:.12em;text-transform:uppercase}.ds-panel-head span{color:var(--caos-accent);font:500 8.5px var(--font-mono),ui-monospace,monospace;letter-spacing:.08em}.ds-panel-body{padding:12px;overflow:auto;font:400 10.5px var(--font-sans),system-ui,sans-serif}"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Committed action or active navigation state.",
+      "html": "<button class=\"ds-btn-primary\">Run query</button>",
+      "css": ".ds-btn-primary{border:1px solid var(--caos-accent);border-radius:6px;background:var(--caos-accent);color:var(--caos-bg);padding:4px 8px;font:600 9.5px var(--font-mono),ui-monospace,monospace;letter-spacing:.02em;transition:background-color 160ms ease-out,border-color 160ms ease-out,color 160ms ease-out,box-shadow 160ms ease-out}.ds-btn-primary:hover{background:#99c2ff;border-color:#99c2ff}.ds-btn-primary:focus-visible{outline:2px solid var(--caos-accent);outline-offset:2px}.ds-btn-primary:active{background:#3b7ee6}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Secondary action, filter chip, or compact tool command.",
+      "html": "<button class=\"ds-btn-ghost\">Clear</button>",
+      "css": ".ds-btn-ghost{border:1px solid var(--caos-border);border-radius:6px;background:transparent;color:var(--caos-muted);padding:4px 8px;font:500 9.5px var(--font-mono),ui-monospace,monospace;transition:background-color 160ms ease-out,border-color 160ms ease-out,color 160ms ease-out}.ds-btn-ghost:hover{background:var(--caos-elevated);border-color:color-mix(in srgb,var(--caos-accent) 50%,var(--caos-border));color:var(--caos-text)}.ds-btn-ghost:focus-visible{outline:2px solid var(--caos-accent);outline-offset:2px}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Shared single-line field for search, chat, query, and scenario prompts.",
+      "html": "<label class=\"ds-field\"><span>Issuer</span><input placeholder=\"Search issuer\" /></label>",
+      "css": ".ds-field{display:grid;gap:4px;color:var(--caos-text)}.ds-field span{color:var(--caos-muted);font:500 8.5px var(--font-mono),ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase}.ds-field input{background:var(--caos-bg);border:1px solid var(--caos-border);border-radius:6px;color:var(--caos-text);padding:6px 10px;font:400 10.5px var(--font-sans),system-ui,sans-serif;outline:none;transition:border-color 160ms ease-out,box-shadow 160ms ease-out}.ds-field input::placeholder{color:var(--caos-muted)}.ds-field input:focus-visible{border-color:color-mix(in srgb,var(--caos-accent) 70%,var(--caos-border));outline:2px solid var(--caos-accent);outline-offset:2px}"
+    },
+    {
+      "name": "Concept Nav Chip",
+      "kind": "nav",
+      "refersTo": "chip-active",
+      "description": "Compact cross-concept navigation with inline SVG icon and active inversion.",
+      "html": "<a class=\"ds-nav-chip\" href=\"#\"><svg viewBox=\"0 0 14 14\" width=\"12\" height=\"12\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><rect x=\"1.6\" y=\"1.6\" width=\"4.3\" height=\"4.3\" rx=\"1\"/><rect x=\"8.1\" y=\"1.6\" width=\"4.3\" height=\"4.3\" rx=\"1\"/><rect x=\"1.6\" y=\"8.1\" width=\"4.3\" height=\"4.3\" rx=\"1\"/><rect x=\"8.1\" y=\"8.1\" width=\"4.3\" height=\"4.3\" rx=\"1\"/></svg><span>Command</span></a>",
+      "css": ".ds-nav-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--caos-accent);border-radius:6px;background:var(--caos-accent);color:var(--caos-bg);padding:4px 8px;text-decoration:none;white-space:nowrap;font:600 9.5px var(--font-mono),ui-monospace,monospace;transition:background-color 160ms ease-out,border-color 160ms ease-out,color 160ms ease-out}.ds-nav-chip:hover{background:#99c2ff;border-color:#99c2ff}.ds-nav-chip:focus-visible{outline:2px solid var(--caos-accent);outline-offset:2px}.ds-nav-chip svg{flex:0 0 auto}"
+    },
+    {
+      "name": "Stat Card",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Compact metric block for KPIs, model outputs, and covenant checks.",
+      "html": "<div class=\"ds-stat\"><div class=\"ds-stat-value\">5.2x</div><div class=\"ds-stat-label\">Net leverage</div><div class=\"ds-stat-sub\">FY27e base</div></div>",
+      "css": ".ds-stat{min-width:0;border:1px solid var(--caos-border);border-radius:6px;background:var(--caos-bg);padding:8px 12px;color:var(--caos-text)}.ds-stat-value{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--caos-text);font:500 16px/1.15 var(--font-mono),ui-monospace,monospace;font-variant-numeric:tabular-nums}.ds-stat-label{margin-top:2px;color:var(--caos-muted);font:400 9.5px var(--font-sans),system-ui,sans-serif}.ds-stat-sub{margin-top:2px;color:var(--caos-muted);font:500 8.5px var(--font-mono),ui-monospace,monospace}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Committee Terminal",
+    "overview": "CAOS is a refined institutional terminal for buy-side credit analysts. It should feel calm enough for investment committee work, live enough for desk posture, and exact enough that every number reads as traceable rather than decorative.\n\nThe workspace is dark, dense, and single-mode. Density is earned with fixed panel chrome, aligned numerics, small labels, and restrained state color. The Report Studio and research documents deliberately invert the workspace into light paper: ink on cream, file-ready, and visually distinct from the live analytical surface.\n\nCAOS explicitly rejects friendly consumer SaaS, oversized marketing dashboards, pastel card layouts, decorative gradients, glow effects, and raw terminal dumps. The product can be dense, but it must always be organized.",
+    "keyCharacteristics": [
+      "Dense analytical hierarchy with a 32px panel header as the structural unit.",
+      "Color reserved for state, selection, seniority, and evidence lineage.",
+      "Mono numerics and small uppercase labels for desk-readable precision.",
+      "Motion only for live, running, selected, or changed state.",
+      "Light paper output only inside Report Studio and research deliverables."
+    ],
+    "rules": [
+      {
+        "name": "The Signal-Only Color Rule",
+        "body": "Accent and semantic colors are forbidden as decoration. They mean action, selection, status, seniority, or lineage.",
+        "section": "colors"
+      },
+      {
+        "name": "The Dark Workspace Rule",
+        "body": "Analytical surfaces stay in the dark single-mode palette. Light surfaces are reserved for filed output and research paper views.",
+        "section": "colors"
+      },
+      {
+        "name": "The Numeric Truth Rule",
+        "body": "Financial values, ids, ratings, dates, and confidence scores use mono tabular styling so columns scan and decimals align.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Display Labels Rule",
+        "body": "Product labels, buttons, table headers, and nav chips never use display sizing or decorative typography.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-Until-Floating Rule",
+        "body": "A resting panel gets a border, not a shadow. Shadow means the object floats above the workflow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use workspace-bg, panel, elevated, and border as the core surface ladder.",
+      "Do keep dense financial values in mono tabular type.",
+      "Do pair every semantic color with a label, glyph, or spatial convention.",
+      "Do use the shared Panel, TextInput, ScopeToggle, StatusGlyph, and ConceptNav patterns before inventing new chrome.",
+      "Do honor reduced motion. Running pulse and flash cues must stop under prefers-reduced-motion.",
+      "Do reserve Paper Surface and Paper Ink for Report Studio and research deliverables."
+    ],
+    "donts": [
+      "Don't drift toward friendly consumer SaaS.",
+      "Don't create oversized marketing dashboards.",
+      "Don't use pastel card layouts.",
+      "Don't add decorative gradients, glow effects, or glassmorphism.",
+      "Don't ship raw terminal dumps. Density must stay organized.",
+      "Don't encode status or tranche meaning by color alone.",
+      "Don't use emoji in product chrome.",
+      "Don't add shadows to ordinary panels or cards.",
+      "Don't use side-stripe borders, gradient text, huge rounded cards, or identical decorative card grids."
+    ]
+  }
+}

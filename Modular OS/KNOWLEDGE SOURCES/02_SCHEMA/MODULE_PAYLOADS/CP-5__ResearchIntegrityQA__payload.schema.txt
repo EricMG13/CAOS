@@ -1,0 +1,45 @@
+allOf $ref CP_MODULE_PAYLOAD_BASE.schema.txt
+properties
+  module_id const CP-5
+  module_name const ResearchIntegrityQA
+  owned_object const qa_result
+  schema_family const Nested
+  runtime_output type object properties
+    qa_scope type object properties
+      modules_reviewed type array items type string
+      run_id type string
+      review_date type string format date
+    qa_findings_register type array items type object
+      additionalProperties false
+      required finding_id severity category description affected_module_id
+        affected_claim_id remediation_required
+      properties
+        finding_id type string
+        severity enum CRITICAL MATERIAL MINOR
+        category enum unsupported_claim missing_evidence_trace
+          unsupported_calculation source_conflict malformed_schema
+          qa_blocked_upstream cross_module_ownership fabrication_detected
+          taxonomy_violation other
+        description type string
+        affected_module_id type string
+        affected_claim_id type string null
+        remediation_required type boolean
+        remediation_description type string null
+    severity_engine_summary type object properties
+      critical_count type integer
+      material_count type integer
+      minor_count type integer
+      qa_status_determination enum Not Reviewed Passed Restricted Blocked
+    committee_readiness_gate type object properties
+      committee_status enum Committee Ready Draft Only Requires More Work
+        Insufficient Information Restricted Blocked
+      gate_rationale type string
+      unresolved_critical_findings type integer
+    cross_module_consistency_check type object properties
+      modules_checked type array items type string
+      inconsistencies_found type array items type object properties
+        module_a type string
+        module_b type string
+        field type string
+        description type string
+    required_remediation type array items type string

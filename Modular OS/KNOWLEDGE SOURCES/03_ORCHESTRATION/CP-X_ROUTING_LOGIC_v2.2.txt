@@ -1,0 +1,5 @@
+CP-X ROUTING LOGIC v2.2 (27 modules, J2)
+Minimal sufficient path. (a) CP-0 readiness (b) ownership match (c) upstream satisfied.
+OWNERSHIP: CP-0:source_readiness_register CP-1:canonical_financial_data_kpis CP-1A:business_transaction_fact_register CP-1B:earnings_delta CP-1C:peer_benchmark CP-2:fundamental_credit_synthesis CP-2B:downside_pathway CP-2C:event_catalyst_register CP-2D:governance_sponsor_score CP-2E:liquidity_cash_flow_bridge CP-2F:macro_fx_hedging_sensitivity CP-2G:esg_credit_risk CP-3:relative_value_security_selection CP-3B:recovery_instrument_preference CP-3C:portfolio_fit_position_sizing CP-3D:refinancing_lme_risk CP-4:legal_covenant_interpretation CP-4D:structural_priority_map CP-4C:covenant_capacity_calculation CP-5:qa_result CP-5B:evidence_trace_validation CP-6A:ic_debate_challenge CP-6E:portfolio_debate_challenge CP-X:route_plan CP-DB:compiled_database_record CP-RENDER:committee_report CP-EXTRACT:extraction_envelope
+BLOCKING: All Not Available->block all. Upstream Blocked->dependents blocked.
+LEGACY: M1->CP-1 M2->CP-2 M2B->CP-2B M3->CP-3 M3B->CP-3B M3C->CP-3C M3D->CP-3D M4->CP-4 M4C->CP-4C M5->CP-5 M5B->CP-5B M6->CP-6A/6E M7->CP-DB

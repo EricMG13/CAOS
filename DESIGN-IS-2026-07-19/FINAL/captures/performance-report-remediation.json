@@ -1,0 +1,222 @@
+{
+  "base": "http://127.0.0.1:4175",
+  "generatedAt": "2026-07-20T06:42:16.144Z",
+  "profiles": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "cpuRate": 1,
+      "network": null,
+      "scanErrors": 0,
+      "summary": {
+        "readyMs": {
+          "median": 588.4,
+          "p75": 588.4,
+          "p95": 588.4,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "fcpMs": {
+          "median": 36,
+          "p75": 36,
+          "p95": 36,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "lcpMs": {
+          "median": 168,
+          "p75": 168,
+          "p95": 168,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "tbtMs": {
+          "median": 5,
+          "p75": 5,
+          "p95": 5,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "cls": {
+          "median": 0.004,
+          "p75": 0.004,
+          "p95": 0.004,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "encodedKb": {
+          "median": 293,
+          "p75": 293,
+          "p95": 293,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "jsKb": {
+          "median": 261.3,
+          "p75": 261.3,
+          "p95": 261.3,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "cssKb": {
+          "median": 24.6,
+          "p75": 24.6,
+          "p95": 24.6,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "domNodes": {
+          "median": 1042,
+          "p75": 1042,
+          "p95": 1042,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "heapMb": {
+          "median": 8.6,
+          "p75": 8.6,
+          "p95": 8.6,
+          "worstRoute": "/reports?mode=reference"
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "profile": "desktop",
+      "route": "/reports?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 588.4,
+      "url": "/reports",
+      "ttfbMs": 3.9,
+      "domContentLoadedMs": 28.8,
+      "loadMs": 73.7,
+      "fcpMs": 36,
+      "lcpMs": 168,
+      "lcpElement": {
+        "tag": "span",
+        "id": null,
+        "className": "",
+        "text": "Kestrel Fund V 68.4% · co-invest 22.4% · mgmt 9.2%"
+      },
+      "cls": 0.004,
+      "layoutShifts": [
+        {
+          "value": 0.0026863003954475306,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 563.703125,
+                "width": 300,
+                "height": 250.21875,
+                "top": 563.703125,
+                "right": 1421.640625,
+                "bottom": 813.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0010294094007201645,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 613.515625,
+                "width": 300,
+                "height": 199.40625,
+                "top": 613.515625,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Compose7/7 sections✓COMPANY PROFILE · RECOMMENDATION✓TRANSACTION SUMMARY AND NEW DEBT ISSUES✓CAPITAL STRUCTURE✓SENIORITY",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 447.9375,
+                "width": 300,
+                "height": 174.609375,
+                "top": 447.9375,
+                "right": 1421.640625,
+                "bottom": 622.546875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 437.015625,
+                "width": 300,
+                "height": 168.5,
+                "top": 437.015625,
+                "right": 1421.640625,
+                "bottom": 605.515625,
+                "left": 1121.640625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 5,
+      "longestTaskMs": 55,
+      "longTaskDetails": [
+        {
+          "startTime": 90,
+          "duration": 55,
+          "attribution": [
+            {
+              "name": "unknown",
+              "entryType": "taskattribution",
+              "containerType": "window",
+              "containerName": "",
+              "containerId": "",
+              "containerSrc": ""
+            }
+          ]
+        }
+      ],
+      "maxEventMs": 0,
+      "requests": 35,
+      "encodedKb": 293,
+      "transferredKb": 303.3,
+      "jsKb": 261.3,
+      "cssKb": 24.6,
+      "domNodes": 1042,
+      "heapMb": 8.6,
+      "taskDurationMs": 217.6,
+      "scriptDurationMs": 107.3,
+      "layoutDurationMs": 37.2,
+      "recalcStyleDurationMs": 11.1
+    }
+  ]
+}

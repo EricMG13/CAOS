@@ -1,0 +1,18 @@
+--- a/caos/server/engine/liquidity.py
++++ b/caos/server/engine/liquidity.py
+@@ -43,8 +43,13 @@ def _interest_runway_months(disclosed_liquidity: Optional[float], cp1: Optional[
+     if not isinstance(disclosed_liquidity, (int, float)) or cp1 is None:
+         return None, None
+     nf = (cp1.runtime_output or {}).get("normalized_financials") or {}
+-    eb, cov = latest(nf.get("adj_ebitda") or {}), nf.get("interest_coverage_ltm")
+-    if not (isinstance(eb, (int, float)) and isinstance(cov, (int, float)) and cov):
++    # Coverage is a plain dict lookup — gate on it (numeric & nonzero) BEFORE the
++    # latest() scan over adj_ebitda, so a bad coverage skips that dict iteration.
++    cov = nf.get("interest_coverage_ltm")
++    if not (isinstance(cov, (int, float)) and cov):
++        return None, None
++    eb = latest(nf.get("adj_ebitda") or {})
++    if not isinstance(eb, (int, float)):
+         return None, None
+     cash_interest = round(eb / cov, 1)
+     if not cash_interest:

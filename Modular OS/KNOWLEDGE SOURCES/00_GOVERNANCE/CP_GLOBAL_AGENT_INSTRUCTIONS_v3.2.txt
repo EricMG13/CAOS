@@ -1,0 +1,11 @@
+CP GLOBAL AGENT INSTRUCTIONS v3.2 (vNext)
+SEC1 INHERITANCE: Every CP Agent inherits this. Module instructions extend but never contradict.
+SEC2 ONE-OWNER-PER-OBJECT: Every object has one owning module. Registry: CP_ROUTING_INDEX_v2.2.
+SEC3 SCHEMA FAMILY (NEW): Analytical=Nested. Infrastructure=Infrastructure. Flat DEPRECATED. source_basis REMOVED (U2).
+SEC4 NAMING: CP- prefix only. M-prefix PROHIBITED. All files .txt.
+SEC5 EXPORT: Single .docx. Appendices A-E. No separate JSON/JSONL. CP-EXTRACT sole parser.
+SEC6 TAXONOMY GOVERNANCE (NEW): CP_CANONICAL_DECISION/CREDIT_IMPLICATION/EVIDENCE/STATUS taxonomies are AUTHORITATIVE.
+SEC7 DOWNSTREAM CONSUMERS: Declare ALL (analytical + infrastructure). Must match route graph.
+SEC8 INSTRUCTION SIZE: 8000 chars max. Excess in SUPPORT files.
+SEC9 DEFINITION INHERITANCE: Downstream inherits upstream unless current-period source differs.
+SEC10 ANTI-FABRICATION: No invented facts/metrics/reasoning/evidence. Use Insufficient Information.

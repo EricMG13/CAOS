@@ -1,0 +1,1141 @@
+{
+  "endpoint": "http://127.0.0.1:9223",
+  "base": "http://127.0.0.1:4175",
+  "nativeZoom": 2,
+  "httpFailures": [],
+  "results": [
+    {
+      "route": "/",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [
+          {
+            "tag": "DIV",
+            "className": "flex-1 min-h-0 overflow-auto focus-ring",
+            "label": "Issuer Register · coverage universe",
+            "role": null,
+            "tabIndex": 0,
+            "clientWidth": 695,
+            "scrollWidth": 798,
+            "widestChildren": [
+              {
+                "tag": "P",
+                "className": "sr-only",
+                "width": 1,
+                "scrollWidth": 1206,
+                "text": "Use Up and Down Arrow to move between issuer rows. Press Enter or Space to open the issuer profile. "
+              },
+              {
+                "tag": "DIV",
+                "className": "text-caos-xl",
+                "width": 695,
+                "scrollWidth": 798,
+                "text": "TickerIssuer▲RatingSectorSub-sectorCountryDocument intakeVMO2VMO2BB-Telecom—United KingdomUPLOAD"
+              }
+            ]
+          }
+        ],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Directory"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 218.5,
+            "right": 274.17578125,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/command",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Command Center"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 245.4765625,
+            "right": 301.15234375,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/decisions",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "IC Book"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 204.05078125,
+            "right": 259.7265625,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/deepdive?mode=reference",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [
+          {
+            "tag": "DIV",
+            "className": "h-9 bg-caos-panel/40 flex items-center px-4 gap-2 overflow-x-auto caos-no-scrollbar focus-ring",
+            "label": "Deep-Dive module groups",
+            "role": "region",
+            "tabIndex": 0,
+            "clientWidth": 697,
+            "scrollWidth": 1042,
+            "widestChildren": [
+              {
+                "tag": "DIV",
+                "className": "flex items-center gap-1.5 pl-2.5 border-l border-caos-border shrink-0",
+                "width": 499.51171875,
+                "scrollWidth": 499,
+                "text": "Governance & Debate▾QA ClearanceQATraceabilityTraceabilityIC DebateICPortfolio DebatePortfolio"
+              },
+              {
+                "tag": "DIV",
+                "className": "flex items-center gap-1.5 pl-2.5 border-l border-caos-border shrink-0",
+                "width": 185.15234375,
+                "scrollWidth": 184,
+                "text": "Foundation5cleared1w/ concerns3gated▸"
+              },
+              {
+                "tag": "DIV",
+                "className": "flex items-center gap-1.5 pl-2.5 border-l border-caos-border shrink-0",
+                "width": 169.50390625,
+                "scrollWidth": 169,
+                "text": "Analysis8cleared4w/ concerns2gated▸"
+              },
+              {
+                "tag": "BUTTON",
+                "className": "tabular text-caos-2xs uppercase tracking-wider px-1.5 min-h-8 rounded border border-caos-border text-caos-muted hover:text-caos-text hover:border-caos-accent/60",
+                "width": 131.37109375,
+                "scrollWidth": 129,
+                "text": "⌘M find module…"
+              }
+            ]
+          },
+          {
+            "tag": "DIV",
+            "className": "overflow-x-auto",
+            "label": "IC Chair · Evidence Weighting & Resolution Matrix table",
+            "role": null,
+            "tabIndex": 0,
+            "clientWidth": 653,
+            "scrollWidth": 760,
+            "widestChildren": [
+              {
+                "tag": "DIV",
+                "className": "min-w-[760px]",
+                "width": 760,
+                "scrollWidth": 760,
+                "text": "Contested claimWeighting (bull ◂ ▸ bear)Chair verdictEvidenceEBITDA quality / true leverage▲3565▼BEA"
+              }
+            ]
+          }
+        ],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": true,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Deep-Dive"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 218.5,
+            "right": 274.17578125,
+            "top": 48,
+            "bottom": 92
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/issuers",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [
+          {
+            "tag": "DIV",
+            "className": "flex-1 min-h-0 overflow-auto focus-ring",
+            "label": "Issuer Register · coverage universe",
+            "role": null,
+            "tabIndex": 0,
+            "clientWidth": 695,
+            "scrollWidth": 798,
+            "widestChildren": [
+              {
+                "tag": "P",
+                "className": "sr-only",
+                "width": 1,
+                "scrollWidth": 1206,
+                "text": "Use Up and Down Arrow to move between issuer rows. Press Enter or Space to open the issuer profile. "
+              },
+              {
+                "tag": "DIV",
+                "className": "text-caos-xl",
+                "width": 695,
+                "scrollWidth": 798,
+                "text": "TickerIssuer▲RatingSectorSub-sectorCountryDocument intakeVMO2VMO2BB-Telecom—United KingdomUPLOAD"
+              }
+            ]
+          }
+        ],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Directory"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 218.5,
+            "right": 274.17578125,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/issuers/profile?id=iss-1",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Directory"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 218.5,
+            "right": 274.17578125,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/model?mode=reference",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": true,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Model Builder"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 245.4765625,
+            "right": 301.15234375,
+            "top": 48,
+            "bottom": 92
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/monitor",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Alert Monitor"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 245.4765625,
+            "right": 301.15234375,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/pipeline?mode=reference",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [
+          {
+            "tag": "DIV",
+            "className": "pipeline-graph-canvas focus-ring relative min-h-[420px] overflow-auto overscroll-contain",
+            "label": "Execution graph; scroll horizontally to inspect all ordered stages",
+            "role": "region",
+            "tabIndex": 0,
+            "clientWidth": 679,
+            "scrollWidth": 1273,
+            "widestChildren": [
+              {
+                "tag": "DIV",
+                "className": "relative overflow-hidden",
+                "width": 1272.796875,
+                "scrollWidth": 1273,
+                "text": "21072481024Stage 1Intake & routing2 modulesStage 2Credit fact base4 modulesStage 3Fundamental analys"
+              }
+            ]
+          }
+        ],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": true,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Pipeline"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 211.2734375,
+            "right": 266.94921875,
+            "top": 48,
+            "bottom": 92
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/portfolios",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Portfolio Lab"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 245.4765625,
+            "right": 301.15234375,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/query",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Query"
+        },
+        "askRegionCount": 0,
+        "phoneAskCount": 0,
+        "askEntries": [],
+        "askRects": []
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": false,
+      "queryFocusedByAltK": true
+    },
+    {
+      "route": "/reports?mode=reference",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [
+          {
+            "tag": "DIV",
+            "className": "report-studio-preview flex-1 min-w-0 rounded border border-caos-border overflow-auto focus-ring",
+            "label": "Report preview",
+            "role": null,
+            "tabIndex": 0,
+            "clientWidth": 679,
+            "scrollWidth": 1004,
+            "widestChildren": [
+              {
+                "tag": "DIV",
+                "className": "flex py-7 px-6",
+                "width": 679,
+                "scrollWidth": 1004,
+                "text": "CCAOS · CREDIT RESEARCHREFERENCE · INTERNAL USEORIGIN: REFERENCE · METHOD: MODELLED · APPROVAL: QA: "
+              }
+            ]
+          }
+        ],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": true,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Report Studio"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 245.4765625,
+            "right": 301.15234375,
+            "top": 48,
+            "bottom": 92
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false,
+      "proofing": {
+        "bodyPx": 12,
+        "tablePx": 11,
+        "metadataPx": 10
+      },
+      "reportControls": {
+        "utilities": {
+          "x": 500.390625,
+          "y": 96,
+          "width": 25.2265625,
+          "height": 44,
+          "right": 525.6171875,
+          "bottom": 140
+        },
+        "primary": {
+          "x": 537.6171875,
+          "y": 103,
+          "width": 170.3828125,
+          "height": 30,
+          "right": 708,
+          "bottom": 133
+        }
+      },
+      "settledReportControls": {
+        "utilities": {
+          "x": 500.390625,
+          "y": 96,
+          "width": 25.2265625,
+          "height": 44,
+          "right": 525.6171875,
+          "bottom": 140
+        },
+        "primary": {
+          "x": 537.6171875,
+          "y": 103,
+          "width": 170.3828125,
+          "height": 30,
+          "right": 708,
+          "bottom": 133
+        }
+      },
+      "fixture": "REFERENCE",
+      "reportFit": "100%"
+    },
+    {
+      "route": "/research?mode=reference",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": true,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Research"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 211.2734375,
+            "right": 266.94921875,
+            "top": 48,
+            "bottom": 92
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/sector",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Sector Review"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 245.4765625,
+            "right": 301.15234375,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/sector-rv",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "RV Screener"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 232.94921875,
+            "right": 288.625,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/settings",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [
+          {
+            "tag": "DIV",
+            "className": "flex-1 min-h-0 overflow-auto focus-ring",
+            "label": "Query answer source",
+            "role": null,
+            "tabIndex": 0,
+            "clientWidth": 695,
+            "scrollWidth": 699,
+            "widestChildren": [
+              {
+                "tag": "DIV",
+                "className": "p-3 flex flex-col gap-3",
+                "width": 695,
+                "scrollWidth": 699,
+                "text": "Choose how answers are produced for Compare metrics, Map relationships, Research with citations, and"
+              }
+            ]
+          }
+        ],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Settings"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 224.2734375,
+            "right": 279.94921875,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/sponsors",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Sponsors"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 211.2734375,
+            "right": 266.94921875,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    },
+    {
+      "route": "/upload",
+      "nativeZoom": 2,
+      "observedZoom": 2,
+      "metrics": {
+        "dpr": 4,
+        "innerWidth": 720,
+        "innerHeight": 456,
+        "outerWidth": 1440,
+        "outerHeight": 1000,
+        "visualScale": 1,
+        "visualWidth": 720
+      },
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": [],
+        "clippedText": [],
+        "horizontalScrollers": [],
+        "headerOverlaps": [],
+        "headerEssentials": {
+          "markerVisible": false,
+          "workflowTriggerVisible": true,
+          "workflowTriggerText": "⋯ Workflows",
+          "currentWorkflowVisible": true,
+          "currentWorkflowLabel": "Upload"
+        },
+        "askRegionCount": 1,
+        "phoneAskCount": 0,
+        "askEntries": [
+          {
+            "label": "Ask CAOS utility",
+            "tag": "BUTTON",
+            "disabled": false
+          }
+        ],
+        "askRects": [
+          {
+            "left": 196.82421875,
+            "right": 252.5,
+            "top": -0.5,
+            "bottom": 43.5
+          }
+        ]
+      },
+      "shortcutEvent": {
+        "key": "k",
+        "code": "KeyK",
+        "altKey": true
+      },
+      "askOpenedByAltK": true,
+      "queryFocusedByAltK": false
+    }
+  ]
+}

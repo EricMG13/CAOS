@@ -1,0 +1,111 @@
+{
+  "generatedAt": "2026-07-19T23:17:18.842Z",
+  "base": "http://127.0.0.1:4176",
+  "reducedMotion": true,
+  "results": [
+    {
+      "route": "/deepdive?mode=reference",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "state": "finder selected CP-4C; Analysis solely expanded",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    },
+    {
+      "route": "/decisions",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "state": "Add agenda item opened; References current",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    },
+    {
+      "route": "/deepdive?mode=reference",
+      "viewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "state": "finder selected CP-4C; Analysis solely expanded",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    },
+    {
+      "route": "/decisions",
+      "viewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "state": "Add agenda item opened; References current",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    },
+    {
+      "route": "/deepdive?mode=reference",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "state": "finder selected CP-4C; Analysis solely expanded",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    },
+    {
+      "route": "/decisions",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "state": "Add agenda item opened; References current",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    },
+    {
+      "route": "/deepdive?mode=reference",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "state": "finder selected CP-4C; Analysis solely expanded",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    },
+    {
+      "route": "/decisions",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "state": "Add agenda item opened; References current",
+      "violations": [],
+      "layout": {
+        "documentOverflow": 0,
+        "clippedControls": []
+      }
+    }
+  ]
+}

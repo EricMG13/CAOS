@@ -1,0 +1,4 @@
+CP CANONICAL EVIDENCE CLASSIFICATION (NEW, resolves L2, N8)
+EXTRACTION TYPE (13): sourced_fact | quoted_text | table_value | calculated_metric | analyst_inference | upstream_artifact | user_instruction | documentary_fact | definition_conflict | gap | source_limitation | insufficient_information | not_available
+LINEAGE CLASS (8): Directly Sourced | Calculated | Assumption-Based | Analyst Inference | Weak Lineage | Untraced | Conflicting | Insufficient Information
+ORPHAN CLAIM: lineage in (Untraced|Weak Lineage|Insufficient Information) + committee-facing + no mitigation -> VE-015

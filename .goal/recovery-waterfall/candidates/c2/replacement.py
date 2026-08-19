@@ -1,0 +1,59 @@
+def _is_sized_claim(amount) -> bool:
+    """A tranche is *sized* only when it carries a positive numeric claim.
+
+    Anything else — ``None``, a non-number, zero, or a negative — is treated as
+    unsized. An unsized claim is what breaks the waterfall, because we can no
+    longer know how much value a senior claim consumes before the cascade
+    reaches the tranches below it.
+    """
+    return isinstance(amount, (int, float)) and amount > 0
+
+
+def recovery_waterfall(tranches: List[dict], distressed_ev: float) -> List[dict]:
+    """Absolute-priority distribution of ``distressed_ev`` senior→junior.
+
+    Walk ``tranches`` in the order given (most senior first — this function does
+    NOT sort and ignores ``seniority_rank``). Each sized tranche recovers
+    ``min(claim, value still available)``; its full claim is then subtracted from
+    the value flowing down to the next, junior tranche.
+
+    An unsized tranche (no stated positive amount) BREAKS the waterfall: its own
+    recovery is null and — because an unknown senior claim makes the value
+    cascading past it indeterminate — every tranche junior to it is null too.
+    Scoring juniors against the full remaining EV as if the unsized senior claimed
+    nothing would over-credit them (the prior behaviour, fixed here).
+    """
+    # Value left to distribute as we move down the stack. Coerce up front so a
+    # negative or zero EV simply yields 0.0 recovery for every sized tranche.
+    remaining = float(distressed_ev)
+
+    # Once any tranche is unsized, the waterfall is broken for it and all juniors.
+    waterfall_broken = False
+
+    results: List[dict] = []
+    for tranche in tranches:
+        claim = tranche["amount_musd"]  # KeyError here is intentional (see contract).
+
+        # A single unsized claim trips the break permanently for everything below.
+        if not _is_sized_claim(claim):
+            waterfall_broken = True
+
+        if waterfall_broken:
+            results.append({**tranche, "recovery_musd": None, "recovery_pct": None})
+            continue
+
+        # Sized tranche: take what value remains, capped at the tranche's claim.
+        recovered = min(claim, remaining) if remaining > 0 else 0.0
+
+        # The senior claim consumes value before juniors see it; never go below 0.
+        remaining = max(0.0, remaining - claim)
+
+        results.append({
+            **tranche,
+            "recovery_musd": round(recovered, 1),
+            # Denominator is the tranche's own claim. round(.., 1) is half-even
+            # over the float repr (e.g. 250/800 = 31.25 → 31.2, not 31.3).
+            "recovery_pct": round(100 * recovered / claim, 1),
+        })
+
+    return results

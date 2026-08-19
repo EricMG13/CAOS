@@ -1,0 +1,50 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+"$id": "CP_AGENT_OUTPUT_INPUT.schema.txt",
+"type": "object",
+"additionalProperties": false,
+"required": ["run_id", "module_id", "agent_id", "issuer_id", "as_of_date", "runtime_docx_filename", "runtime_docx_structure", "source_manifest"],
+"properties": {
+"run_id": {"type": "string"},
+"module_id": {"type": "string"},
+"agent_id": {"type": "string"},
+"issuer_id": {"type": ["string", "null"]},
+"as_of_date": {"type": "string", "format": "date"},
+"runtime_docx_filename": {"type": "string", "pattern": "[_]+_[^_]+_[0-9]{8}.docx$"},
+"runtime_docx_structure": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "main_body_present",
+    "appendix_A_MODULE_HANDOFF_present",
+    "appendix_B_evidence_trace_source_registry_present",
+    "appendix_C_QA_validation_status_present",
+    "appendix_D_export_manifest_present",
+    "appendix_E_gaps_conflicts_downstream_consumers_present",
+    "appendix_A_contains_CP_MODULE_HANDOFF_JSON",
+    "appendix_B_contains_CP_EVIDENCE_TRACE_JSON",
+    "appendix_B_contains_CP_SOURCE_REGISTRY_JSON",
+    "appendix_C_contains_CP_QA_VALIDATION_JSON",
+    "appendix_D_contains_CP_EXPORT_MANIFEST_JSON",
+    "appendix_E_contains_CP_GAPS_CONFLICTS_DOWNSTREAM_JSON",
+    "embedded_json_blocks_parse_as_valid_json"
+  ],
+  "properties": {
+    "main_body_present": {"type": "boolean"},
+    "appendix_A_MODULE_HANDOFF_present": {"type": "boolean"},
+    "appendix_B_evidence_trace_source_registry_present": {"type": "boolean"},
+    "appendix_C_QA_validation_status_present": {"type": "boolean"},
+    "appendix_D_export_manifest_present": {"type": "boolean"},
+    "appendix_E_gaps_conflicts_downstream_consumers_present": {"type": "boolean"},
+    "appendix_A_contains_CP_MODULE_HANDOFF_JSON": {"type": "boolean"},
+    "appendix_B_contains_CP_EVIDENCE_TRACE_JSON": {"type": "boolean"},
+    "appendix_B_contains_CP_SOURCE_REGISTRY_JSON": {"type": "boolean"},
+    "appendix_C_contains_CP_QA_VALIDATION_JSON": {"type": "boolean"},
+    "appendix_D_contains_CP_EXPORT_MANIFEST_JSON": {"type": "boolean"},
+    "appendix_E_contains_CP_GAPS_CONFLICTS_DOWNSTREAM_JSON": {"type": "boolean"},
+    "embedded_json_blocks_parse_as_valid_json": {"type": "boolean"}
+  }
+},
+"source_manifest": {"type": "array"}
+}
+}

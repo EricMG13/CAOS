@@ -1,0 +1,207 @@
+{
+  "base": "http://127.0.0.1:4176",
+  "generatedAt": "2026-07-20T07:30:58.401Z",
+  "profiles": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "cpuRate": 1,
+      "network": null,
+      "scanErrors": 0,
+      "summary": {
+        "readyMs": {
+          "median": 489.2,
+          "p75": 489.2,
+          "p95": 489.2,
+          "worstRoute": "/portfolios"
+        },
+        "fcpMs": {
+          "median": 40,
+          "p75": 40,
+          "p95": 40,
+          "worstRoute": "/portfolios"
+        },
+        "lcpMs": {
+          "median": 136,
+          "p75": 136,
+          "p95": 136,
+          "worstRoute": "/portfolios"
+        },
+        "tbtMs": {
+          "median": 0,
+          "p75": 0,
+          "p95": 0,
+          "worstRoute": "/portfolios"
+        },
+        "cls": {
+          "median": 0.044,
+          "p75": 0.044,
+          "p95": 0.044,
+          "worstRoute": "/portfolios"
+        },
+        "encodedKb": {
+          "median": 249.5,
+          "p75": 249.5,
+          "p95": 249.5,
+          "worstRoute": "/portfolios"
+        },
+        "jsKb": {
+          "median": 216.8,
+          "p75": 216.8,
+          "p95": 216.8,
+          "worstRoute": "/portfolios"
+        },
+        "cssKb": {
+          "median": 24.9,
+          "p75": 24.9,
+          "p95": 24.9,
+          "worstRoute": "/portfolios"
+        },
+        "domNodes": {
+          "median": 272,
+          "p75": 272,
+          "p95": 272,
+          "worstRoute": "/portfolios"
+        },
+        "heapMb": {
+          "median": 6.1,
+          "p75": 6.1,
+          "p95": 6.1,
+          "worstRoute": "/portfolios"
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "profile": "desktop",
+      "route": "/portfolios",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 489.2,
+      "url": "/portfolios",
+      "ttfbMs": 4.1,
+      "domContentLoadedMs": 12.4,
+      "loadMs": 60,
+      "fcpMs": 40,
+      "lcpMs": 136,
+      "lcpElement": {
+        "tag": "p",
+        "id": "_r_7_",
+        "className": "semantic-visualization__summary",
+        "text": "Telecom is the largest reported sector at 100% across 1 obligor."
+      },
+      "cls": 0.044,
+      "layoutShifts": [
+        {
+          "value": 0.04296367097077546,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "persona-workbench__composition persona-workbench__composition--supports-2",
+              "text": "Sizing workbenchCredit Fund IAs of2026-06-30Positions—AuthorityLoadingPositionsConstraintsPortfolioCredit Fund ISearchSe",
+              "previousRect": {
+                "x": 216,
+                "y": 76,
+                "width": 1224,
+                "height": 84.328125,
+                "top": 76,
+                "right": 1440,
+                "bottom": 160.328125,
+                "left": 216
+              },
+              "currentRect": {
+                "x": 216,
+                "y": 112,
+                "width": 1224,
+                "height": 540.578125,
+                "top": 112,
+                "right": 1440,
+                "bottom": 652.578125,
+                "left": 216
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Fund",
+              "previousRect": {
+                "x": 1306.015625,
+                "y": 12.5,
+                "width": 117.984375,
+                "height": 18,
+                "top": 12.5,
+                "right": 1424,
+                "bottom": 30.5,
+                "left": 1306.015625
+              },
+              "currentRect": {
+                "x": 1192.90625,
+                "y": 12.5,
+                "width": 27.875,
+                "height": 18,
+                "top": 12.5,
+                "right": 1220.78125,
+                "bottom": 30.5,
+                "left": 1192.90625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0007070216049382716,
+          "sources": [
+            {
+              "tag": "section",
+              "id": null,
+              "className": "persona-workbench__slot persona-workbench__slot--utility ",
+              "text": "Deterministic scenarioBase downsidePreview stressNo persisted stress snapshots.",
+              "previousRect": {
+                "x": 216,
+                "y": 554.96875,
+                "width": 1224,
+                "height": 87.25,
+                "top": 554.96875,
+                "right": 1440,
+                "bottom": 642.21875,
+                "left": 216
+              },
+              "currentRect": {
+                "x": 216,
+                "y": 543.96875,
+                "width": 1224,
+                "height": 87.25,
+                "top": 543.96875,
+                "right": 1440,
+                "bottom": 631.21875,
+                "left": 216
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 28,
+      "encodedKb": 249.5,
+      "transferredKb": 257.7,
+      "jsKb": 216.8,
+      "cssKb": 24.9,
+      "domNodes": 272,
+      "heapMb": 6.1,
+      "taskDurationMs": 117.3,
+      "scriptDurationMs": 44.8,
+      "layoutDurationMs": 10.8,
+      "recalcStyleDurationMs": 9.3
+    }
+  ]
+}

@@ -1,0 +1,135 @@
+{
+  "persona": "p1",
+  "base": "http://localhost:3010",
+  "steps": [
+    {
+      "route": "/issuers",
+      "label": "/issuers",
+      "status": 200,
+      "ms": 7324,
+      "url": "http://localhost:3010/issuers?context=9b622ba1-fe36-48c4-ad8c-5f54be65be9e",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 4596,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nDirectory\nDEMO COVERAGE\nIssuer register\n346 sample issuers\nUPLOAD DOCUMENTS\n⋯ Directory utilities\n+ NEW ISSUER\nACTIVE ANALYSIS\nCoverage universe\ncross-coverage · 0 findings\nCoverage register\nSHARED WORKLIST\n346 sample issuers\n\nFilter, select and route covered names without losing issuer context.\n\nNo live coverage yet — showing a sample sleeve so you can explore the workspace.\n+ NEW ISSUER\nIssuer Register · coverage universe\nclick a row to open its profile\n⌕\n\nUse Up and Down Arrow to move between issuer rows. Press Enter or Space to open the issuer profile. Press F2 to enter selection and upload actions; press Escape to return to the row.\n\nTICKER\nISSUER\n▲\nRATING\nSECTOR\nSUB-SECTOR\nCOUNTRY\nDOCUMENT INTAKE\nBCULC\n1011778 BC ULC\n—\nLeisure Facilities & Services\n—\nUnited States\nUPLOAD\nAUSPO\nA-AP Buyer Inc\n—\nAutomotive Manufacturing\n—\nUnited States\nUPLOAD\nBCPRE\nACI Rover Parent LLC\n—\nOil & Gas Supply Chain\n—\nUnited States\nUPLOAD\nACRIS\nAcrisure LLC\n—\nInsurance\n—\nUnited States\nUPLOAD\nACTEN\nAction Environmental Group Inc/The\n—\nCommercial Support Services\n—\nUnited States\nUPLOAD\nACURE\nAcuren Delaware Holdco Inc\n—\nCommercial Support Services\n—\nUnited States\nUPLOAD\nAEAIN\nAEA International Holdings Luxembourg\n—\nCommercial Support Services\n—\nUnited States\nUPLOAD\nAGKLN\nAggreko Holdings Inc\n—\nIndustrial Support Services\n—\nUnited States\nUPLOAD\nUHCS\nAgiliti Health Inc\n—\nHealth Care Facilities & Services\n—\nUnited States\nUPLOAD\nAHEAD\nAhead DB Holdings LLC\n—\nInformation Technology (IT) Services\n—\nUnited States\nUPLOAD\nAHLMU\nAhlstrom Holding 3 Oy\n—\nForestry Paper & Wood Products Manufacturing\n—\nUnited States\nUPLOAD\nARDT\nAHP Health Partners Inc\n—\nHealth Care Facilities & Services\n—\nUnited States\nUPLOAD\nAITWO\nAIT Worldwide Logistics Holdings Inc\n—\nTransportation & Logistics\n—\nUnited States\nUPLOAD\nCULLN\nAl Aqua Merger Sub Inc\n—\nHome & Office Products Manufacturing\n—\nUnited States\nUPLOAD\nALGXC\nAL GCX Holdings LLC\n—\nEnergy\n—\nUnited States\nUPLOAD\nALBAU\nAlbaugh LLC\n—\nChemicals\n—\nUnited States\nUPLOAD\nALERG\nAlera Group Inc\n—\nInsurance\n—\nUnited States\nUPLOAD\nALKS\nAlkermes Inc\n—\nBiotechnology & Pharmaceuticals\n—\nUnited States\nUPLOAD\nALH\nAlliance Laundry Systems LLC\n—\nMachinery Manufacturing\n—\nUnited States\nUPLOAD\nUNSEA\nAllied Universal Holdco LLC\n—\nIndustrials\n—\nUnited States\nUPLOAD\nZEBWF\nAllspring Buyer LLC\n—\nAsset Management\n—\nUnited States\nUPLOA",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Directory",
+        "Coverage register",
+        "Issuer Register · coverage universe"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p1/_issuers.png",
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/upload",
+      "label": "/upload",
+      "status": 200,
+      "ms": 7084,
+      "url": "http://localhost:3010/upload?context=4d7d9f05-8ba6-48c4-8569-b2b1c35daf4b",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 797,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nUpload\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nUpload\nCP-0 · L0\nDocument Intake — Pipeline L0 source readiness\nPDF / XLSX → document vault → searchable evidence → source classification\nMNPI HANDLING POLICY APPLIES · ANALYST-DECLARED CLASSIFICATION\nNo page actions available\nACTIVE ANALYSIS\nDocument intake\ncross-coverage · 0 findings\nTIP\nDrop all of an issuer's deal documents at once — CP-0 classifies and dates each on ingest. Pick a run mode and the engine routes the matching modules.\n✕\nINTAKE STEPS\n01 Issuer\n02 Files & run mode\n03 Ingested\nSelect issuer\n0 registered\n+ ADD NEW ISSUER",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Upload",
+        "Select issuer"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p1/_upload.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/pipeline",
+      "label": "/pipeline",
+      "status": 200,
+      "ms": 7066,
+      "url": "http://localhost:3010/pipeline?context=59c1fcd6-411b-4268-9287-1c0a6fb9fb4f",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 572,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nPipeline\nPIPELINE\nNO RUNS FOR THIS ISSUER\nRun state\nOPEN REFERENCE PLAN\nDOCUMENT INTAKE\nACTIVE ANALYSIS\nPipeline run review\ncross-coverage · 0 findings\nNO OBSERVED DATA\nNo runs for this issuer\n\nThis issuer has never been analysed. Start a run from Document Intake to populate the CP-X route graph.\n\nissuer No issuer selected",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Pipeline",
+        "No runs for this issuer"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p1/_pipeline.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/deepdive",
+      "label": "/deepdive",
+      "status": 200,
+      "ms": 7098,
+      "url": "http://localhost:3010/deepdive?context=af1f6276-aa2a-4164-8383-1da98c57a5ee",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 587,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nDeep-Dive\nDEEP-DIVE\nIssuer selection required\nSELECT ISSUER\nACTIVE ANALYSIS\nIssuer selection required credit view\ncross-coverage · 0 findings\nNOT YET RUN\nSelect an issuer to begin Deep-Dive\n\nLive Deep-Dive requires an issuer context. No seeded analysis has been substituted. Use the page action to select an issuer.\n\nOPEN REFERENCE EXAMPLE",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Deep-Dive",
+        "Select an issuer to begin Deep-Dive"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p1/_deepdive.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/model",
+      "label": "/model",
+      "status": 200,
+      "ms": 7078,
+      "url": "http://localhost:3010/model",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 466,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nModel Builder\nModel Builder — issuer model\nOPEN REFERENCE MODEL\nANALYSIS CONTEXT · RESOLVING\nNO OBSERVED DATA\nSelect an issuer model\n\nOpen Model Builder from an issuer or choose the explicitly labelled reference model.",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Model Builder",
+        "Select an issuer model"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p1/_model.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/reports",
+      "label": "/reports",
+      "status": 200,
+      "ms": 7087,
+      "url": "http://localhost:3010/reports",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 489,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nReport Studio\nCP-RENDER\nReport Studio — committee deliverables\nOPEN REFERENCE REPORT\nANALYSIS CONTEXT · RESOLVING\nNO OBSERVED DATA\nSelect an issuer report\n\nOpen Report Studio from an issuer or choose the explicitly labelled reference report.",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Report Studio",
+        "Select an issuer report"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p1/_reports.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    }
+  ]
+}

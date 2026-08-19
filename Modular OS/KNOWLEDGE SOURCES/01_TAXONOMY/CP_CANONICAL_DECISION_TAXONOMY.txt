@@ -1,0 +1,7 @@
+CP CANONICAL DECISION TAXONOMY (NEW, resolves T3)
+9 VALUES: Avoid | Watchlist | Starter Position | Core Hold | Add / Increase | Hold Existing Only | Reduce / Trim | Exit | Requires More Work
+CP-3C (7): Avoid, Watchlist, Starter Position, Core Hold, Hold Existing Only, Reduce / Trim, Requires More Work
+CP-6A (8): Avoid, Watchlist, Starter Position, Core Hold, Add / Increase, Reduce / Trim, Exit, Requires More Work
+CP-6E (6): Include, Avoid, Resize-Reduce, Resize-Increase, Maintain-Hold, Requires More Work
+CP-6E TRANSLATION: Include->Starter/Core/Add | Avoid->Avoid/Exit | Resize-Reduce->Reduce/Trim | Resize-Increase->Add/Increase | Maintain-Hold->Hold Existing/Core
+DELIMITER: 'Add / Increase' and 'Reduce / Trim' are SINGLE values (S4). CIO Memo: full 6 values (T2).

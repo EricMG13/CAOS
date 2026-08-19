@@ -1,0 +1,10 @@
+const module_id = "CP-2G"
+const module_name = "ESGSustainabilityCreditRisk"
+const schema_family = "Nested"
+const owned_object = "esg_credit_risk"
+
+CAOS runtime schema: engine.module_contracts.CP2GRuntime (cp-2g.v1)
+Required sections: source_register, transition_risks, social_event_risks,
+materiality_assessments, sustainability_linked_instruments,
+demand_access_implications, credit_implications, gaps, overall_credit_view,
+and nullable cp6a_handoff.

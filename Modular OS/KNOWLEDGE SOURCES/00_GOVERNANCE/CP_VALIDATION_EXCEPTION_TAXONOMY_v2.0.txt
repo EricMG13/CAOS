@@ -1,0 +1,22 @@
+CP VALIDATION EXCEPTION TAXONOMY v2.0 (20 codes, resolves H1)
+SEVERITY: CRITICAL | MATERIAL | MINOR
+VE-001 SCHEMA_MISMATCH           CRITICAL  Payload not conforming to schema
+VE-002 IDENTITY_CONFLICT         CRITICAL  module_id/name/object mismatch
+VE-003 MISSING_EVIDENCE_TRACE    CRITICAL  Material claim lacks evidence
+VE-004 UPSTREAM_DEPENDENCY_MISSING CRITICAL Required upstream unavailable
+VE-005 EXPORT_FORMAT_VIOLATION   CRITICAL  Violates single-.docx contract
+VE-006 TAXONOMY_VIOLATION        CRITICAL  Value outside canonical taxonomy
+VE-007 FABRICATION_DETECTED      CRITICAL  Invented facts/metrics
+VE-008 CALCULATION_ERROR         CRITICAL  Formula/numerator/denominator error
+VE-009 OWNERSHIP_VIOLATION       MATERIAL  Produced another module's object
+VE-010 ENUM_VALUE_MISMATCH       MATERIAL  Enum not in canonical set
+VE-011 DOWNSTREAM_MISMATCH       MATERIAL  Consumers don't match route graph
+VE-012 CONFIDENCE_UNSUPPORTED    MATERIAL  Confidence not backed by evidence
+VE-013 LIMITATION_UNDECLARED     MATERIAL  Known limitation not flagged
+VE-014 STALE_INPUT               MATERIAL  Prior-period input unflagged
+VE-015 ORPHAN_CLAIM              MATERIAL  Material conclusion without trace
+VE-016 WEAK_LINEAGE              MINOR     Evidence traceable but unreliable
+VE-017 DELIMITER_AMBIGUITY       MINOR     Ambiguous enum delimiter
+VE-018 LEGACY_REFERENCE          MINOR     M-prefix or deprecated reference
+VE-019 TEMPLATE_DEVIATION        MINOR     Output deviates from template
+VE-020 DUPLICATE_FRAGMENT        MINOR     Redundant file/content detected

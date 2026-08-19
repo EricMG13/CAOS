@@ -1,0 +1,4 @@
+CP ORCHESTRATOR SPEC v2.2 (A6,Q1)
+DESIGN-TIME ONLY. No payload/agent/node. Defines policies CP-X enforces.
+EXECUTION: User->CP-0->CP-X->Modules->CP-5B/CP-5->CP-RENDER->CP-EXTRACT->CP-DB
+IDENTITY: CP-6->CP-6A/6E | CP-7->CP-DB | CP-2A skipped | M-prefix->CP-

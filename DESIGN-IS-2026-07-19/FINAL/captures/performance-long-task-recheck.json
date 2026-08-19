@@ -1,0 +1,826 @@
+{
+  "base": "http://127.0.0.1:3000",
+  "generatedAt": "2026-07-20T06:16:08.519Z",
+  "profiles": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "cpuRate": 1,
+      "network": null,
+      "scanErrors": 0,
+      "summary": {
+        "readyMs": {
+          "median": 598,
+          "p75": 1295.7,
+          "p95": 1394.9,
+          "worstRoute": "/model?mode=reference"
+        },
+        "fcpMs": {
+          "median": 24,
+          "p75": 28,
+          "p95": 32,
+          "worstRoute": "/model?mode=reference"
+        },
+        "lcpMs": {
+          "median": 104,
+          "p75": 148,
+          "p95": 148,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "tbtMs": {
+          "median": 3,
+          "p75": 19,
+          "p95": 23,
+          "worstRoute": "/model?mode=reference"
+        },
+        "cls": {
+          "median": 0,
+          "p75": 0.004,
+          "p95": 0.004,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "encodedKb": {
+          "median": 352.2,
+          "p75": 672.4,
+          "p95": 672.4,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "jsKb": {
+          "median": 298.6,
+          "p75": 640.8,
+          "p95": 640.8,
+          "worstRoute": "/reports?mode=reference"
+        },
+        "cssKb": {
+          "median": 24.4,
+          "p75": 24.4,
+          "p95": 24.4,
+          "worstRoute": "/model?mode=reference"
+        },
+        "domNodes": {
+          "median": 1033,
+          "p75": 3980,
+          "p95": 3980,
+          "worstRoute": "/model?mode=reference"
+        },
+        "heapMb": {
+          "median": 11.7,
+          "p75": 21.5,
+          "p95": 39.1,
+          "worstRoute": "/model?mode=reference"
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "profile": "desktop",
+      "route": "/model?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 1295.7,
+      "url": "/model",
+      "ttfbMs": 3.8,
+      "domContentLoadedMs": 13.5,
+      "loadMs": 67.5,
+      "fcpMs": 32,
+      "lcpMs": 104,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 max-w-[70ch] text-caos-md leading-relaxed text-caos-muted text-pretty [overflow-wrap:anywhere]",
+        "text": "Checking the persisted workspace capability before loading a calculator."
+      },
+      "cls": 0,
+      "layoutShifts": [
+        {
+          "value": 0.000056229068876457475,
+          "sources": [
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Atlas Forge Industrials — cash-flow model",
+              "previousRect": {
+                "x": 588.609375,
+                "y": 11.5,
+                "width": 119.71875,
+                "height": 20,
+                "top": 11.5,
+                "right": 708.328125,
+                "bottom": 31.5,
+                "left": 588.609375
+              },
+              "currentRect": {
+                "x": 591.734375,
+                "y": 11.5,
+                "width": 132.03125,
+                "height": 20,
+                "top": 11.5,
+                "right": 723.765625,
+                "bottom": 31.5,
+                "left": 591.734375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Model draftExecExecutionCompletePersistPersistenceDraftApprovalApprovalN/AFreshFreshnessUnknownAnchor 2026-05-31 · refer",
+              "previousRect": {
+                "x": 787.21875,
+                "y": 13.25,
+                "width": 92.71875,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 787.21875
+              },
+              "currentRect": {
+                "x": 807.078125,
+                "y": 13.25,
+                "width": 72.859375,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 807.078125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-detail flex min-w-0 items-center gap-3 overflow-hidden",
+              "text": "· linking engine…",
+              "previousRect": {
+                "x": 720.328125,
+                "y": 13.25,
+                "width": 42.890625,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 763.21875,
+                "bottom": 29.75,
+                "left": 720.328125
+              },
+              "currentRect": {
+                "x": 735.765625,
+                "y": 13.25,
+                "width": 47.3125,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 783.078125,
+                "bottom": 29.75,
+                "left": 735.765625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 23,
+      "longestTaskMs": 73,
+      "maxEventMs": 0,
+      "requests": 66,
+      "encodedKb": 349.7,
+      "transferredKb": 369.1,
+      "jsKb": 298.6,
+      "cssKb": 24.4,
+      "domNodes": 3980,
+      "heapMb": 16.7,
+      "taskDurationMs": 1049.7,
+      "scriptDurationMs": 885.4,
+      "layoutDurationMs": 17.2,
+      "recalcStyleDurationMs": 41.6
+    },
+    {
+      "profile": "desktop",
+      "route": "/model?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 1291.7,
+      "url": "/model",
+      "ttfbMs": 1.6,
+      "domContentLoadedMs": 8.9,
+      "loadMs": 61.5,
+      "fcpMs": 28,
+      "lcpMs": 92,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 max-w-[70ch] text-caos-md leading-relaxed text-caos-muted text-pretty [overflow-wrap:anywhere]",
+        "text": "Checking the persisted workspace capability before loading a calculator."
+      },
+      "cls": 0,
+      "layoutShifts": [
+        {
+          "value": 0.000056229068876457475,
+          "sources": [
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Atlas Forge Industrials — cash-flow model",
+              "previousRect": {
+                "x": 588.609375,
+                "y": 11.5,
+                "width": 119.71875,
+                "height": 20,
+                "top": 11.5,
+                "right": 708.328125,
+                "bottom": 31.5,
+                "left": 588.609375
+              },
+              "currentRect": {
+                "x": 591.734375,
+                "y": 11.5,
+                "width": 132.03125,
+                "height": 20,
+                "top": 11.5,
+                "right": 723.765625,
+                "bottom": 31.5,
+                "left": 591.734375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Model draftExecExecutionCompletePersistPersistenceDraftApprovalApprovalN/AFreshFreshnessUnknownAnchor 2026-05-31 · refer",
+              "previousRect": {
+                "x": 787.21875,
+                "y": 13.25,
+                "width": 92.71875,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 787.21875
+              },
+              "currentRect": {
+                "x": 807.078125,
+                "y": 13.25,
+                "width": 72.859375,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 807.078125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-detail flex min-w-0 items-center gap-3 overflow-hidden",
+              "text": "· linking engine…",
+              "previousRect": {
+                "x": 720.328125,
+                "y": 13.25,
+                "width": 42.890625,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 763.21875,
+                "bottom": 29.75,
+                "left": 720.328125
+              },
+              "currentRect": {
+                "x": 735.765625,
+                "y": 13.25,
+                "width": 47.3125,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 783.078125,
+                "bottom": 29.75,
+                "left": 735.765625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 19,
+      "longestTaskMs": 69,
+      "maxEventMs": 0,
+      "requests": 66,
+      "encodedKb": 349.7,
+      "transferredKb": 369.1,
+      "jsKb": 298.6,
+      "cssKb": 24.4,
+      "domNodes": 3980,
+      "heapMb": 21.5,
+      "taskDurationMs": 1046.5,
+      "scriptDurationMs": 884.5,
+      "layoutDurationMs": 15.7,
+      "recalcStyleDurationMs": 40.3
+    },
+    {
+      "profile": "desktop",
+      "route": "/model?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 1394.9,
+      "url": "/model",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 21.6,
+      "loadMs": 62.8,
+      "fcpMs": 24,
+      "lcpMs": 96,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 max-w-[70ch] text-caos-md leading-relaxed text-caos-muted text-pretty [overflow-wrap:anywhere]",
+        "text": "Checking the persisted workspace capability before loading a calculator."
+      },
+      "cls": 0,
+      "layoutShifts": [
+        {
+          "value": 0.000056229068876457475,
+          "sources": [
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Atlas Forge Industrials — cash-flow model",
+              "previousRect": {
+                "x": 588.609375,
+                "y": 11.5,
+                "width": 119.71875,
+                "height": 20,
+                "top": 11.5,
+                "right": 708.328125,
+                "bottom": 31.5,
+                "left": 588.609375
+              },
+              "currentRect": {
+                "x": 591.734375,
+                "y": 11.5,
+                "width": 132.03125,
+                "height": 20,
+                "top": 11.5,
+                "right": 723.765625,
+                "bottom": 31.5,
+                "left": 591.734375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Model draftExecExecutionCompletePersistPersistenceDraftApprovalApprovalN/AFreshFreshnessUnknownAnchor 2026-05-31 · refer",
+              "previousRect": {
+                "x": 787.21875,
+                "y": 13.25,
+                "width": 92.71875,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 787.21875
+              },
+              "currentRect": {
+                "x": 807.078125,
+                "y": 13.25,
+                "width": 72.859375,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 879.9375,
+                "bottom": 29.75,
+                "left": 807.078125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-detail flex min-w-0 items-center gap-3 overflow-hidden",
+              "text": "· linking engine…",
+              "previousRect": {
+                "x": 720.328125,
+                "y": 13.25,
+                "width": 42.890625,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 763.21875,
+                "bottom": 29.75,
+                "left": 720.328125
+              },
+              "currentRect": {
+                "x": 735.765625,
+                "y": 13.25,
+                "width": 47.3125,
+                "height": 16.5,
+                "top": 13.25,
+                "right": 783.078125,
+                "bottom": 29.75,
+                "left": 735.765625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 19,
+      "longestTaskMs": 69,
+      "maxEventMs": 0,
+      "requests": 70,
+      "encodedKb": 352.2,
+      "transferredKb": 372.7,
+      "jsKb": 298.6,
+      "cssKb": 24.4,
+      "domNodes": 3980,
+      "heapMb": 39.1,
+      "taskDurationMs": 1188.8,
+      "scriptDurationMs": 1024.4,
+      "layoutDurationMs": 17.5,
+      "recalcStyleDurationMs": 42
+    },
+    {
+      "profile": "desktop",
+      "route": "/reports?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 587.5,
+      "url": "/reports",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 8.6,
+      "loadMs": 52.4,
+      "fcpMs": 24,
+      "lcpMs": 148,
+      "lcpElement": {
+        "tag": "span",
+        "id": null,
+        "className": "",
+        "text": "Kestrel Fund V 68.4% · co-invest 22.4% · mgmt 9.2%"
+      },
+      "cls": 0.004,
+      "layoutShifts": [
+        {
+          "value": 0.0026863003954475306,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 563.703125,
+                "width": 300,
+                "height": 250.21875,
+                "top": 563.703125,
+                "right": 1421.640625,
+                "bottom": 813.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0010294094007201645,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 613.515625,
+                "width": 300,
+                "height": 199.40625,
+                "top": 613.515625,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Compose7/7 sections✓COMPANY PROFILE · RECOMMENDATION✓TRANSACTION SUMMARY AND NEW DEBT ISSUES✓CAPITAL STRUCTURE✓SENIORITY",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 447.9375,
+                "width": 300,
+                "height": 174.609375,
+                "top": 447.9375,
+                "right": 1421.640625,
+                "bottom": 622.546875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 437.015625,
+                "width": 300,
+                "height": 168.5,
+                "top": 437.015625,
+                "right": 1421.640625,
+                "bottom": 605.515625,
+                "left": 1121.640625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 1,
+      "longestTaskMs": 51,
+      "maxEventMs": 0,
+      "requests": 37,
+      "encodedKb": 672.4,
+      "transferredKb": 683.2,
+      "jsKb": 640.8,
+      "cssKb": 24.4,
+      "domNodes": 1033,
+      "heapMb": 11.6,
+      "taskDurationMs": 275.2,
+      "scriptDurationMs": 114.8,
+      "layoutDurationMs": 32.7,
+      "recalcStyleDurationMs": 10.4
+    },
+    {
+      "profile": "desktop",
+      "route": "/reports?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 595.8,
+      "url": "/reports",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 9.2,
+      "loadMs": 55.5,
+      "fcpMs": 28,
+      "lcpMs": 148,
+      "lcpElement": {
+        "tag": "span",
+        "id": null,
+        "className": "",
+        "text": "Kestrel Fund V 68.4% · co-invest 22.4% · mgmt 9.2%"
+      },
+      "cls": 0.004,
+      "layoutShifts": [
+        {
+          "value": 0.0026863003954475306,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 563.703125,
+                "width": 300,
+                "height": 250.21875,
+                "top": 563.703125,
+                "right": 1421.640625,
+                "bottom": 813.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0010294094007201645,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 613.515625,
+                "width": 300,
+                "height": 199.40625,
+                "top": 613.515625,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Compose7/7 sections✓COMPANY PROFILE · RECOMMENDATION✓TRANSACTION SUMMARY AND NEW DEBT ISSUES✓CAPITAL STRUCTURE✓SENIORITY",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 447.9375,
+                "width": 300,
+                "height": 174.609375,
+                "top": 447.9375,
+                "right": 1421.640625,
+                "bottom": 622.546875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 437.015625,
+                "width": 300,
+                "height": 168.5,
+                "top": 437.015625,
+                "right": 1421.640625,
+                "bottom": 605.515625,
+                "left": 1121.640625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 3,
+      "longestTaskMs": 53,
+      "maxEventMs": 0,
+      "requests": 37,
+      "encodedKb": 672.4,
+      "transferredKb": 683.2,
+      "jsKb": 640.8,
+      "cssKb": 24.4,
+      "domNodes": 1033,
+      "heapMb": 11.7,
+      "taskDurationMs": 275.7,
+      "scriptDurationMs": 114.3,
+      "layoutDurationMs": 33.7,
+      "recalcStyleDurationMs": 11.4
+    },
+    {
+      "profile": "desktop",
+      "route": "/reports?mode=reference",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 598,
+      "url": "/reports",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 19.7,
+      "loadMs": 54.9,
+      "fcpMs": 24,
+      "lcpMs": 144,
+      "lcpElement": {
+        "tag": "span",
+        "id": null,
+        "className": "",
+        "text": "Kestrel Fund V 68.4% · co-invest 22.4% · mgmt 9.2%"
+      },
+      "cls": 0.004,
+      "layoutShifts": [
+        {
+          "value": 0.0026863003954475306,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 563.703125,
+                "width": 300,
+                "height": 250.21875,
+                "top": 563.703125,
+                "right": 1421.640625,
+                "bottom": 813.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.0010294094007201645,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "ExportFormatPDF · US Letter / XLSXRendererCP-RENDER v2.2Citations6 in source registerSections7 of 7 includedAnalyst edit",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 630.546875,
+                "width": 300,
+                "height": 182.375,
+                "top": 630.546875,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 613.515625,
+                "width": 300,
+                "height": 199.40625,
+                "top": 613.515625,
+                "right": 1421.640625,
+                "bottom": 812.921875,
+                "left": 1121.640625
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "bg-caos-panel border border-caos-border rounded-md flex flex-col min-h-0 ",
+              "text": "Compose7/7 sections✓COMPANY PROFILE · RECOMMENDATION✓TRANSACTION SUMMARY AND NEW DEBT ISSUES✓CAPITAL STRUCTURE✓SENIORITY",
+              "previousRect": {
+                "x": 1121.640625,
+                "y": 447.9375,
+                "width": 300,
+                "height": 174.609375,
+                "top": 447.9375,
+                "right": 1421.640625,
+                "bottom": 622.546875,
+                "left": 1121.640625
+              },
+              "currentRect": {
+                "x": 1121.640625,
+                "y": 437.015625,
+                "width": 300,
+                "height": 168.5,
+                "top": 437.015625,
+                "right": 1421.640625,
+                "bottom": 605.515625,
+                "left": 1121.640625
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 3,
+      "longestTaskMs": 53,
+      "maxEventMs": 0,
+      "requests": 37,
+      "encodedKb": 672.4,
+      "transferredKb": 683.2,
+      "jsKb": 640.8,
+      "cssKb": 24.4,
+      "domNodes": 1033,
+      "heapMb": 11.7,
+      "taskDurationMs": 286.4,
+      "scriptDurationMs": 118.1,
+      "layoutDurationMs": 35.5,
+      "recalcStyleDurationMs": 11.1
+    }
+  ]
+}

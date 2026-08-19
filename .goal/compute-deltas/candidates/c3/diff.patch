@@ -1,0 +1,36 @@
+diff --git a/caos/server/engine/earnings.py b/caos/server/engine/earnings.py
+index 912a993..f211e23 100644
+--- a/caos/server/engine/earnings.py
++++ b/caos/server/engine/earnings.py
+@@ -38,19 +38,26 @@ def compute_deltas(normalized_financials: dict) -> dict:
+     """Period rows + the YoY delta summary + monitoring signals (pure)."""
+     rev = normalized_financials.get("revenue") or {}
+     eb = normalized_financials.get("adj_ebitda") or {}
+-    periods = sorted(set(rev) | set(eb), key=sort_key)
++    periods = sorted(rev.keys() | eb.keys(), key=sort_key)
+ 
+     rows: List[dict] = []
++    # Track the last two numeric margins in O(1) state instead of re-scanning
++    # `rows` for them afterward — single pass while the rows are built.
++    prev_margin: Optional[float] = None
++    last_margin: Optional[float] = None
+     for p in periods:
+         r, e = rev.get(p), eb.get(p)
+-        margin = (round(100 * e / r, 1)
+-                  if isinstance(r, (int, float)) and r and isinstance(e, (int, float)) else None)
++        if isinstance(r, (int, float)) and r and isinstance(e, (int, float)):
++            margin = round(100 * e / r, 1)
++            prev_margin, last_margin = last_margin, margin
++        else:
++            margin = None
+         rows.append({"period": p, "revenue": r, "adj_ebitda": e, "ebitda_margin": margin})
+ 
+     rev_yoy = _yoy(rows, "revenue")
+     eb_yoy = _yoy(rows, "adj_ebitda")
+-    margins = [r["ebitda_margin"] for r in rows if isinstance(r.get("ebitda_margin"), (int, float))]
+-    margin_change = round(margins[-1] - margins[-2], 1) if len(margins) >= 2 else None
++    margin_change = (round(last_margin - prev_margin, 1)
++                     if last_margin is not None and prev_margin is not None else None)
+ 
+     summary = {
+         "revenue_growth_pct": rev_yoy[0] if rev_yoy else None,

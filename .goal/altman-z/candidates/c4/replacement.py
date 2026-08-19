@@ -1,0 +1,44 @@
+def altman_z_double_prime(
+    *,
+    current_assets: float,
+    current_liabilities: float,
+    total_assets: float,
+    retained_earnings: float,
+    ebit: float,
+    total_liabilities: float,
+    book_equity: float,
+) -> Optional[Tuple[float, str]]:
+    """Z'' and its zone, or None when the inputs are unusable.
+
+    Returns ``None`` when a denominator is zero/negative (total assets or
+    liabilities), or when any input is missing/non-finite (``None``, ``NaN``,
+    ``+/-inf``) — in every such case the score would be meaningless or
+    silently poisoned (a ``NaN`` slips past ``<= 0`` and propagates through the
+    divides). Valid finite inputs are scored exactly as before.
+    """
+    import math
+
+    # Reject missing or non-finite inputs up front: a NaN total_assets passes
+    # the `<= 0` test (NaN comparisons are False) and would poison every divide;
+    # an inf input would yield inf/NaN ratios. math.isfinite(None) raises, so
+    # the None check must come first.
+    for _v in (
+        current_assets,
+        current_liabilities,
+        total_assets,
+        retained_earnings,
+        ebit,
+        total_liabilities,
+        book_equity,
+    ):
+        if _v is None or not math.isfinite(_v):
+            return None
+
+    if total_assets <= 0 or total_liabilities <= 0:
+        return None
+    x1 = (current_assets - current_liabilities) / total_assets
+    x2 = retained_earnings / total_assets
+    x3 = ebit / total_assets
+    x4 = book_equity / total_liabilities
+    z = round(3.25 + 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4, 2)
+    return z, zone_for(z)

@@ -1,0 +1,47 @@
+
+================================================================================
+FILE: CP_QA_POLICY_v1.0.txt
+STATUS: UPDATED (vNext)
+PURPOSE: QA boundary, committee readiness gate, QA status enums, and QA
+prohibitions.
+================================================================================
+
+CP QA Policy v1.0
+
+QA Boundary
+
+CP-5 is the research-integrity QA gate. CP-5B is the evidence-trace
+validation gate. Debate modules do not replace QA.
+
+Committee Readiness Gate
+
+An output may be committee-ready only if material claims have evidence trace,
+confidence, limitation flags, validation status, and no unresolved critical
+contradictions.
+
+QA Status Enums
+
+Two separate status enums are maintained per CP_CANONICAL_STATE_RULES.txt:
+
+qa_status (owned by CP-5):
+- Not Reviewed → Passed | Restricted | Blocked
+
+committee_status (determined by CP-5 clearance decision):
+- Draft Only → Committee Ready | Restricted | Blocked | Requires More Work |
+  Insufficient Information
+
+These are distinct enums. qa_status reflects QA audit outcome. committee_status
+reflects committee-use clearance. Both must be set and preserved in all
+downstream handoffs.
+
+QA Severity Engine (owned by CP-5):
+- Any Critical finding → qa_status = Blocked
+- Any Material, no Critical → qa_status = Restricted
+- Only Minor or none → qa_status = Passed
+
+QA Prohibitions
+
+QA may not create new analysis, recalculate metrics, reinterpret legal
+documents, or invent recommendations. QA may flag, restrict, or block but
+must never silently repair malformed schema, unsupported claims, source
+conflicts, or missing evidence.

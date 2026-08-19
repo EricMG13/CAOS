@@ -1,0 +1,118 @@
+{
+  "persona": "p3",
+  "base": "http://localhost:3030",
+  "steps": [
+    {
+      "route": "/monitor",
+      "label": "/monitor",
+      "status": 200,
+      "ms": 14186,
+      "url": "http://localhost:3030/monitor?context=39e52955-a282-413d-a1cd-5b7a7ffd5c2f",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 1791,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAlert Monitor\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nAlert Monitor\nCP-MON\nLIVE\nMonitor — live alert worklist\n⋯ Monitor shortcuts\nACKNOWLEDGE SELECTED\nNo persisted alerts to acknowledge.\nACTIVE ANALYSIS\nAlert oversight\ncross-coverage · 0 findings\nAlert worklist\nLIVE WORKLIST\n0 persisted alerts\n\nAcknowledge, assign and hand off persisted alert events; phone remains triage-only.\n\n▾ CONTEXT\n▾ INSPECTOR\nDECISION BRIEF\nCHANGE · IMPACT · ACTION · EVIDENCE\n−\nENTIRE BRIEF\n○\nNo persisted alert events observed\nOBSERVATION AUTHORITY\nas of no persisted event timestamp\nLIVE\nDERIVED\nAlert inbox · persisted events\nALERTS\nGOVERNANCE\n\n0 persisted alerts\nAll 0\nOpen 0\nAcknowledged 0\nResolved 0\nNO OBSERVED DATA\nNo persisted alerts observed\n\nThe persisted alert-event read completed; Reference fixtures remain separate.\n\nAlert rule controls\nWATCH RULES\nOFFLINE\nWatch rules disabled\n\nThe deployment activation flag is default-off. Historical persisted alerts remain available.\n\nRecheck watch-rule activation\nGovernance navigation\nGovernance summary\nCP-5 findings\n0\nFailed gates\n0\nSource gaps\n0\nMixed origin\n0\nStale sources\nUnavailable\n\nQueues are observed-empty — the first completed run populates them.\n\nOPEN GOVERNANCE QUEUE\nSource intake health\nZERO-CHUNK DOCUMENTS · VAULTED, UNUSABLE\nNo zero-chunk documents — every vaulted source produced usable text.\nOCR-LANE DOCUMENTS · LOWER FIDELITY\nNo OCR-derived documents — every extraction used a native text layer.\nORIGIN ROLLUP · LATEST RUN OWNER\nNo vaulted sources to attribute.\nCited alert brief\nGENERATE CITED BRIEF\n\nNo cited brief generated.",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Alert Monitor",
+        "Alert worklist",
+        "Alert inbox · persisted events",
+        "Alert rule controls",
+        "Governance summary",
+        "Source intake health",
+        "Cited alert brief"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p3/_monitor.png",
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/pipeline",
+      "label": "/pipeline",
+      "status": 200,
+      "ms": 8048,
+      "url": "http://localhost:3030/pipeline?context=3eed53b9-e6d3-4c96-a26c-c7be5b3f2076",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 572,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nPipeline\nPIPELINE\nNO RUNS FOR THIS ISSUER\nRun state\nOPEN REFERENCE PLAN\nDOCUMENT INTAKE\nACTIVE ANALYSIS\nPipeline run review\ncross-coverage · 0 findings\nNO OBSERVED DATA\nNo runs for this issuer\n\nThis issuer has never been analysed. Start a run from Document Intake to populate the CP-X route graph.\n\nissuer No issuer selected",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Pipeline",
+        "No runs for this issuer"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p3/_pipeline.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/decisions",
+      "label": "/decisions",
+      "status": 200,
+      "ms": 7889,
+      "url": "http://localhost:3030/decisions?context=6bbc7995-31d4-4a83-a3eb-33bda4ae429d",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 787,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nIC Book\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nIC Book\nIC\nIC Book\n0 agenda items\nADD AGENDA ITEM\nACTIVE ANALYSIS\nIC Book\ncross-coverage · 0 findings\n\nPrepare agenda items, inspect evidence and record committee votes.\n\nAGENDA\nDECISION HISTORY\nSTATUS\nAll statuses\nDraft\nReady\nDecided\nCancelled\nREFRESH\n▾ INSPECTOR\nDECISION BRIEF\nCHANGE · IMPACT · ACTION · EVIDENCE\n+\nNO OBSERVED DATA\nNo agenda items yet\n\nUse Add agenda item in the page header to begin the book.\n\nSelect an agenda item or decision to inspect its thesis, conditions, lineage and governance record.\nAgenda item form",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "IC Book",
+        "No agenda items yet"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p3/_decisions.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/reports",
+      "label": "/reports",
+      "status": 200,
+      "ms": 7998,
+      "url": "http://localhost:3030/reports",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 489,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nReport Studio\nCP-RENDER\nReport Studio — committee deliverables\nOPEN REFERENCE REPORT\nANALYSIS CONTEXT · RESOLVING\nNO OBSERVED DATA\nSelect an issuer report\n\nOpen Report Studio from an issuer or choose the explicitly labelled reference report.",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Report Studio",
+        "Select an issuer report"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p3/_reports.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    },
+    {
+      "route": "/upload",
+      "label": "/upload",
+      "status": 200,
+      "ms": 7798,
+      "url": "http://localhost:3030/upload?context=540f72e3-86af-4cfa-bae4-8545f20a8a4e",
+      "title": "Credit Agent OS (CAOS)",
+      "textLen": 797,
+      "text": "Skip to content\nSkip to navigation\nSkip to page actions\nCAOS\nCREDIT AGENT OS\nANALYST PRIORITIES\nDirectory\nDeep-Dive\nModel Builder\nReport Studio\nPipeline\nUpload\nAll Workflows\nAsk\nAlt+K\nSettings\nVIEW\nAnalyst\nPM\nQA\nPresentation only — permissions unchanged.\nUpload\nCP-0 · L0\nDocument Intake — Pipeline L0 source readiness\nPDF / XLSX → document vault → searchable evidence → source classification\nMNPI HANDLING POLICY APPLIES · ANALYST-DECLARED CLASSIFICATION\nNo page actions available\nACTIVE ANALYSIS\nDocument intake\ncross-coverage · 0 findings\nTIP\nDrop all of an issuer's deal documents at once — CP-0 classifies and dates each on ingest. Pick a run mode and the engine routes the matching modules.\n✕\nINTAKE STEPS\n01 Issuer\n02 Files & run mode\n03 Ingested\nSelect issuer\n0 registered\n+ ADD NEW ISSUER",
+      "suspicious": [],
+      "h1": [
+        "Analyst priorities",
+        "Upload",
+        "Select issuer"
+      ],
+      "shot": "/home/user/Credit-Operating-System/.goal/persona-journey-stress-test/shots/p3/_upload.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedReqs": [],
+      "badResponses": []
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+# AI security review of PR diffs — anthropics/claude-code-security-review.
+#
+# ACTIVATION (one-time, required):
+#   1. Add repo secret CLAUDE_API_KEY (Settings → Secrets and variables → Actions),
+#      using an Anthropic API key enabled for Claude Code usage.
+#   2. Settings → Actions → General → "Require approval for all external contributors"
+#      — the action is NOT hardened against prompt injection; only run on trusted diffs.
+# Until the secret exists, the review step self-skips (no failing checks on PRs).
+#
+# Pinned to a commit SHA (no upstream tags exist) so a silent main change can't alter
+# what runs in CI. Bump deliberately; ensure the pulled Claude Code is >= 2.1.128
+# (mitigates the /proc secret-exposure CVE).
+name: Security Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # post findings as PR comments
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    env:
+      CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+
+      - name: Claude security review
+        if: ${{ env.CLAUDE_API_KEY != '' }}   # skip cleanly when the secret is unset
+        uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+        with:
+          comment-pr: true
+          claude-api-key: ${{ env.CLAUDE_API_KEY }}
+          claude-model: claude-sonnet-5   # cost control vs the default Opus tier; adjust if rejected

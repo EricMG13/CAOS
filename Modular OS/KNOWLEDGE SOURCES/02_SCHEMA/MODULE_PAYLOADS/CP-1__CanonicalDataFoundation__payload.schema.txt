@@ -1,0 +1,42 @@
+CP-1_PAYLOAD.schema.patch.txt
+Module: CP-1 | CanonicalDataFoundation
+Patch Type: downstream_readiness correction
+Updated: 08 June 2026
+Resolves: Audit M-6
+
+ISSUE:
+  CP-1 downstream_readiness previously listed CP-6A as a direct downstream.
+  SYSTEM_ROUTE_MAP_v2.md shows no direct CP-1 → CP-6A edge.
+  CP-6A receives CP-1 data indirectly via CP-2 and other L2/L3/L4 modules.
+
+CHANGE:
+  Remove "CP-6A" from downstream_readiness required array.
+
+BEFORE:
+  "downstream_readiness": {
+    "type": "object",
+    "required": ["CP-1A", "CP-1B", "CP-1C", "CP-2", "CP-4C", "CP-6A"],
+    ...
+  }
+
+AFTER:
+  "downstream_readiness": {
+    "type": "object",
+    "required": ["CP-1A", "CP-1B", "CP-1C", "CP-2", "CP-4C"],
+    "properties": {
+      "CP-1A": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] },
+      "CP-1B": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] },
+      "CP-1C": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] },
+      "CP-2":  { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] },
+      "CP-4C": { "type": "string", "enum": ["ready", "partial", "blocked", "not_applicable"] }
+    }
+  }
+
+VALIDATION:
+  Cross-check: SYSTEM_ROUTE_MAP_v2.md edges from CP-1:
+    CP-1 → CP-1A  ✓
+    CP-1 → CP-1B  ✓
+    CP-1 → CP-1C  ✓
+    CP-1 → CP-2   ✓
+    CP-1 → CP-4C  ✓
+    CP-1 → CP-6A  ✗ (no direct edge — removed)

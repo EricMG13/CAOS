@@ -1,0 +1,225 @@
+# CP Agents — Credit Analysis Co-Pilot
+# Onboarding Documentation
+# Version: 2.0 | Date: 2026-06-08
+
+---
+
+## 1. Purpose and Scope
+
+CP Agents is a modular, AI-driven credit analysis operating system designed to augment credit analysts in producing institutional-quality credit research. The system comprises **27 specialised agents** — 24 analytical modules organised into 8 layers, plus 3 infrastructure services — that work together to deliver deep, structured, evidence-based credit analysis.
+
+### What the system does
+
+- Ingests and validates source documents before analysis begins
+- Routes execution intelligently based on task type and available inputs
+- Produces structured issuer profiles, business risk assessments, and credit narratives
+- Performs detailed financial synthesis, EBITDA quality review, and addback challenge
+- Maps full capital structures, maturity profiles, and refinancing/LME pathways
+- Analyses covenant packages and calculates compliance capacity
+- Generates relative value assessments and market context
+- Conducts adversarial bull/bear/IC chair credit debates
+- Produces portfolio-level allocation challenges and sizing recommendations
+- Produces sector-level credit reviews with comparative peer tables and early warning dashboards
+- Monitors credit portfolios continuously via the CreditPulse alert system
+- Integrates email intelligence (rating actions, sell-side research, trading desk color, internal analyst notes) as a formal source tier across all modules
+- Renders final output in multiple formats (markdown, JSON, Word)
+
+---
+
+## 2. Intended Audience
+
+| Role | How to use CP Agents |
+|---|---|
+| Credit analysts | Run full or partial credit workflows |
+| Portfolio managers | Use CP-6E for allocation and sizing debates |
+| Risk managers | Review CP-6A adversarial output and CP-MON alerts |
+| Team leads | Configure module execution and review quality |
+| New joiners | Follow onboarding pathways for guided analysis |
+| Sector analysts | Run CP-SR sector reviews and CP-MON monitoring workflows |
+
+---
+
+## 3. High-Level System Overview
+
+The system is organised into **8 analytical layers** (L0 through L7), an **orchestration layer**, and **3 infrastructure services**.
+
+### Layer Model
+
+| Layer | Function | Modules |
+|---|---|---|
+| L0 | Source readiness | CP-0 |
+| LX | Orchestration & routing | CP-X |
+| L1 | Data foundation | CP-1, CP-1A, CP-1B, CP-1C |
+| L2 | Fundamental credit synthesis | CP-2, CP-2B, CP-2C, CP-2D, CP-2E, CP-2F, CP-2G |
+| L3 | Valuation, portfolio & refinancing | CP-3, CP-3B, CP-3C, CP-3D |
+| L4 | Legal & covenant | CP-4, CP-4D, CP-4C |
+| L5 | Quality assurance | CP-5B, CP-5 |
+| L6 | Debate & decision | CP-6A, CP-6E |
+| L7 | Sector & monitoring | CP-SR, CP-MON |
+| Infra | Rendering & extraction | CP-RENDER, CP-EXTRACT, CP-PROMPT |
+
+### Total Agent Count: 29
+
+- 26 analytical modules (L0–L7)
+- 3 infrastructure services
+
+---
+
+## 4. Prerequisites
+
+| Requirement | Details |
+|---|---|
+| Copilot access | Microsoft 365 Copilot with file upload capability |
+| Source documents | Company filings, lender reports, OMs, rating reports, credit agreements |
+| Module files | Active Prompt (.md), REF files (.md), Schema files (.md) per module |
+| Governance files | MODULES_REFERENCE.md, MODULE_EXECUTION_ORDER.md, SYSTEM_ROUTE_MAP.md, EXAMPLE_PATHWAYS.md, SUGGESTED_PROMPTS.md, REF_CP-EMAIL_SourceRoutingMatrix.md |
+| Email / mailbox access | Required for CP-MON and CP-SR email intelligence intake (rating actions, sell-side research, trading desk commentary, internal notes) |
+
+---
+
+## 5. How to Get Started
+
+1. Upload this onboarding document and the governance files to your Copilot session.
+2. Review `MODULES_REFERENCE.md` to understand each module's purpose and inputs.
+3. Review `MODULE_EXECUTION_ORDER.md` to understand execution sequencing.
+4. Review `EXAMPLE_PATHWAYS.md` for common workflow patterns.
+5. Start with CP-0 (Source Readiness) to validate your document pack.
+6. Use CP-X to route to the appropriate analytical module.
+7. Follow the suggested prompts in `SUGGESTED_PROMPTS.md` for each module.
+8. Use CP-SR for sector-level credit reviews with email intelligence integration.
+9. Configure CP-MON for continuous monitoring and alert generation across your coverage universe.
+10. Upload `REF_CP-EMAIL_SourceRoutingMatrix.md` to enable standardised email integration across all modules.
+
+---
+
+## 6. Summary of Available Modules
+
+| Module ID | Name | Layer | Purpose |
+|---|---|---|---|
+| CP-0 | SourceReadiness | L0 | Validate and classify source documents before analysis |
+| CP-X | PlannerRouter | LX | Route execution to appropriate modules based on CP-0 readiness |
+| CP-1 | CanonicalDataFoundation | L1 | Normalise financial statements into canonical financials and KPIs |
+| CP-1A | BusinessTransactionFactPack | L1 | Extract business, transaction, ownership, and operating-model facts |
+| CP-1B | EarningsDelta | L1 | Compare current vs prior period performance |
+| CP-1C | PeerBenchmark | L1 | Compare issuer to peers (core formulas, 6-level peer hierarchy) |
+| CP-2 | FundamentalCreditSynthesizer | L2 | Integrated fundamental credit synthesis and committee memo |
+| CP-2B | DownsidePathway | L2 | Model stress transmission from operating drivers to credit consequences |
+| CP-2C | EventCatalystRegister | L2 | Identify event catalysts and trigger events with timing |
+| CP-2D | GovernanceSponsorScore | L2 | Assess governance quality and sponsor / management strength |
+| CP-2E | LiquidityCashFlowBridge | L2 | Liquidity assessment and cash-flow bridge |
+| CP-2F | MacroFXHedgingSensitivity | L2 | Macro sensitivity, FX exposure, and hedging assessment |
+| CP-2G | ESGSustainabilityCreditRisk | L2 | Assess issuer-specific ESG/transition credit transmission and sustainability-linked debt mechanics |
+| CP-3 | RelativeValueSecuritySelection | L3 | Spread, relative value, and security selection |
+| CP-3B | RecoveryInstrumentPreference | L3 | Recovery waterfall, instrument preference, and LGD estimates |
+| CP-3C | PortfolioFitPositionSizing | L3 | Portfolio fit and position-sizing recommendation |
+| CP-3D | RefinancingLMERisk | L3 | Refinancing risk, LME risk, and maturity-wall analysis |
+| CP-4 | LegalCovenantInterpreter | L4 | Interpret covenants, covenant aggressiveness, legal/credit implications |
+| CP-4D | RestrictedGroupGuaranteeMap | L4 | Map entity perimeter, guarantees, collateral, structural priority, leakage, and priming exposure |
+| CP-4C | CovenantCapacityCalculator | L4 | Calculate covenant capacity and headroom |
+| CP-5 | ResearchIntegrityQA | L5 | Audit research integrity and gate module outputs |
+| CP-5B | EvidenceTraceValidator | L5 | Validate evidence lineage and identify orphan claims |
+| CP-6A | ICDebateChallenge | L6 | Bull/Bear/IC Chair structured credit debate |
+| CP-6E | PortfolioDebateChallenge | L6 | Portfolio allocation challenge and sizing |
+| CP-SR | SectorReview | L7 | Sector-level credit review with 7-section output, 6 investigation dimensions, comparative peer table, early warning dashboard, and email intelligence integration |
+| CP-MON | CreditPulse | L7 | Continuous credit monitoring, alert generation, rating action tracking, email-driven trigger detection, and early warning flag management |
+| CP-RENDER | OutputRenderer | Infra | Final output formatting (markdown, JSON, Word) |
+| CP-EXTRACT | DataExtractor | Infra | Structured data extraction from source documents |
+| CP-PROMPT | PromptLibrary | Infra | Suggested prompt templates for each module |
+
+---
+
+## 7. Deployment
+
+### Phase 1 — Foundation (Week 1)
+Upload governance files and infrastructure services.
+
+### Phase 2 — Core Analytical Pipeline (Week 2)
+Deploy L0–L2 modules: CP-0, CP-X, CP-1, CP-2, CP-2E.
+
+### Phase 3 — Extended Analysis (Week 3)
+Deploy L3–L5 modules: CP-3, CP-3C, CP-3D, CP-4, CP-4C, CP-5, CP-5B.
+
+### Phase 4 — Debate, Portfolio, Sector & Monitoring (Week 4)
+Deploy L6–L7 modules and rendering:
+
+| Order | Module | Files Required |
+|---|---|---|
+| 24 | CP-6A | Active Prompt + REF files + Schema |
+| 25 | CP-6E | Active Prompt + REF files + Schema |
+| 26 | CP-SR | Active Prompt + 7 REF files (A–G) + 1 Schema |
+| 27 | CP-MON | Active Prompt + REF files + Alert Schema |
+
+**Governance addition:** Upload `REF_CP-EMAIL_SourceRoutingMatrix.md` to the governance file set. This file standardises how email-derived intelligence is routed to all CP modules and must be available to CP-X, CP-MON, and CP-SR at runtime.
+
+---
+
+## 8. Common Errors and Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| Module returns generic output | Missing REF files or Schema | Re-upload all module files |
+| CP-X routes to wrong module | Ambiguous task description | Use explicit module ID in prompt |
+| CP-0 flags source gaps | Incomplete document pack | Upload missing sources |
+| Financial metrics disagree with source | Stale or conflicting data | Check data-as-of dates per source |
+| Covenant capacity returns N/A | Missing credit agreement | Upload indenture or credit agreement |
+| CP-6A debate is one-sided | Insufficient bear/bull evidence | Provide rating reports and sell-side research |
+| CP-SR returns Low confidence | Insufficient Tier 1/2 sources for sector | Provide additional source documents or enable email intelligence intake |
+| CP-MON not triggering alerts | Email classification not matching sector | Review REF_CP-SR_G email taxonomy and verify sector keywords in runtime config |
+
+---
+
+## 9. Email Intelligence Integration
+
+### Overview
+
+`REF_CP-EMAIL_SourceRoutingMatrix.md` is the cross-module governance file that standardises how email-derived intelligence is routed to all CP modules. It defines permissions, confidence treatment, staleness rules, and guardrails for each module.
+
+### Use Types
+
+| Use Type | Definition |
+|---|---|
+| Evidence | Email content directly supports a conclusion (subject to tier and confidence rules) |
+| Context | Email enriches interpretation but does not independently prove the conclusion |
+| Trigger | Email initiates a module run, refresh, or alert |
+| Routing Signal | Email tells CP-X which module should run next |
+
+### Email Categories
+
+| Category | Default Tier |
+|---|---|
+| RATING_ACTION | 1.5 |
+| INTERNAL_RESEARCH | 1.5 |
+| SELL_SIDE_RESEARCH | 2.0 |
+| SELL_SIDE_NEWS | 2.0 |
+| TRADING_DESK | 2.5 |
+| MARKET_DATA | 2.5 |
+| EVENT_INVITE | 3.0 |
+| INTERNAL_COMMS | 3.0 |
+
+### Source Tier Hierarchy
+
+| Tier | Reliability | Examples |
+|---|---|---|
+| 1 | High | Company filings, OMs, credit agreements |
+| 1.5 | High | Internal analyst notes, forwarded rating actions |
+| 2 | Medium-High | Agency reports, CreditSights, bank research |
+| 2.5 | Medium | Trading desk color, pricing axes |
+| 3 | Medium | Industry associations, media, market commentary |
+| 4 | Low | Social media, unverified estimates |
+
+### Rollout Priority
+
+| Phase | Modules | Rationale |
+|---|---|---|
+| Phase 1 | CP-MON, CP-1, CP-3/3C/3D, CP-5/5B, CP-SR | Highest real-time credit intelligence benefit |
+| Phase 2 | CP-6A, CP-6E, CP-X, CP-2/2E | Analytical enrichment with guardrails |
+| Phase 3 | CP-4/4C, Legal/Structural, Reporting | Triggers, context, and evidence appendix only |
+
+---
+
+## 10. Version History
+
+| Version | Date | Changes |
+|---|---|---|
+| 1.0 | 2026-05-18 | Initial onboarding documentation |
+| 2.0 | 2026-06-08 | Added CP-SR (SectorReview), CP-MON (CreditPulse), L7 layer, email intelligence integration, REF_CP-EMAIL_SourceRoutingMatrix.md governance file |

@@ -1,0 +1,9 @@
+CP CANONICAL STATUS TAXONOMY (NEW, resolves E1)
+D1 QA: Not Reviewed | Passed | Restricted | Blocked
+D2 COMMITTEE: Committee Ready | Draft Only | Requires More Work | Insufficient Information | Restricted | Blocked
+D3 CALCULATION: Supported | Derived | Implied | Provisional | Not Available | Not Comparable | Not Calculable | Insufficient Information
+D4 SOURCE QUALITY: Primary-Verified | Primary-Unverified | Secondary-Reputable | Secondary-Unverified | Tertiary | User-Provided | Not Available
+D5 VALIDATION: Passed | Restricted | Blocked | Not Executed
+D6 EXTRACTION: Success | Partial | Failed
+D7 EXPORT: Complete | Partial | Failed
+D8 SEVERITY: CRITICAL | MATERIAL | MINOR

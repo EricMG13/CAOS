@@ -1,0 +1,51 @@
+
+================================================================================
+FILE: CP_LIMITATION_TAXONOMY_v2.2.txt
+STATUS: UPDATED (vNext)
+PURPOSE: System-wide limitation taxonomy — required text, triggers, and
+canonical status values.
+================================================================================
+
+limitation_taxonomy_version: "2.2"
+source_boundary: "user-provided materials and explicitly provided upstream
+  artifacts only"
+
+limitations:
+
+  insufficient_information:
+    required_text: "[Insufficient Information]"
+    trigger: "required evidence unavailable in provided materials"
+
+  not_calculable:
+    required_text: "Not Calculable from Provided Materials"
+    trigger: "metric lacks formula, numerator, denominator, period, source
+      trace, or normalization"
+
+  missing_numeric_value:
+    required_value: null
+    trigger: "numeric value not explicitly sourced"
+
+  schema_conflict:
+    status: "Requires Review"
+    trigger: "manifest/instructions conflict with payload schema module_name
+      or owned_object"
+
+  source_quality:
+    canonical_values:
+      - "Primary-Verified"
+      - "Primary-Unverified"
+      - "Secondary-Reputable"
+      - "Secondary-Unverified"
+      - "Tertiary"
+      - "User-Provided"
+      - "Not Available"
+    note: "Aligned with CP_CANONICAL_STATUS_TAXONOMY.txt Domain 4 and
+      CP-0__SUPPORT__SOURCE_QUALITY_READINESS_ROUTING.txt"
+
+  downstream_readiness:
+    canonical_values:
+      - "READY"
+      - "READY WITH LIMITATIONS"
+      - "CONDITIONAL"
+      - "BLOCKED"
+    note: "Aligned with CP-0 Readiness Verdict values"

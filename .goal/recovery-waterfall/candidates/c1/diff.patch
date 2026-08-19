@@ -1,0 +1,14 @@
+--- a/caos/server/engine/capstructure.py
++++ b/caos/server/engine/capstructure.py
+@@ -71,8 +71,11 @@ def recovery_waterfall(tranches: List[dict], distressed_ev: float) -> List[dict]
+             continue
+         recov = min(amt, remaining) if remaining > 0 else 0.0
+         remaining = max(0.0, remaining - amt)
+-        out.append({**t, "recovery_musd": round(recov, 1),
+-                    "recovery_pct": round(100 * recov / amt, 1)})
++        out.append({
++            **t,
++            "recovery_musd": round(recov, 1),
++            "recovery_pct": round(100 * recov / amt, 1),
++        })
+     return out

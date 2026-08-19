@@ -1,0 +1,47 @@
+# gitleaks config for the CI secret-scan gate (.github/workflows/ci.yml → security).
+# Extends the built-in ruleset; the only customization is a path allowlist so the
+# gate stays green on content that legitimately contains *example* secrets or
+# high-entropy noise — never real credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Prose/vendored/built trees: example tokens + minified noise, not real secrets"
+regexes = [
+  # C3 observation-identity schema tag (alert_evaluation.py): a public version
+  # constant, not a credential. The generic-api-key rule matched the historical
+  # `_OBSERVATION_KEY_VERSION` identifier; commit-fingerprint pinning does not
+  # survive CI checkout attribution, so allowlist the exact literal value.
+  '''c3-observation-v1''',
+]
+paths = [
+  # Compiled Next.js export shipped for the single-app deploy — minified bundles
+  # read as high entropy and false-positive the generic rule.
+  '''caos/server/static/.*''',
+  # Local Next.js preview/build worktrees. These contain generated per-build
+  # encryption material in manifests and must never be versioned or deployed.
+  '''caos/frontend/private/.*''',
+  # Methodology prompt corpus (prose) and vendored agent-skill docs whose
+  # examples include placeholder API keys (e.g. "sk-1234...").
+  '''Modular OS/.*''',
+  '''\.agents/skills/.*''',
+  '''\.claude/skills/.*''',
+  # pip-compile dependency lock: hundreds of sha256 wheel hashes. A hex digest
+  # that happens to begin "eaaa…" (or similar) false-positives vendor-token rules
+  # (e.g. square-access-token = EAAA + 60 alnum). These are package hashes, not
+  # secrets — the same high-entropy-noise rationale as the built static bundle.
+  '''caos/server/requirements\.lock''',
+  # E4 secret-log-hygiene test: sentinel values are DELIBERATELY secret-shaped
+  # (hex-ish suffixes) so the test proves a real leak would be caught — that's
+  # the point of the file, not an accident. Never real credentials (SECRETS.md).
+  '''caos/tests/server/test_secret_log_hygiene\.py''',
+  # Phase 2 signed-preview tests use an explicit synthetic session secret long
+  # enough to exercise the production token contract. It is fixture data only.
+  '''caos/tests/server/test_market_xlsx_commit\.py''',
+  # H0 release manifests (build_release_manifest.py output): the config
+  # fingerprint maps tracked non-secret deploy files to their sha256 digests,
+  # so lines like `"oauth2-proxy.cfg": "<64-hex>"` false-positive the
+  # generic-api-key rule. The generator writes digests of *tracked, non-secret*
+  # files only — real secrets never enter a manifest by construction.
+  '''caos/docs/qa/release/.*/RELEASE_MANIFEST\.json''',
+]

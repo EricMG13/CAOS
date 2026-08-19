@@ -1,0 +1,36 @@
+{
+  "$schema": "https://docs.fallow.tools/fallow.schema.json",
+  "ignorePatterns": ["ds-bundle/**", ".ds-sync/**", ".design-sync/**", "outputs/**"],
+  "ignoreExportsUsedInFile": true,
+  "ignoreDependencies": ["axe-core", "eslint-config-next"],
+  "entry": ["caos/tests/frontend/e2e/**/*.spec.ts", "caos/frontend/scripts/**/*.mjs"],
+  "ignoreExports": [
+    {
+      "file": "caos/frontend/src/lib/command/data.ts",
+      "exports": ["*"]
+    },
+    {
+      "file": "caos/frontend/src/lib/command/rvdata.ts",
+      "exports": ["*"]
+    },
+    {
+      "file": "caos/frontend/src/components/reports/AuthorityBlock.tsx",
+      "exports": ["AuthorityBlock"]
+    },
+    {
+      "file": "caos/frontend/src/components/shared/AuthorityBlock.tsx",
+      "exports": ["AuthorityBlock"]
+    },
+    {
+      "file": "caos/frontend/src/lib/api.ts",
+      "exports": ["DecisionVote"]
+    },
+    {
+      "file": "caos/frontend/src/lib/ic-book.ts",
+      "exports": ["DecisionVote"]
+    }
+  ],
+  "rules": {
+    "require-suppression-reason": "error"
+  }
+}

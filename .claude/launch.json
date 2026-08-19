@@ -1,0 +1,105 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/server' && exec .venv311/bin/python run.py"
+      ],
+      "autoPort": true,
+      "port": 8000
+    },
+    {
+      "name": "frontend-dev",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/frontend' && exec npm run dev"
+      ],
+      "autoPort": false,
+      "port": 3000
+    },
+    {
+      "name": "qa-backend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/server' && PORT=8010 HOST=127.0.0.1 ENVIRONMENT=development CAOS_DEMO_SEED=1 DATABASE_URL='sqlite+aiosqlite:////Users/ericguei/Claude/Projects/Credit Operating System/caos/server/data/caos_qa5.db' SESSION_SECRET= ANTHROPIC_API_KEY= OPENROUTER_API_KEY= GEMINI_API_KEY= EDGAR_USER_AGENT= VAULT_EXPORT_DIR= exec .venv311/bin/python run.py"
+      ],
+      "autoPort": false,
+      "port": 8010
+    },
+    {
+      "name": "qa-frontend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/frontend' && NEXT_PUBLIC_API_URL='http://localhost:8010' NEXT_DIST_DIR='.next-qa' PORT=3010 exec npm run dev"
+      ],
+      "autoPort": false,
+      "port": 3010
+    },
+    {
+      "name": "qa2-backend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/server' && PORT=8020 HOST=127.0.0.1 ENVIRONMENT=development DATABASE_URL='sqlite+aiosqlite:////Users/ericguei/Claude/Projects/Credit Operating System/caos/server/data/caos_qa2.db' SESSION_SECRET='qa-fixed-secret-do-not-change' ANTHROPIC_API_KEY= EDGAR_USER_AGENT= VAULT_EXPORT_DIR= exec .venv/bin/python run.py"
+      ],
+      "autoPort": false,
+      "port": 8020
+    },
+    {
+      "name": "qa2-frontend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/frontend' && NEXT_PUBLIC_API_URL='http://localhost:8020' NEXT_DIST_DIR='.next-qa2' PORT=3020 exec npm run dev"
+      ],
+      "autoPort": false,
+      "port": 3020
+    },
+    {
+      "name": "qa3-backend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/server' && PORT=8030 HOST=127.0.0.1 ENVIRONMENT=development CAOS_DEMO_SEED=1 DATABASE_URL='sqlite+aiosqlite:////Users/ericguei/Claude/Projects/Credit Operating System/caos/server/data/caos_qa3.db' SESSION_SECRET= ANTHROPIC_API_KEY= EDGAR_USER_AGENT= VAULT_EXPORT_DIR= exec .venv311/bin/python run.py"
+      ],
+      "autoPort": false,
+      "port": 8030
+    },
+    {
+      "name": "qa3-frontend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/frontend' && NEXT_PUBLIC_API_URL='http://localhost:8030' NEXT_DIST_DIR='.next-qa3' PORT=3030 exec npm run dev"
+      ],
+      "autoPort": false,
+      "port": 3030
+    },
+    {
+      "name": "qa4-backend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/server' && PORT=8040 HOST=127.0.0.1 ENVIRONMENT=development CAOS_DEMO_SEED=1 DATABASE_URL='sqlite+aiosqlite:////Users/ericguei/Claude/Projects/Credit Operating System/caos/server/data/caos_qa4.db' SESSION_SECRET= ANTHROPIC_API_KEY= EDGAR_USER_AGENT= VAULT_EXPORT_DIR= exec .venv311/bin/python run.py"
+      ],
+      "autoPort": false,
+      "port": 8040
+    },
+    {
+      "name": "qa4-frontend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/ericguei/Claude/Projects/Credit Operating System/caos/frontend' && NEXT_PUBLIC_API_URL='http://localhost:8040' NEXT_DIST_DIR='.next-qa4' PORT=3040 exec npm run dev"
+      ],
+      "autoPort": false,
+      "port": 3040
+    }
+  ]
+}

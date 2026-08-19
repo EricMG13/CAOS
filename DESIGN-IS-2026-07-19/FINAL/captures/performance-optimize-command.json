@@ -1,0 +1,1678 @@
+{
+  "base": "http://127.0.0.1:4176",
+  "generatedAt": "2026-07-20T07:31:02.529Z",
+  "profiles": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "cpuRate": 1,
+      "network": null,
+      "scanErrors": 0,
+      "summary": {
+        "readyMs": {
+          "median": 502.8,
+          "p75": 513.6,
+          "p95": 608.8,
+          "worstRoute": "/command"
+        },
+        "fcpMs": {
+          "median": 28,
+          "p75": 28,
+          "p95": 36,
+          "worstRoute": "/command"
+        },
+        "lcpMs": {
+          "median": 152,
+          "p75": 156,
+          "p95": 272,
+          "worstRoute": "/command"
+        },
+        "tbtMs": {
+          "median": 0,
+          "p75": 0,
+          "p95": 0,
+          "worstRoute": "/command"
+        },
+        "cls": {
+          "median": 0.025,
+          "p75": 0.025,
+          "p95": 0.025,
+          "worstRoute": "/command"
+        },
+        "encodedKb": {
+          "median": 421.7,
+          "p75": 422.3,
+          "p95": 423.6,
+          "worstRoute": "/command"
+        },
+        "jsKb": {
+          "median": 280.8,
+          "p75": 280.8,
+          "p95": 280.8,
+          "worstRoute": "/command"
+        },
+        "cssKb": {
+          "median": 24.9,
+          "p75": 24.9,
+          "p95": 24.9,
+          "worstRoute": "/command"
+        },
+        "domNodes": {
+          "median": 378,
+          "p75": 378,
+          "p95": 378,
+          "worstRoute": "/command"
+        },
+        "heapMb": {
+          "median": 8.3,
+          "p75": 9,
+          "p95": 9.3,
+          "worstRoute": "/command"
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 608.8,
+      "url": "/command",
+      "ttfbMs": 3.8,
+      "domContentLoadedMs": 16.6,
+      "loadMs": 90,
+      "fcpMs": 36,
+      "lcpMs": 272,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.024,
+      "layoutShifts": [
+        {
+          "value": 0.020601666996541174,
+          "sources": [
+            {
+              "tag": "div",
+              "id": "_r_4_",
+              "className": "flex-1 min-h-0 overflow-auto",
+              "text": "WARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1Runs 24h0 done · 0 failedStale · > 30d0",
+              "previousRect": {
+                "x": 952.28125,
+                "y": 463.21875,
+                "width": 218,
+                "height": 32.5,
+                "top": 463.21875,
+                "right": 1170.28125,
+                "bottom": 495.71875,
+                "left": 952.28125
+              },
+              "currentRect": {
+                "x": 952.28125,
+                "y": 480.96875,
+                "width": 218,
+                "height": 272,
+                "top": 480.96875,
+                "right": 1170.28125,
+                "bottom": 752.96875,
+                "left": 952.28125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex items-center gap-2 shrink-0",
+              "text": "PortfolioCredit Fund IPositions—Live Coverage1/1",
+              "previousRect": {
+                "x": 891.015625,
+                "y": 11.75,
+                "width": 194.78125,
+                "height": 19.5,
+                "top": 11.75,
+                "right": 1085.796875,
+                "bottom": 31.25,
+                "left": 891.015625
+              },
+              "currentRect": {
+                "x": 727.03125,
+                "y": 7.5,
+                "width": 400.46875,
+                "height": 28,
+                "top": 7.5,
+                "right": 1127.5,
+                "bottom": 35.5,
+                "left": 727.03125
+              }
+            },
+            {
+              "tag": "h2",
+              "id": null,
+              "className": "caos-panel-title m-0 min-w-0 flex-1 tabular font-semibold text-caos-text",
+              "text": "Daily Digest · coverage & ratings",
+              "previousRect": {
+                "x": 964.28125,
+                "y": 438.59375,
+                "width": 194,
+                "height": 16.25,
+                "top": 438.59375,
+                "right": 1158.28125,
+                "bottom": 454.84375,
+                "left": 964.28125
+              },
+              "currentRect": {
+                "x": 964.28125,
+                "y": 431.21875,
+                "width": 146.25,
+                "height": 48.75,
+                "top": 431.21875,
+                "right": 1110.53125,
+                "bottom": 479.96875,
+                "left": 964.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 189,
+      "encodedKb": 406.7,
+      "transferredKb": 462.1,
+      "jsKb": 280.8,
+      "cssKb": 24.9,
+      "domNodes": 378,
+      "heapMb": 9,
+      "taskDurationMs": 476,
+      "scriptDurationMs": 202.1,
+      "layoutDurationMs": 66.5,
+      "recalcStyleDurationMs": 17
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 513.6,
+      "url": "/command",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 21.9,
+      "loadMs": 62.3,
+      "fcpMs": 28,
+      "lcpMs": 148,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.024,
+      "layoutShifts": [
+        {
+          "value": 0.020601666996541174,
+          "sources": [
+            {
+              "tag": "div",
+              "id": "_r_4_",
+              "className": "flex-1 min-h-0 overflow-auto",
+              "text": "WARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1Runs 24h0 done · 0 failedStale · > 30d0",
+              "previousRect": {
+                "x": 952.28125,
+                "y": 463.21875,
+                "width": 218,
+                "height": 32.5,
+                "top": 463.21875,
+                "right": 1170.28125,
+                "bottom": 495.71875,
+                "left": 952.28125
+              },
+              "currentRect": {
+                "x": 952.28125,
+                "y": 480.96875,
+                "width": 218,
+                "height": 272,
+                "top": 480.96875,
+                "right": 1170.28125,
+                "bottom": 752.96875,
+                "left": 952.28125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex items-center gap-2 shrink-0",
+              "text": "PortfolioCredit Fund IPositions—Live Coverage1/1",
+              "previousRect": {
+                "x": 891.015625,
+                "y": 11.75,
+                "width": 194.78125,
+                "height": 19.5,
+                "top": 11.75,
+                "right": 1085.796875,
+                "bottom": 31.25,
+                "left": 891.015625
+              },
+              "currentRect": {
+                "x": 727.03125,
+                "y": 7.5,
+                "width": 400.46875,
+                "height": 28,
+                "top": 7.5,
+                "right": 1127.5,
+                "bottom": 35.5,
+                "left": 727.03125
+              }
+            },
+            {
+              "tag": "h2",
+              "id": null,
+              "className": "caos-panel-title m-0 min-w-0 flex-1 tabular font-semibold text-caos-text",
+              "text": "Daily Digest · coverage & ratings",
+              "previousRect": {
+                "x": 964.28125,
+                "y": 438.59375,
+                "width": 194,
+                "height": 16.25,
+                "top": 438.59375,
+                "right": 1158.28125,
+                "bottom": 454.84375,
+                "left": 964.28125
+              },
+              "currentRect": {
+                "x": 964.28125,
+                "y": 431.21875,
+                "width": 146.25,
+                "height": 48.75,
+                "top": 431.21875,
+                "right": 1110.53125,
+                "bottom": 479.96875,
+                "left": 964.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00041059195226766124,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 348.34375,
+                "y": 11.5,
+                "width": 95.90625,
+                "height": 20,
+                "top": 11.5,
+                "right": 444.25,
+                "bottom": 31.5,
+                "left": 348.34375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 213,
+      "encodedKb": 421.7,
+      "transferredKb": 484.1,
+      "jsKb": 280.8,
+      "cssKb": 24.9,
+      "domNodes": 377,
+      "heapMb": 8.3,
+      "taskDurationMs": 467.8,
+      "scriptDurationMs": 217.6,
+      "layoutDurationMs": 56.3,
+      "recalcStyleDurationMs": 17.3
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 495.6,
+      "url": "/command",
+      "ttfbMs": 1.4,
+      "domContentLoadedMs": 9.4,
+      "loadMs": 62.8,
+      "fcpMs": 28,
+      "lcpMs": 148,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.025,
+      "layoutShifts": [
+        {
+          "value": 0.020601666996541174,
+          "sources": [
+            {
+              "tag": "div",
+              "id": "_r_4_",
+              "className": "flex-1 min-h-0 overflow-auto",
+              "text": "WARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1Runs 24h0 done · 0 failedStale · > 30d0",
+              "previousRect": {
+                "x": 952.28125,
+                "y": 463.21875,
+                "width": 218,
+                "height": 32.5,
+                "top": 463.21875,
+                "right": 1170.28125,
+                "bottom": 495.71875,
+                "left": 952.28125
+              },
+              "currentRect": {
+                "x": 952.28125,
+                "y": 480.96875,
+                "width": 218,
+                "height": 272,
+                "top": 480.96875,
+                "right": 1170.28125,
+                "bottom": 752.96875,
+                "left": 952.28125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex items-center gap-2 shrink-0",
+              "text": "PortfolioCredit Fund IPositions—Live Coverage1/1",
+              "previousRect": {
+                "x": 891.015625,
+                "y": 11.75,
+                "width": 194.78125,
+                "height": 19.5,
+                "top": 11.75,
+                "right": 1085.796875,
+                "bottom": 31.25,
+                "left": 891.015625
+              },
+              "currentRect": {
+                "x": 727.03125,
+                "y": 7.5,
+                "width": 400.46875,
+                "height": 28,
+                "top": 7.5,
+                "right": 1127.5,
+                "bottom": 35.5,
+                "left": 727.03125
+              }
+            },
+            {
+              "tag": "h2",
+              "id": null,
+              "className": "caos-panel-title m-0 min-w-0 flex-1 tabular font-semibold text-caos-text",
+              "text": "Daily Digest · coverage & ratings",
+              "previousRect": {
+                "x": 964.28125,
+                "y": 438.59375,
+                "width": 194,
+                "height": 16.25,
+                "top": 438.59375,
+                "right": 1158.28125,
+                "bottom": 454.84375,
+                "left": 964.28125
+              },
+              "currentRect": {
+                "x": 964.28125,
+                "y": 431.21875,
+                "width": 146.25,
+                "height": 48.75,
+                "top": 431.21875,
+                "right": 1110.53125,
+                "bottom": 479.96875,
+                "left": 964.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00041059195226766124,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 348.34375,
+                "y": 11.5,
+                "width": 95.90625,
+                "height": 20,
+                "top": 11.5,
+                "right": 444.25,
+                "bottom": 31.5,
+                "left": 348.34375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 212,
+      "encodedKb": 421.1,
+      "transferredKb": 483.2,
+      "jsKb": 280.8,
+      "cssKb": 24.9,
+      "domNodes": 378,
+      "heapMb": 8.3,
+      "taskDurationMs": 456.2,
+      "scriptDurationMs": 215.1,
+      "layoutDurationMs": 53.9,
+      "recalcStyleDurationMs": 16.9
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 501.1,
+      "url": "/command",
+      "ttfbMs": 1.3,
+      "domContentLoadedMs": 9,
+      "loadMs": 62.1,
+      "fcpMs": 28,
+      "lcpMs": 152,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.025,
+      "layoutShifts": [
+        {
+          "value": 0.020601666996541174,
+          "sources": [
+            {
+              "tag": "div",
+              "id": "_r_4_",
+              "className": "flex-1 min-h-0 overflow-auto",
+              "text": "WARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1Runs 24h0 done · 0 failedStale · > 30d0",
+              "previousRect": {
+                "x": 952.28125,
+                "y": 463.21875,
+                "width": 218,
+                "height": 32.5,
+                "top": 463.21875,
+                "right": 1170.28125,
+                "bottom": 495.71875,
+                "left": 952.28125
+              },
+              "currentRect": {
+                "x": 952.28125,
+                "y": 480.96875,
+                "width": 218,
+                "height": 272,
+                "top": 480.96875,
+                "right": 1170.28125,
+                "bottom": 752.96875,
+                "left": 952.28125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 257.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 695.484375,
+                "bottom": 276.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 282.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 785.3125,
+                "bottom": 321.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 257.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 257.359375,
+                "right": 459.984375,
+                "bottom": 276.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 282.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 282.859375,
+                "right": 488.484375,
+                "bottom": 321.859375,
+                "left": 246.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex items-center gap-2 shrink-0",
+              "text": "PortfolioCredit Fund IPositions—Live Coverage1/1",
+              "previousRect": {
+                "x": 891.015625,
+                "y": 11.75,
+                "width": 194.78125,
+                "height": 19.5,
+                "top": 11.75,
+                "right": 1085.796875,
+                "bottom": 31.25,
+                "left": 891.015625
+              },
+              "currentRect": {
+                "x": 727.03125,
+                "y": 7.5,
+                "width": 400.46875,
+                "height": 28,
+                "top": 7.5,
+                "right": 1127.5,
+                "bottom": 35.5,
+                "left": 727.03125
+              }
+            },
+            {
+              "tag": "h2",
+              "id": null,
+              "className": "caos-panel-title m-0 min-w-0 flex-1 tabular font-semibold text-caos-text",
+              "text": "Daily Digest · coverage & ratings",
+              "previousRect": {
+                "x": 964.28125,
+                "y": 438.59375,
+                "width": 194,
+                "height": 16.25,
+                "top": 438.59375,
+                "right": 1158.28125,
+                "bottom": 454.84375,
+                "left": 964.28125
+              },
+              "currentRect": {
+                "x": 964.28125,
+                "y": 431.21875,
+                "width": 146.25,
+                "height": 48.75,
+                "top": 431.21875,
+                "right": 1110.53125,
+                "bottom": 479.96875,
+                "left": 964.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00041059195226766124,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 348.34375,
+                "y": 11.5,
+                "width": 95.90625,
+                "height": 20,
+                "top": 11.5,
+                "right": 444.25,
+                "bottom": 31.5,
+                "left": 348.34375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 216,
+      "encodedKb": 423.6,
+      "transferredKb": 486.8,
+      "jsKb": 280.8,
+      "cssKb": 24.9,
+      "domNodes": 377,
+      "heapMb": 9.3,
+      "taskDurationMs": 457.4,
+      "scriptDurationMs": 214.2,
+      "layoutDurationMs": 54.7,
+      "recalcStyleDurationMs": 16.9
+    },
+    {
+      "profile": "desktop",
+      "route": "/command",
+      "scanError": null,
+      "contentEncodings": [
+        "gzip"
+      ],
+      "uncompressedStaticAssets": [],
+      "readyMs": 502.8,
+      "url": "/command",
+      "ttfbMs": 1.5,
+      "domContentLoadedMs": 8.9,
+      "loadMs": 62.9,
+      "fcpMs": 28,
+      "lcpMs": 156,
+      "lcpElement": {
+        "tag": "p",
+        "id": null,
+        "className": "mt-1 text-caos-xs text-caos-muted",
+        "text": "CP-3 posture uses only completed runs explicitly bound to this portfolio. Unlinked positions remain UNKNOWN."
+      },
+      "cls": 0.025,
+      "layoutShifts": [
+        {
+          "value": 0.020601666996541174,
+          "sources": [
+            {
+              "tag": "div",
+              "id": "_r_4_",
+              "className": "flex-1 min-h-0 overflow-auto",
+              "text": "WARF (eq-wt)no rated namesRated / covered0 rated · of 1Complete runs0 runs · of 1Runs 24h0 done · 0 failedStale · > 30d0",
+              "previousRect": {
+                "x": 952.28125,
+                "y": 464.21875,
+                "width": 218,
+                "height": 32.5,
+                "top": 464.21875,
+                "right": 1170.28125,
+                "bottom": 496.71875,
+                "left": 952.28125
+              },
+              "currentRect": {
+                "x": 952.28125,
+                "y": 481.96875,
+                "width": 218,
+                "height": 272,
+                "top": 481.96875,
+                "right": 1170.28125,
+                "bottom": 753.96875,
+                "left": 952.28125
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No rated names yet — WARF forms once ratings ingest",
+              "previousRect": {
+                "x": 531.484375,
+                "y": 258.359375,
+                "width": 164,
+                "height": 19.5,
+                "top": 258.359375,
+                "right": 695.484375,
+                "bottom": 277.859375,
+                "left": 531.484375
+              },
+              "currentRect": {
+                "x": 513.484375,
+                "y": 283.859375,
+                "width": 271.828125,
+                "height": 39,
+                "top": 283.859375,
+                "right": 785.3125,
+                "bottom": 322.859375,
+                "left": 513.484375
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "min-w-0 [overflow-wrap:anywhere]",
+              "text": "No engine activity observed in 24h — first run populates this",
+              "previousRect": {
+                "x": 264.359375,
+                "y": 258.359375,
+                "width": 195.625,
+                "height": 19.5,
+                "top": 258.359375,
+                "right": 459.984375,
+                "bottom": 277.859375,
+                "left": 264.359375
+              },
+              "currentRect": {
+                "x": 246.359375,
+                "y": 283.859375,
+                "width": 242.125,
+                "height": 39,
+                "top": 283.859375,
+                "right": 488.484375,
+                "bottom": 322.859375,
+                "left": 246.359375
+              }
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "className": "flex items-center gap-2 shrink-0",
+              "text": "PortfolioCredit Fund IPositions—Live Coverage1/1",
+              "previousRect": {
+                "x": 891.015625,
+                "y": 11.75,
+                "width": 194.78125,
+                "height": 19.5,
+                "top": 11.75,
+                "right": 1085.796875,
+                "bottom": 31.25,
+                "left": 891.015625
+              },
+              "currentRect": {
+                "x": 727.03125,
+                "y": 7.5,
+                "width": 400.46875,
+                "height": 28,
+                "top": 7.5,
+                "right": 1127.5,
+                "bottom": 35.5,
+                "left": 727.03125
+              }
+            },
+            {
+              "tag": "h2",
+              "id": null,
+              "className": "caos-panel-title m-0 min-w-0 flex-1 tabular font-semibold text-caos-text",
+              "text": "Daily Digest · coverage & ratings",
+              "previousRect": {
+                "x": 964.28125,
+                "y": 439.59375,
+                "width": 194,
+                "height": 16.25,
+                "top": 439.59375,
+                "right": 1158.28125,
+                "bottom": 455.84375,
+                "left": 964.28125
+              },
+              "currentRect": {
+                "x": 964.28125,
+                "y": 432.21875,
+                "width": 146.25,
+                "height": 48.75,
+                "top": 432.21875,
+                "right": 1110.53125,
+                "bottom": 480.96875,
+                "left": 964.28125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00041059195226766124,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 442.109375,
+                "y": 14,
+                "width": 273.609375,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 442.109375
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            },
+            {
+              "tag": "span",
+              "id": null,
+              "className": "caos-shell-identity-title font-semibold leading-tight text-caos-text whitespace-nowrap min-w-0 truncate m-0",
+              "text": "Credit Fund I",
+              "previousRect": {
+                "x": 334.71875,
+                "y": 11.5,
+                "width": 83.390625,
+                "height": 20,
+                "top": 11.5,
+                "right": 418.109375,
+                "bottom": 31.5,
+                "left": 334.71875
+              },
+              "currentRect": {
+                "x": 348.34375,
+                "y": 11.5,
+                "width": 95.90625,
+                "height": 20,
+                "top": 11.5,
+                "right": 444.25,
+                "bottom": 31.5,
+                "left": 348.34375
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              },
+              "currentRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              }
+            }
+          ]
+        },
+        {
+          "value": 0.00019754794399434156,
+          "sources": [
+            {
+              "tag": "div",
+              "id": null,
+              "className": "hidden lg:flex items-center gap-2 shrink-0",
+              "text": "Holdings as of 2026-06-30Saving context…",
+              "previousRect": {
+                "x": 564.515625,
+                "y": 14,
+                "width": 151,
+                "height": 15,
+                "top": 14,
+                "right": 715.515625,
+                "bottom": 29,
+                "left": 564.515625
+              },
+              "currentRect": {
+                "x": 466.203125,
+                "y": 14,
+                "width": 249.515625,
+                "height": 15,
+                "top": 14,
+                "right": 715.71875,
+                "bottom": 29,
+                "left": 466.203125
+              }
+            }
+          ]
+        }
+      ],
+      "tbtMs": 0,
+      "longestTaskMs": 0,
+      "longTaskDetails": [],
+      "maxEventMs": 0,
+      "requests": 214,
+      "encodedKb": 422.3,
+      "transferredKb": 485,
+      "jsKb": 280.8,
+      "cssKb": 24.9,
+      "domNodes": 378,
+      "heapMb": 8.1,
+      "taskDurationMs": 462.3,
+      "scriptDurationMs": 221.8,
+      "layoutDurationMs": 53.6,
+      "recalcStyleDurationMs": 17.1
+    }
+  ]
+}

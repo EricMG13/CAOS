@@ -1,0 +1,12 @@
+--- a/caos/server/engine/liquidity.py
++++ b/caos/server/engine/liquidity.py
+@@ -43,7 +43,8 @@ def _interest_runway_months(disclosed_liquidity: Optional[float], cp1: Optional[
+     if not isinstance(disclosed_liquidity, (int, float)) or cp1 is None:
+         return None, None
+     nf = (cp1.runtime_output or {}).get("normalized_financials") or {}
+-    eb, cov = latest(nf.get("adj_ebitda") or {}), nf.get("interest_coverage_ltm")
++    eb = latest(nf.get("adj_ebitda") or {})
++    cov = nf.get("interest_coverage_ltm")
+     if not (isinstance(eb, (int, float)) and isinstance(cov, (int, float)) and cov):
+         return None, None
+     cash_interest = round(eb / cov, 1)

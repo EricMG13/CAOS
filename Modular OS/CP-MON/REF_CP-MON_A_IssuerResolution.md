@@ -1,0 +1,2 @@
+# REF_CP-MON_A — Issuer Resolution
+Resolve issuer identifier into canonical IssuerRecord. Sources: CP-0 registry, GLEIF LEI, CUSIP/ISIN, Bloomberg FIGI, SEC EDGAR, Companies House, LCD/PitchBook. Required fields: issuer_id, display_name, borrower_name, aliases, sector, geography, capital_structure, public_private, resolution_confidence, last_updated. Alias types: legal_name, display_name, short_name, deal_name, former_name, ticker, cusip_prefix, subsidiary, sponsor, colloquial. If confidence <0.80, halt and request disambiguation.

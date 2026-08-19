@@ -1,0 +1,3 @@
+CP MODULE PAYLOAD EMBEDDING (vNext)
+source_basis REMOVED (U2). allOf/$ref mandated.
+TEMPLATE: {"allOf":[{"$ref":"BASE"}],"properties":{"module_id":{"const":"<ID>"},"module_name":{"const":"<NAME>"},"owned_object":{"const":"<OBJ>"},"schema_family":{"const":"Nested"},"runtime_output":{"type":"object","properties":{...}}}}

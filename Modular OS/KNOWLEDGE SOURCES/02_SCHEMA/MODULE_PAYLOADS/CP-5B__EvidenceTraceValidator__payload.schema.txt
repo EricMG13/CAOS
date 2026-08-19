@@ -1,0 +1,48 @@
+allOf $ref CP_MODULE_PAYLOAD_BASE.schema.txt
+properties
+  module_id const CP-5B
+  module_name const EvidenceTraceValidator
+  owned_object const evidence_trace_validation
+  schema_family const Nested
+  runtime_output type object properties
+    validation_scope type object properties
+      modules_validated type array items type string
+      total_claims_audited type integer
+      run_id type string
+    evidence_trace_audit type array items type object
+      additionalProperties false
+      required claim_id source_module_id extraction_type lineage_class
+        confidence validation_status
+      properties
+        claim_id type string
+        source_module_id type string
+        extraction_type enum sourced_fact quoted_text table_value
+          calculated_metric analyst_inference upstream_artifact
+          user_instruction documentary_fact definition_conflict gap
+          source_limitation insufficient_information not_available
+        lineage_class enum Directly Sourced Calculated Assumption-Based
+          Analyst Inference Weak Lineage Untraced Conflicting
+          Insufficient Information
+        confidence enum High Medium Low Insufficient Information
+        source_locator type string null
+        validation_status enum Passed Restricted Blocked Not Executed
+        exception_code type string null
+    orphan_claim_register type array items type object properties
+      claim_id type string
+      source_module_id type string
+      lineage_class type string
+      committee_facing type boolean
+      mitigation type string null
+      ve_code type string description VE-015 if unmitigated
+    lineage_quality_summary type object properties
+      directly_sourced_count type integer
+      calculated_count type integer
+      weak_lineage_count type integer
+      untraced_count type integer
+      orphan_claims_count type integer
+      overall_integrity enum High Medium Low Insufficient Information
+    integrity_findings type array items type object properties
+      finding_id type string
+      severity enum CRITICAL MATERIAL MINOR
+      description type string
+      affected_claim_id type string null

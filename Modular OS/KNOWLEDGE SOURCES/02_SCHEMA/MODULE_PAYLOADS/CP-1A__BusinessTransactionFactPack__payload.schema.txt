@@ -1,0 +1,49 @@
+allOf $ref CP_MODULE_PAYLOAD_BASE.schema.txt
+properties
+  module_id const CP-1A
+  module_name const BusinessTransactionFactPack
+  owned_object const business_transaction_fact_register
+  schema_family const Nested
+  runtime_output type object properties
+    source_gate type object properties
+      business_sources_available type boolean
+      gate_status enum Full Run Ready with Limitations Blocked
+    business_description type object properties
+      issuer_name type string
+      sector type string null
+      sub_sector type string null
+      geography type string null
+      business_model_summary type string null
+      revenue_segments type array items type object properties
+        segment_name type string
+        contribution type number null
+        source_trace type string
+    transaction_summary type object properties
+      transaction_type type string null
+      transaction_date type string null
+      transaction_value type number null
+      currency type string null
+      purpose type string null
+      source_trace type string
+    ownership_structure type object properties
+      sponsor type string null
+      sponsor_type type string null
+      ownership_percentage type number null
+      co_investors type array items type string
+      source_trace type string
+    entity_map type array items type object properties
+      entity_name type string
+      entity_type enum Issuer Borrower Parent Guarantor HoldCo OpCo SPV Other
+      jurisdiction type string null
+      relationship type string null
+      source_trace type string
+    fact_register type array items type object properties
+      fact_id type string
+      category type string
+      fact_text type string
+      source_trace type string
+      extraction_type enum sourced_fact quoted_text table_value
+        documentary_fact
+    downstream_readiness type object properties
+      modules_supported type array items type string
+      limitations type array items type string

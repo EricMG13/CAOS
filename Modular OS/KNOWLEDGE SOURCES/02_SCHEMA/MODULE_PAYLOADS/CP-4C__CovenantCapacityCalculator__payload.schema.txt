@@ -1,0 +1,49 @@
+allOf $ref CP_MODULE_PAYLOAD_BASE.schema.txt
+properties
+  module_id const CP-4C
+  module_name const CovenantCapacityCalculator
+  owned_object const covenant_capacity_calculation
+  schema_family const Nested
+  runtime_output type object properties
+    source_gate type object properties
+      cp4_available type boolean
+      financial_data_available type boolean
+      gate_status enum Full Run Ready with Limitations Blocked
+    covenant_capacity_register type array items type object
+      additionalProperties false
+      required covenant_id covenant_type defined_level actual_level
+        headroom_absolute headroom_percentage calculation_status
+      properties
+        covenant_id type string
+        covenant_type type string
+        defined_level type number null
+        actual_level type number null
+        headroom_absolute type number null
+        headroom_percentage type number null
+        calculation_status enum Supported Derived Implied Provisional
+          Not Available Not Comparable Not Calculable Insufficient Information
+        period type string
+        source_trace type string
+        limitation type string null
+    compliance_matrix type object properties
+      overall_compliance enum Compliant Non-Compliant At Risk
+        Insufficient Information
+      tightest_covenant type string null
+      minimum_headroom type number null
+    trip_risk_assessment type object properties
+      trip_risk_level enum Low Medium High Insufficient Information
+      trigger_scenario type string null
+      distance_to_breach type number null
+    credit_implication enum
+      Positive-Covenant Headroom Expansion
+      Positive-Deleveraging
+      Neutral-Stable
+      Negative-Covenant Erosion
+      Negative-Leverage Increase
+      Negative-Refinancing Risk
+      Negative-Liquidity Deterioration
+      Insufficient Information
+    downstream_readiness type object properties
+      cp6a_ready type boolean
+      cp6e_ready type boolean
+      limitations type array items type string
