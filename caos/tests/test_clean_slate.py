@@ -4,19 +4,18 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-
 from caos.artifacts.calculations import leverage, safe_ratio
+from caos.artifacts.domain import save_report_inputs
 from caos.artifacts.relative_value import signal_for_spread
 from caos.config import Settings
-from caos.contracts import Recommendation
+from caos.contracts import Recommendation, RecommendationMatrixRequest, ThesisRequest
 from caos.http import create_app
 from caos.methodology.bundle import DeployVBundle
 from caos.methodology.prompt import compile_prompt, validate_invocation_plan
 from caos.publishing.recipes import validate_recipe
 from caos.store import MemoryStore
 from caos.workflows.domain import WorkflowRuntime
-
+from fastapi.testclient import TestClient
 
 DEPLOY_V = Path("/Users/ericguei/Documents/Deploy V")
 
@@ -189,6 +188,23 @@ def test_analyst_versions_are_cas_and_recommendation_vocabulary_is_exact(tmp_pat
         assert client.get(f"/api/cases/{case_id}/recommendations").json()["current"]["rows"][0]["recommendation"] == "N/A"
         matrix["rows"][0]["primary"] = False
         assert client.post(f"/api/cases/{case_id}/recommendations", json=matrix).status_code == 422
+
+
+def test_report_inputs_version_together() -> None:
+    store = MemoryStore()
+    case_id = store.create_case("Report", "Issuer", "Sector", "analyst")["id"]
+    thesis = ThesisRequest(expected_version=0, core_thesis="Defensible")
+    recommendations = RecommendationMatrixRequest(
+        expected_version=0,
+        market_snapshot_id="market-1",
+        rows=[{"instrument_id": "bond", "instrument": "Bond", "recommendation": "N/A", "rationale": "Insufficient basis", "primary": True}],
+    )
+
+    saved = save_report_inputs(store, case_id, "analyst", thesis, recommendations)
+    assert saved["thesis"]["version"] == saved["recommendations"]["version"] == 1
+    with pytest.raises(ValueError, match="VERSION_CONFLICT"):
+        save_report_inputs(store, case_id, "analyst", thesis, recommendations)
+    assert len(store.theses[case_id]) == len(store.recommendations[case_id]) == 1
 
 
 def test_financial_and_rv_guards() -> None:
