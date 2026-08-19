@@ -153,16 +153,9 @@ permanently integrated during a later review pass.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-When the GitNexus MCP server is attached, use its index for the current
-checkout to understand code, assess impact, and navigate safely. Indexes are
-local-only and their symbol and relationship counts are not repository
-metadata.
+This project is indexed by GitNexus as **CAOS** (3866 symbols, 12534 relationships, 212 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> **Availability check first:** the `.gitnexus/` index is local-only (not committed), and the GitNexus MCP server is not attached in every session — cloud/CI checkouts have neither. The MUST rules below apply **only when the GitNexus MCP tools are actually available in the session**; when they are not, fall back to careful manual review (read the symbol's callers before editing, diff against `origin/main` before committing) and note in your summary that impact analysis was unavailable.
-
-> Index stale? Rebuild it with the repository's available GitNexus runner, then
-> verify the current checkout before relying on results. If the server or index
-> is unavailable, inspect callers manually and compare against `origin/main`.
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
 ## Always Do
 
@@ -184,10 +177,10 @@ metadata.
 
 | Resource | Use for |
 |----------|---------|
-| Repository context resource | Codebase overview and index freshness |
-| Cluster resources | Functional areas |
-| Process resources | Execution flows |
-| Process detail resources | Step-by-step execution trace |
+| `gitnexus://repo/CAOS/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/CAOS/clusters` | All functional areas |
+| `gitnexus://repo/CAOS/processes` | All execution flows |
+| `gitnexus://repo/CAOS/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
