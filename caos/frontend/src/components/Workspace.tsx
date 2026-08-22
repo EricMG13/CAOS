@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type Destination, routeDestinations, withQuery } from "../lib/workbench";
 
-type Destination = "Cases" | "Sources" | "Run Console" | "Deep-Dive" | "RV Screener" | "Command Center" | "Model Builder" | "Report Studio" | "Admin Studio";
 type CaseRecord = { id: string; name: string; issuer: string; sector: string; source_count?: number; accepted_snapshot?: Snapshot | null; pathway_fit?: { fit: string; message: string }; current_execution_id?: string | null };
 type Snapshot = { id: string; digest: string; accepted_at: string; source_set_version?: number | null; artifacts: { id: string; module_id: string; digest: string }[] };
 type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
@@ -11,18 +11,6 @@ type SourceRecord = { id: string; filename: string; sha256: string; blocks: { bl
 type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
 type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
 type ReportDraft = { thesis?: string; instrument?: string; recommendation?: string; evidenceIds?: string };
-
-const destinations: { label: Destination; href: string; group: string }[] = [
-  { label: "Cases", href: "/cases", group: "INTAKE" },
-  { label: "Sources", href: "/sources", group: "INTAKE" },
-  { label: "Run Console", href: "/run-console", group: "ANALYZE" },
-  { label: "Deep-Dive", href: "/deep-dive", group: "ANALYZE" },
-  { label: "RV Screener", href: "/rv-screener", group: "DECIDE" },
-  { label: "Command Center", href: "/command-center", group: "DECIDE" },
-  { label: "Model Builder", href: "/model-builder", group: "DECIDE" },
-  { label: "Report Studio", href: "/report-studio", group: "PUBLISH" },
-  { label: "Admin Studio", href: "/admin-studio", group: "ADMIN" },
-];
 
 const pathways = [
   ["FULL_CREDIT", "Full Credit"],
@@ -36,14 +24,6 @@ const pathways = [
 function queryParam(key: string) {
   if (typeof window === "undefined") return "";
   return new URLSearchParams(window.location.search).get(key) || "";
-}
-
-function withQuery(path: string, values: Record<string, string | undefined>) {
-  const [pathname, rawQuery] = path.split("?");
-  const query = new URLSearchParams(rawQuery);
-  Object.entries(values).forEach(([key, value]) => value ? query.set(key, value) : query.delete(key));
-  const suffix = query.toString();
-  return `${pathname}${suffix ? `?${suffix}` : ""}`;
 }
 
 function formatDate(value?: string) {
@@ -61,8 +41,8 @@ async function request<T>(path: string, options: RequestInit = {}, signal?: Abor
   return response.json() as Promise<T>;
 }
 
-export default function Workspace({ destination }: { destination: string }) {
-  const active = (destinations.find((item) => item.label === destination)?.label || "Cases") as Destination;
+export default function Workspace({ destination }: { destination: Destination }) {
+  const active = destination;
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [caseId, setCaseId] = useState("");
   const [runId, setRunId] = useState("");
@@ -80,7 +60,9 @@ export default function Workspace({ destination }: { destination: string }) {
   const [routeArtifactId, setRouteArtifactId] = useState("");
 
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
-  const visibleDestinations = useMemo(() => role === "ADMIN" ? destinations : destinations.filter((item) => item.group !== "ADMIN"), [role]);
+  const visibleDestinations = useMemo(() => routeDestinations
+    .filter(([slug]) => role === "ADMIN" || slug !== "admin-studio")
+    .map(([slug, label]) => ({ label, href: `/${slug}`, group: label === "Cases" || label === "Sources" ? "INTAKE" : label === "Run Console" || label === "Deep-Dive" ? "ANALYZE" : label === "Report Studio" ? "PUBLISH" : label === "Admin Studio" ? "ADMIN" : "DECIDE" })), [role]);
 
   const selectCase = (nextCaseId: string) => {
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";

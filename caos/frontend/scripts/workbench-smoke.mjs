@@ -67,6 +67,18 @@ try {
   for (const label of workflows) {
     await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).waitFor();
   }
+  for (const [route, workflow] of [
+    ["/cases/", "Overview"],
+    ["/run-console/", "Analyse"],
+    ["/report-studio/", "Publish"],
+  ]) {
+    await page.goto(`${baseURL}${route}?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+    await page.getByRole("navigation", { name: "Workflows" })
+      .getByRole("link", { name: workflow, exact: true })
+      .evaluate((element) => {
+        if (element.getAttribute("aria-current") !== "page") throw new Error("workflow is not active");
+      });
+  }
   await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
   await page.getByRole("button", { name: /QA unavailable/ }).waitFor();
