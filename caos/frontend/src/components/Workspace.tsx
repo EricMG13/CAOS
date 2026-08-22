@@ -64,6 +64,7 @@ export default function Workspace({ destination }: { destination: Destination })
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
 
   const selectCase = (nextCaseId: string) => {
+    if (nextCaseId === caseId) return;
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);

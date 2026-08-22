@@ -82,6 +82,20 @@ try {
   await page.keyboard.press("Escape");
   releaseAuthorityDetail();
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
+  const resolvedSourcesTrigger = page.getByRole("button", { name: "1 sources" });
+  await resolvedSourcesTrigger.click();
+  await sourceDrawer.getByText("Current source count").waitFor();
+  await page.getByRole("combobox", { name: "Select case" }).evaluate((element) => {
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  assert.equal(await sourceDrawer.isVisible(), true, "reselecting the current case closed the resolved authority drawer");
+  assert.equal(await resolvedSourcesTrigger.count(), 1, "reselecting the current case exposed a false authority lifecycle state");
+  assert.equal(await sourceDrawer.getByText("Loading source authority…").count(), 0);
+  assert.equal(await sourceDrawer.getByText("Source authority unavailable.").count(), 0);
+  await page.keyboard.press("Escape");
   await page.unroute(heldAuthorityDetail, holdAuthorityDetail);
   const timing = await page.evaluate(() => {
     const navigation = performance.getEntriesByType("navigation")[0];
