@@ -126,9 +126,19 @@ try {
   assert.equal(nextRunState?.status, "succeeded");
   const acceptTrigger = page.getByRole("button", { name: "Accept analytical snapshot" });
   await acceptTrigger.waitFor();
+  let markAcceptanceIntercepted;
+  const acceptanceIntercepted = new Promise((resolve) => {
+    markAcceptanceIntercepted = resolve;
+  });
+  let releaseAcceptance;
+  const acceptanceBarrier = new Promise((resolve) => {
+    releaseAcceptance = resolve;
+  });
   await page.route(`**/api/runs/${nextRun.id}/accept`, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    await route.continue();
+    const heldAcceptanceResponse = await route.fetch();
+    markAcceptanceIntercepted();
+    await acceptanceBarrier;
+    await route.fulfill({ response: heldAcceptanceResponse });
   });
   const delayedAcceptResponse = page.waitForResponse((response) =>
     response.request().method() === "POST"
@@ -147,8 +157,10 @@ try {
   page.on("request", trackAuthorityRequest);
   page.once("dialog", (dialog) => void dialog.accept());
   await acceptTrigger.click();
+  await acceptanceIntercepted;
   await page.getByRole("combobox", { name: "Select case" }).selectOption(raceCase.id);
   switchedToRaceCase = true;
+  releaseAcceptance();
   const acceptanceResponse = await delayedAcceptResponse;
   assert.equal(acceptanceResponse.status(), 200);
   await acceptanceResponse.finished();
