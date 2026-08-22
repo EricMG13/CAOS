@@ -26,9 +26,12 @@ export type DrawerState =
       };
     };
 
+export type AuthorityStatus = "idle" | "loading" | "ready" | "error";
+
 type Props = {
   active: Destination;
   authority: SnapshotView | null;
+  authorityStatus: AuthorityStatus;
   cases: CaseRecord[];
   caseId: string;
   drawer: DrawerState | null;
@@ -44,6 +47,7 @@ type Props = {
 export default function WorkbenchShell({
   active,
   authority,
+  authorityStatus,
   cases,
   caseId,
   drawer,
@@ -143,6 +147,19 @@ export default function WorkbenchShell({
   });
   const overviewHref = selectedCase ? "/command-center" : "/cases";
   const accepted = authority?.accepted;
+  const authorityPending = authorityStatus === "idle" || authorityStatus === "loading";
+  const acceptedSnapshotIdentity = authorityPending
+    ? "Loading authority…"
+    : authorityStatus === "error"
+      ? "Authority unavailable"
+      : accepted?.id ?? "No accepted snapshot";
+  const acceptedSourceSetIdentity = authorityPending
+    ? "Loading authority…"
+    : authorityStatus === "error"
+      ? "Authority unavailable"
+      : accepted
+        ? accepted.source_set_version == null ? "Version unavailable" : `v${accepted.source_set_version}`
+        : "No accepted source set";
   const drawerTitle = drawer?.kind === "qa"
     ? "QA details"
     : drawer?.kind === "sources"
@@ -158,10 +175,18 @@ export default function WorkbenchShell({
       <Link className="button small" href={withQuery("/run-console", { case: caseId })}>Open Run Console</Link>
     </div>;
   } else if (drawer?.kind === "sources") {
-    drawerBody = <div className="state-block">
+    drawerBody = authorityPending ? <div className="state-block" role="status">
+      <strong>Loading source authority…</strong>
+      <p>Source count and accepted source-set identity are not shown until the case authority resolves.</p>
+      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
+    </div> : authorityStatus === "error" ? <div className="state-block unavailable">
+      <strong>Source authority unavailable.</strong>
+      <p>Current source count and accepted source-set identity could not be verified.</p>
+      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
+    </div> : <div className="state-block">
       <dl>
-        <dt>Current source count</dt><dd className="mono">{selectedCase?.source_count ?? 0}</dd>
-        <dt>Accepted source set</dt><dd className="mono">{accepted?.source_set_version == null ? "No accepted source set" : `v${accepted.source_set_version}`}</dd>
+        <dt>Current source count</dt><dd className="mono">{selectedCase?.source_count ?? "Unavailable"}</dd>
+        <dt>Accepted source set</dt><dd className="mono">{acceptedSourceSetIdentity}</dd>
       </dl>
       <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
     </div>;
@@ -171,8 +196,8 @@ export default function WorkbenchShell({
         <dt>Stable ID</dt><dd className="mono">{drawer.evidenceId}</dd>
         <dt>Filename</dt><dd>{drawer.source.filename}</dd>
         <dt>SHA-256</dt><dd className="mono">{drawer.source.sha256}</dd>
-        <dt>Accepted snapshot</dt><dd className="mono">{accepted?.id ?? "No accepted snapshot"}</dd>
-        <dt>Accepted source set</dt><dd className="mono">{accepted?.source_set_version == null ? "No accepted source set" : `v${accepted.source_set_version}`}</dd>
+        <dt>Accepted snapshot</dt><dd className="mono">{acceptedSnapshotIdentity}</dd>
+        <dt>Accepted source set</dt><dd className="mono">{acceptedSourceSetIdentity}</dd>
       </dl>
       <p className="status warning">Source-level reference; no block locator supplied by this artifact.</p>
       <h3>Available source text</h3>
@@ -226,9 +251,10 @@ export default function WorkbenchShell({
           <div className="case-context">
             <span className="eyebrow">CASE</span>
             <strong>{selectedCase ? `${selectedCase.issuer} / ${selectedCase.name}` : "No case selected"}</strong>
-            {selectedCase && !authority && <span className="muted">Loading authority…</span>}
-            {selectedCase && authority && !accepted && <span className="status warning">No accepted snapshot</span>}
-            {accepted && <><span className="status success">Accepted {new Date(accepted.accepted_at).toLocaleString()}</span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
+            {selectedCase && authorityPending && <span className="muted">Loading authority…</span>}
+            {selectedCase && authorityStatus === "error" && <span className="status warning">Authority unavailable</span>}
+            {selectedCase && authorityStatus === "ready" && !accepted && <span className="status warning">No accepted snapshot</span>}
+            {authorityStatus === "ready" && accepted && <><span className="status success">Accepted {new Date(accepted.accepted_at).toLocaleString()}</span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
             {(authority?.switch_required || authority?.diff?.changed) && <span className="status warning">New analysis available</span>}
           </div>
           <div className="top-actions">
@@ -237,7 +263,7 @@ export default function WorkbenchShell({
               <option value="">Select case</option>
               {cases.map((item) => <option key={item.id} value={item.id}>{item.issuer} — {item.name}</option>)}
             </select>
-            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{selectedCase?.source_count ?? 0} sources</button>
+            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{!selectedCase ? "Sources" : authorityPending ? "Sources loading" : authorityStatus === "error" || selectedCase.source_count == null ? "Sources unavailable" : `${selectedCase.source_count} sources`}</button>
             <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA unavailable</button>
             <button ref={triggerRef} className="button small" type="button" aria-label="Open command palette" onClick={openPalette}>Command <span className="shortcut">⌘K</span></button>
           </div>

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import WorkbenchShell, { type DrawerState } from "./WorkbenchShell";
+import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
 import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
 
 type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
@@ -54,6 +54,7 @@ export default function Workspace({ destination }: { destination: Destination })
   const [hydrated, setHydrated] = useState(false);
   const [role, setRole] = useState("ANALYST");
   const [authority, setAuthority] = useState<SnapshotView | null>(null);
+  const [authorityStatus, setAuthorityStatus] = useState<AuthorityStatus>("idle");
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const authorityRequest = useRef(0);
   const caseIdRef = useRef("");
@@ -69,6 +70,7 @@ export default function Workspace({ destination }: { destination: Destination })
     caseIdRef.current = nextCaseId;
     setDrawer(null);
     setAuthority(null);
+    setAuthorityStatus(nextCaseId ? "loading" : "idle");
     setCaseId(nextCaseId);
     setRunId(cases.find((item) => item.id === nextCaseId)?.current_execution_id || "");
     setRun(null);
@@ -86,6 +88,7 @@ export default function Workspace({ destination }: { destination: Destination })
       const resolvedCaseId = next.find((item) => item.id === caseId)?.id || next.find((item) => item.id === requestedCaseId)?.id || next[0]?.id || "";
       if (resolvedCaseId !== caseId) {
         caseIdRef.current = resolvedCaseId;
+        setAuthorityStatus(resolvedCaseId ? "loading" : "idle");
         setCaseId(resolvedCaseId);
       }
       if (!runId && !requestedRunId) {
@@ -110,9 +113,11 @@ export default function Workspace({ destination }: { destination: Destination })
       if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
       setCases((previous) => previous.map((item) => item.id === id ? { ...item, ...detail } : item));
       setAuthority(snapshot);
+      setAuthorityStatus("ready");
     } catch (caught) {
       if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
       if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+        setAuthorityStatus("error");
         setError(caught instanceof Error ? caught.message : "Unable to load case authority");
       }
     }
@@ -137,6 +142,7 @@ export default function Workspace({ destination }: { destination: Destination })
     caseIdRef.current = requestedCaseId;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCaseId(requestedCaseId);
+    setAuthorityStatus(requestedCaseId ? "loading" : "idle");
     setRunId(queryParam("run"));
     setRouteQuestion(queryParam("q"));
     setRouteArtifactId(queryParam("artifact"));
@@ -166,7 +172,7 @@ export default function Workspace({ destination }: { destination: Destination })
     authorityRequest.current += 1;
     // The visible authority and contextual drawer must clear at the external case boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAuthority(null); setDrawer(null);
+    setAuthority(null); setDrawer(null); setAuthorityStatus(caseId ? "loading" : "idle");
     if (!caseId) return;
     const controller = new AbortController();
     void refreshCase(caseId, controller.signal);
@@ -259,6 +265,7 @@ export default function Workspace({ destination }: { destination: Destination })
     <WorkbenchShell
       active={active}
       authority={authority}
+      authorityStatus={authorityStatus}
       cases={cases}
       caseId={caseId}
       drawer={drawer}

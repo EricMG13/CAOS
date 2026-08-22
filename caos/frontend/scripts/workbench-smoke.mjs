@@ -13,6 +13,11 @@ const raceCaseResponse = await api.post("/api/cases", {
 });
 assert.equal(raceCaseResponse.status(), 201);
 const raceCase = await raceCaseResponse.json();
+const failedCaseResponse = await api.post("/api/cases", {
+  data: { name: "Authority Failure", issuer: "Unavailable", sector: "Services" },
+});
+assert.equal(failedCaseResponse.status(), 201);
+const failedCase = await failedCaseResponse.json();
 const upload = await api.post(`/api/cases/${caseRecord.id}/sources`, {
   multipart: {
     file: {
@@ -57,7 +62,27 @@ try {
     if (new URL(requestValue.url()).pathname === "/api/cases") caseRequests += 1;
   });
 
-  await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  let releaseAuthorityDetail;
+  const authorityDetailBarrier = new Promise((resolve) => {
+    releaseAuthorityDetail = resolve;
+  });
+  const heldAuthorityDetail = (url) => url.pathname === `/api/cases/${caseRecord.id}`;
+  const holdAuthorityDetail = async (route) => {
+    await authorityDetailBarrier;
+    await route.continue();
+  };
+  await page.route(heldAuthorityDetail, holdAuthorityDetail);
+  await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "domcontentloaded" });
+  const loadingSourcesTrigger = page.getByRole("button", { name: "Sources loading" });
+  await loadingSourcesTrigger.click();
+  const sourceDrawer = page.getByRole("dialog", { name: "Source details" });
+  await sourceDrawer.getByText("Loading source authority…").waitFor();
+  assert.equal(await sourceDrawer.getByText(/^0$/).count(), 0);
+  assert.equal(await sourceDrawer.getByText(/No accepted/).count(), 0);
+  await page.keyboard.press("Escape");
+  releaseAuthorityDetail();
+  await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
+  await page.unroute(heldAuthorityDetail, holdAuthorityDetail);
   const timing = await page.evaluate(() => {
     const navigation = performance.getEntriesByType("navigation")[0];
     const paint = performance.getEntriesByName("first-contentful-paint")[0];
@@ -67,6 +92,24 @@ try {
     };
   });
   console.log(JSON.stringify({ timing, caseRequests }));
+
+  const failedAuthorityDetail = (url) => url.pathname === `/api/cases/${failedCase.id}`;
+  const failAuthorityDetail = (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ detail: "authority unavailable" }),
+  });
+  await page.route(failedAuthorityDetail, failAuthorityDetail);
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(failedCase.id);
+  const unavailableSourcesTrigger = page.getByRole("button", { name: "Sources unavailable" });
+  await unavailableSourcesTrigger.click();
+  await sourceDrawer.getByText("Source authority unavailable.").waitFor();
+  assert.equal(await sourceDrawer.getByText(/^0$/).count(), 0);
+  assert.equal(await sourceDrawer.getByText(/No accepted/).count(), 0);
+  await page.keyboard.press("Escape");
+  await page.unroute(failedAuthorityDetail, failAuthorityDetail);
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
+  await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
 
   const workflows = ["Overview", "Sources", "Analyse", "Compare", "Model", "Publish"];
   for (const label of workflows) {
