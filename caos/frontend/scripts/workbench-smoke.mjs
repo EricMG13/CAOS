@@ -13,6 +13,29 @@ const raceCaseResponse = await api.post("/api/cases", {
 });
 assert.equal(raceCaseResponse.status(), 201);
 const raceCase = await raceCaseResponse.json();
+const crossCaseUpload = await api.post(`/api/cases/${raceCase.id}/sources`, {
+  multipart: {
+    file: {
+      name: "second-earnings.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Revenue 820\nEBITDA 140"),
+    },
+  },
+});
+assert.equal(crossCaseUpload.status(), 201);
+const crossCaseRunResponse = await api.post(`/api/cases/${raceCase.id}/runs`, {
+  data: { pathway: "EARNINGS_UPDATE", depth: "screen", focus_questions: [] },
+});
+assert.equal(crossCaseRunResponse.status(), 202);
+const crossCaseRun = await crossCaseRunResponse.json();
+let crossCaseRunState;
+for (let attempt = 0; attempt < 60; attempt += 1) {
+  const response = await api.get(`/api/runs/${crossCaseRun.id}`);
+  crossCaseRunState = await response.json();
+  if (crossCaseRunState.status === "succeeded") break;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+assert.equal(crossCaseRunState?.status, "succeeded");
 const failedCaseResponse = await api.post("/api/cases", {
   data: { name: "Authority Failure", issuer: "Unavailable", sector: "Services" },
 });
@@ -140,6 +163,35 @@ try {
   expectedAuthorityFailureURL = "";
   await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
+
+  await page.evaluate((caseId) => window.sessionStorage.setItem(`caos-report-draft:${caseId}`, JSON.stringify({ thesis: "Unsaved analyst view" })), caseRecord.id);
+  let cancelledRoutePrompts = 0;
+  const cancelRouteChange = (dialog) => {
+    cancelledRoutePrompts += 1;
+    void dialog.dismiss();
+  };
+  page.on("dialog", cancelRouteChange);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.evaluate((nextCaseId) => window.history.pushState(null, "", `/command-center/?case=${nextCaseId}`), raceCase.id);
+    await page.waitForFunction((expectedCaseId) => new URL(window.location.href).searchParams.get("case") === expectedCaseId, caseRecord.id);
+    await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
+  }
+  assert.equal(cancelledRoutePrompts, 2, "a cancelled draft-bound route change was not retryable");
+  page.off("dialog", cancelRouteChange);
+  await page.evaluate((caseId) => window.sessionStorage.removeItem(`caos-report-draft:${caseId}`), caseRecord.id);
+
+  let crossCaseAcceptRequests = 0;
+  const countCrossCaseAccept = (requestValue) => {
+    if (requestValue.method() === "POST"
+      && new URL(requestValue.url()).pathname === `/api/runs/${crossCaseRun.id}/accept`) crossCaseAcceptRequests += 1;
+  };
+  page.on("request", countCrossCaseAccept);
+  await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}&run=${crossCaseRun.id}`, { waitUntil: "networkidle" });
+  await page.getByText("Requested run does not belong to the selected case.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Accept analytical snapshot" }).count(), 0, "cross-case run exposed an acceptance action");
+  await page.waitForFunction((runId) => new URL(window.location.href).searchParams.get("run") !== runId, crossCaseRun.id);
+  assert.equal(crossCaseAcceptRequests, 0, "cross-case run was accepted from the selected case");
+  page.off("request", countCrossCaseAccept);
 
   const workflows = ["Overview", "Sources", "Analyse", "Compare", "Model", "Publish"];
   for (const label of workflows) {

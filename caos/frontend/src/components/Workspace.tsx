@@ -7,7 +7,7 @@ import EvidenceChip from "./EvidenceChip";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
 import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, withQuery } from "../lib/workbench";
 
-type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
+type RunRecord = { id: string; case_id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
 type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
 type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
 type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
@@ -66,24 +66,29 @@ export default function Workspace({ destination }: { destination?: Destination }
   const [authorityStatus, setAuthorityStatus] = useState<AuthorityStatus>("idle");
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const authorityRequest = useRef(0);
+  const runRequest = useRef(0);
   const caseIdRef = useRef("");
+  const runIdRef = useRef("");
   const routeAuthorityRef = useRef("");
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
 
   const selectCase = useCallback((nextCaseId: string) => {
-    if (nextCaseId === caseId) return;
+    if (nextCaseId === caseId) return true;
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
-    if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
+    if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return false;
     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
     caseIdRef.current = nextCaseId;
     setDrawer(null);
     setAuthority(null);
     setAuthorityStatus(nextCaseId ? "loading" : "idle");
     setCaseId(nextCaseId);
-    setRunId(cases.find((item) => item.id === nextCaseId)?.current_execution_id || "");
+    const nextRunId = cases.find((item) => item.id === nextCaseId)?.current_execution_id || "";
+    runIdRef.current = nextRunId;
+    setRunId(nextRunId);
     setRun(null);
     setRunError("");
     setError("");
+    return true;
   }, [caseId, cases]);
 
   const refreshCases = async (signal?: AbortSignal) => {
@@ -101,7 +106,10 @@ export default function Workspace({ destination }: { destination?: Destination }
       }
       if (!runId && !requestedRunId) {
         const resolvedCase = next.find((item) => item.id === resolvedCaseId);
-        if (resolvedCase?.current_execution_id) setRunId(resolvedCase.current_execution_id);
+        if (resolvedCase?.current_execution_id) {
+          runIdRef.current = resolvedCase.current_execution_id;
+          setRunId(resolvedCase.current_execution_id);
+        }
       }
     } catch (caught) {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(caught instanceof Error ? caught.message : "Unable to load cases");
@@ -132,14 +140,33 @@ export default function Workspace({ destination }: { destination?: Destination }
   };
 
   const refreshRun = async (id = runId) => {
-    if (!id) { setRun(null); return; }
+    const requestId = ++runRequest.current;
+    if (!id) { setRun(null); setRunLoading(false); return; }
+    const expectedCaseId = caseIdRef.current;
     setRunLoading(true);
     setRunError("");
-    try { setRun(await request<RunRecord>(`/api/runs/${id}`)); } catch (caught) {
+    try {
+      const next = await request<RunRecord>(`/api/runs/${id}`);
+      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
+      if (next.case_id !== expectedCaseId) {
+        setRun(null);
+        setRunLoading(false);
+        setRunId((current) => {
+          const nextRunId = current === id ? "" : current;
+          runIdRef.current = nextRunId;
+          return nextRunId;
+        });
+        setRunError("Requested run does not belong to the selected case.");
+        return;
+      }
+      setRun(next);
+    } catch (caught) {
+      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
       const message = caught instanceof Error ? caught.message : "Unable to refresh run";
       setRunError(message);
       setError(message);
     } finally {
+      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
       setRunLoading(false);
     }
   };
@@ -150,6 +177,7 @@ export default function Workspace({ destination }: { destination?: Destination }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCaseId(requestedCaseId);
     setAuthorityStatus(requestedCaseId ? "loading" : "idle");
+    runIdRef.current = requestedRunId;
     setRunId(requestedRunId);
     setHydrated(true);
     const controller = new AbortController();
@@ -178,19 +206,30 @@ export default function Workspace({ destination }: { destination?: Destination }
     const authorizedCase = requestedCaseId ? cases.find((item) => item.id === requestedCaseId) : null;
     const routeAuthority = `${requestedCaseId}\u0000${requestedRunId}`;
     if (routeAuthorityRef.current === routeAuthority || (requestedCaseId && !authorizedCase && casesLoading)) return;
-    routeAuthorityRef.current = routeAuthority;
     const timer = window.setTimeout(() => {
       if (authorizedCase && authorizedCase.id !== caseId) {
-        selectCase(authorizedCase.id);
-        if (requestedRunId) setRunId(requestedRunId);
+        if (!selectCase(authorizedCase.id)) {
+          const url = new URL(window.location.href);
+          if (caseId) url.searchParams.set("case", caseId); else url.searchParams.delete("case");
+          if (runId) url.searchParams.set("run", runId); else url.searchParams.delete("run");
+          window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+          return;
+        }
+        if (requestedRunId) {
+          runIdRef.current = requestedRunId;
+          setRunId(requestedRunId);
+        }
+        routeAuthorityRef.current = routeAuthority;
         return;
       }
       // A workflow link may omit `run`; in that case the selected case keeps its
       // current execution. An explicit run query always wins for the same case.
       if (requestedRunId && requestedRunId !== runId) {
         setRun(null);
+        runIdRef.current = requestedRunId;
         setRunId(requestedRunId);
       }
+      routeAuthorityRef.current = routeAuthority;
     }, 0);
     return () => window.clearTimeout(timer);
   }, [caseId, cases, casesLoading, hydrated, requestedCaseId, requestedRunId, runId, selectCase]);
@@ -225,14 +264,20 @@ export default function Workspace({ destination }: { destination?: Destination }
     // The initial refresh is an external synchronization boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshRun(runId);
+    // refreshRun only depends on the current run id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+
+  useEffect(() => {
+    if (!runId || !run || run.id !== runId || run.case_id !== caseId) return;
     const source = new EventSource(`/api/runs/${runId}/events`);
     const refresh = () => void refreshRun();
     ["run.running", "node.running", "node.succeeded", "node.failed", "run.succeeded", "run.failed", "run.paused", "snapshot.accepted"].forEach((name) => source.addEventListener(name, refresh));
     const timer = window.setInterval(refresh, 1200);
     return () => { source.close(); window.clearInterval(timer); };
-    // refreshRun only depends on the current run id.
+    // Event updates only begin after the run has passed its case authority check.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId]);
+  }, [caseId, run?.case_id, run?.id, runId]);
 
   const createCase = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setError("");
@@ -260,13 +305,17 @@ export default function Workspace({ destination }: { destination?: Destination }
     setPendingAction("start-run");
     try {
       const created = await request<RunRecord>(`/api/cases/${caseId}/runs`, { method: "POST", body: JSON.stringify({ pathway: form.get("pathway"), depth: form.get("depth"), focus_questions: [] }) });
-      setRun(created); setRunId(created.id);
+      setRun(created); runIdRef.current = created.id; setRunId(created.id);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to start run"); }
     finally { setPendingAction(""); }
   };
 
   const acceptRun = async () => {
-    if (!runId || !window.confirm("Accept this analytical snapshot as the visible authority for the case?")) return;
+    if (!runId || !run || run.id !== runId || run.case_id !== caseId) {
+      setRunError("Only a run bound to the selected case can be accepted.");
+      return;
+    }
+    if (!window.confirm("Accept this analytical snapshot as the visible authority for the case?")) return;
     setPendingAction("accept-run");
     try { await request(`/api/runs/${runId}/accept`, { method: "POST" }); await refreshCase(caseId); await refreshRun(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to accept snapshot"); }

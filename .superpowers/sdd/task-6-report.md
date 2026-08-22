@@ -68,3 +68,23 @@ Rewrite tournament skipped: the only production logic additions are the native p
 | GitNexus staged change detection | HIGH at monolithic `Workspace` symbol granularity; inspected context shows no incoming callers and broad render-flow attribution from stale line bounds, while the staged diff is confined to query synchronization plus smoke/report |
 
 Confidence review found and fixed one real race: state-driven case selection briefly left the old query visible, so an unrestricted synchronization effect could reverse the selection and oscillate authority requests. Query-signature gating now distinguishes external URL changes from internal state transitions, and the live smoke includes a request ceiling for regression coverage. The direct-query design won the rewrite comparison because it eliminates three mirrored route-state stores; the remaining case/run state is intentionally retained for authority and execution lifecycle control.
+
+## Final reviewer follow-up — case-bound runs and cancelled route authority
+
+- The frontend now consumes the existing run `case_id` returned by `GET /api/runs/{id}`. A run response is rendered and subscribed to only when its case matches the active case authority; a mismatch clears the URL run selection and shows a scoped error.
+- Acceptance now checks the run id, the fetched run identity, and the run case before making the mutation request.
+- Run fetches carry both a request generation and active run/case ownership checks. An older response, error, or `finally` cleanup cannot overwrite a newer same-case run transition.
+- Event streaming keys off the validated primitive run id/case id, so background refreshes no longer reopen the stream merely because the latest response creates a new object.
+- A cancelled Report Studio draft prompt now restores the selected case/run URL and does not consume the external route signature. A later attempt receives a fresh prompt.
+
+### Final reviewer verification
+
+| Check | Result |
+|---|---|
+| `npm run lint -- --max-warnings=0` | PASS |
+| `npx tsc --noEmit` | PASS |
+| `npm run build` | PASS; 12 static pages generated |
+| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run test:workbench` | PASS; Case B successful run under Case A URL exposes no B data/action, clears the mismatched run, makes zero B accept requests; cancelled A→B draft navigation restores A and succeeds on two independent retries |
+| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run a11y` | PASS; 27 route/viewport combinations, 0 violations |
+
+Confidence review: the highest-risk cases were (1) a stale same-case run response winning after the selected run changes, (2) an event-stream reconnect per polling response, (3) cross-case acceptance after URL injection, and (4) a cancelled draft transition consuming its retry token. Request ownership guards, primitive stream dependencies, the accept boundary, and the two live browser regressions address these cases. No server change was needed because the established run-detail payload already has `case_id`.
