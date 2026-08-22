@@ -13,6 +13,32 @@ export const routeDestinations = [
 export type Destination = (typeof routeDestinations)[number][1];
 export type WorkflowId = "overview" | "sources" | "analyse" | "compare" | "model" | "publish";
 
+export type Snapshot = {
+  id: string;
+  digest: string;
+  accepted_at: string;
+  source_set_version?: number | null;
+  artifacts: { id: string; module_id: string; digest: string }[];
+};
+
+export type SnapshotView = {
+  accepted: Snapshot | null;
+  latest_accepted: Snapshot | null;
+  switch_required: boolean;
+  diff?: { changed?: boolean } | null;
+};
+
+export type CaseRecord = {
+  id: string;
+  name: string;
+  issuer: string;
+  sector: string;
+  source_count?: number;
+  accepted_snapshot?: Snapshot | null;
+  pathway_fit?: { fit: string; message: string };
+  current_execution_id?: string | null;
+};
+
 export type Workflow = {
   id: WorkflowId;
   label: string;

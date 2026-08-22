@@ -89,6 +89,10 @@ try {
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await palette.getByRole("combobox", { name: "Search commands" }).fill("Northstar");
   await palette.getByRole("option", { name: /Northstar \/ Workbench QA/ }).waitFor();
+  await palette.getByRole("combobox", { name: "Search commands" }).fill("src_deadbeef");
+  await palette.getByRole("option", { name: /Open source ID in this case/ }).waitFor();
+  await palette.getByRole("combobox", { name: "Search commands" }).fill("secret issuer");
+  await palette.getByText("No authorized matches").waitFor();
   await page.keyboard.press("Escape");
   await assert.doesNotReject(() => paletteTrigger.evaluate((element) => {
     if (document.activeElement !== element) throw new Error("focus did not return to the palette trigger");

@@ -2,10 +2,9 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { type Destination, routeDestinations, withQuery } from "../lib/workbench";
+import WorkbenchShell, { type DrawerState } from "./WorkbenchShell";
+import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
 
-type CaseRecord = { id: string; name: string; issuer: string; sector: string; source_count?: number; accepted_snapshot?: Snapshot | null; pathway_fit?: { fit: string; message: string }; current_execution_id?: string | null };
-type Snapshot = { id: string; digest: string; accepted_at: string; source_set_version?: number | null; artifacts: { id: string; module_id: string; digest: string }[] };
 type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
 type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
 type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
@@ -51,23 +50,23 @@ export default function Workspace({ destination }: { destination: Destination })
   const [runLoading, setRunLoading] = useState(false);
   const [runError, setRunError] = useState("");
   const [error, setError] = useState("");
-  const [askQuestion, setAskQuestion] = useState("");
   const [pendingAction, setPendingAction] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [role, setRole] = useState("ANALYST");
-  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [authority, setAuthority] = useState<SnapshotView | null>(null);
+  const [drawer, setDrawer] = useState<DrawerState | null>(null);
+  const authorityRequest = useRef(0);
   const [routeQuestion, setRouteQuestion] = useState("");
   const [routeArtifactId, setRouteArtifactId] = useState("");
 
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
-  const visibleDestinations = useMemo(() => routeDestinations
-    .filter(([slug]) => role === "ADMIN" || slug !== "admin-studio")
-    .map(([slug, label]) => ({ label, href: `/${slug}`, group: label === "Cases" || label === "Sources" ? "INTAKE" : label === "Run Console" || label === "Deep-Dive" ? "ANALYZE" : label === "Report Studio" ? "PUBLISH" : label === "Admin Studio" ? "ADMIN" : "DECIDE" })), [role]);
 
   const selectCase = (nextCaseId: string) => {
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
+    setDrawer(null);
+    setAuthority(null);
     setCaseId(nextCaseId);
     setRunId(cases.find((item) => item.id === nextCaseId)?.current_execution_id || "");
     setRun(null);
@@ -95,12 +94,23 @@ export default function Workspace({ destination }: { destination: Destination })
     }
   };
 
-  const refreshCase = async () => {
-    if (!caseId) return;
+  const refreshCase = async (id = caseId, signal?: AbortSignal) => {
+    if (!id) return;
+    const requestId = ++authorityRequest.current;
     try {
-      const next = await request<CaseRecord>(`/api/cases/${caseId}`);
-      setCases((previous) => previous.map((item) => item.id === caseId ? { ...item, ...next } : item));
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to refresh case"); }
+      const [detail, snapshot] = await Promise.all([
+        request<CaseRecord>(`/api/cases/${id}`, {}, signal),
+        request<SnapshotView>(`/api/cases/${id}/snapshot`, {}, signal),
+      ]);
+      if (requestId !== authorityRequest.current) return;
+      setCases((previous) => previous.map((item) => item.id === id ? { ...item, ...detail } : item));
+      setAuthority(snapshot);
+    } catch (caught) {
+      if (requestId !== authorityRequest.current) return;
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+        setError(caught instanceof Error ? caught.message : "Unable to load case authority");
+      }
+    }
   };
 
   const refreshRun = async (id = runId) => {
@@ -146,18 +156,20 @@ export default function Workspace({ destination }: { destination: Destination })
   }, []);
 
   useEffect(() => {
+    authorityRequest.current += 1;
+    // The visible authority and contextual drawer must clear at the external case boundary.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAuthority(null); setDrawer(null);
+    if (!caseId) return;
+    const controller = new AbortController();
+    void refreshCase(caseId, controller.signal);
+    return () => controller.abort();
+    // `refreshCase` deliberately resolves the current external authority.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseId]);
+
+  useEffect(() => {
     document.title = `CAOS — ${active}`;
-    const openAsk = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        if (!dialogRef.current?.open) {
-          dialogRef.current?.showModal();
-          window.requestAnimationFrame(() => document.getElementById("ask")?.focus());
-        }
-      }
-    };
-    window.addEventListener("keydown", openAsk);
-    return () => window.removeEventListener("keydown", openAsk);
   }, [active]);
 
   useEffect(() => {
@@ -197,7 +209,7 @@ export default function Workspace({ destination }: { destination: Destination })
     event.preventDefault(); if (!caseId) return; setError("");
     const form = new FormData(event.currentTarget);
     setPendingAction("upload");
-    try { await request(`/api/cases/${caseId}/sources`, { method: "POST", body: form }); await refreshCase(); event.currentTarget.reset(); }
+    try { await request(`/api/cases/${caseId}/sources`, { method: "POST", body: form }); await refreshCase(caseId); event.currentTarget.reset(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to upload source"); }
     finally { setPendingAction(""); }
   };
@@ -216,19 +228,9 @@ export default function Workspace({ destination }: { destination: Destination })
   const acceptRun = async () => {
     if (!runId || !window.confirm("Accept this analytical snapshot as the visible authority for the case?")) return;
     setPendingAction("accept-run");
-    try { await request(`/api/runs/${runId}/accept`, { method: "POST" }); await refreshCase(); await refreshRun(); }
+    try { await request(`/api/runs/${runId}/accept`, { method: "POST" }); await refreshCase(caseId); await refreshRun(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to accept snapshot"); }
     finally { setPendingAction(""); }
-  };
-
-  const ask = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    dialogRef.current?.close();
-    const destination = /issuer|lens|posture/i.test(askQuestion) ? "command-center" : "deep-dive";
-    const query = new URLSearchParams();
-    if (caseId) query.set("case", caseId);
-    if (askQuestion.trim()) query.set("q", askQuestion.trim());
-    window.location.assign(`/${destination}/?${query.toString()}`);
   };
 
   const renderDestination = () => {
@@ -246,21 +248,22 @@ export default function Workspace({ destination }: { destination: Destination })
     }
   };
 
-  return <>
-    <a className="skip-link" href="#main-content">Skip to content</a>
-    <div className="app-shell">
-      <aside className="rail" aria-label="Primary navigation">
-        <Link href={withQuery("/cases", { case: caseId || undefined })} className="wordmark">CAOS<small>Credit Agent OS</small></Link>
-        {Array.from(new Set(visibleDestinations.map((item) => item.group))).map((group) => <div className="nav-group" key={group}><div className="nav-label">{group}</div>{visibleDestinations.filter((item) => item.group === group).map((item) => <Link aria-current={active === item.label ? "page" : undefined} className={`nav-link ${active === item.label ? "active" : ""}`} href={withQuery(item.href, { case: caseId || undefined })} key={item.label}>{item.label}{item.label === "Run Console" && <span className="shortcut">LIVE</span>}</Link>)}</div>)}
-        <div className="nav-group"><div className="nav-label">GLOBAL</div><button className="nav-link" onClick={() => { if (!dialogRef.current?.open) { dialogRef.current?.showModal(); window.requestAnimationFrame(() => document.getElementById("ask")?.focus()); } }}>Find evidence <span className="shortcut">⌘K</span></button></div>
-      </aside>
-      <section className="workspace">
-        <div role="region" className="topbar" aria-label="Workspace controls"><div className="case-context"><span className="eyebrow">CASE</span><strong>{selectedCase ? `${selectedCase.issuer} / ${selectedCase.name}` : "No case selected"}</strong>{selectedCase?.accepted_snapshot && <span className="status success">accepted snapshot</span>}</div><div className="top-actions"><label className="sr-only" htmlFor="case-select">Select case</label><select id="case-select" aria-label="Select case" value={caseId} onChange={(event) => selectCase(event.target.value)}><option value="">Select case</option>{cases.map((item) => <option key={item.id} value={item.id}>{item.issuer} / {item.name}</option>)}</select></div></div>
-        <main className={active === "Report Studio" ? "content paper" : "content"} id="main-content"><div className="page-title"><div><div className="eyebrow">{active === "Cases" ? "INTAKE / CASE CONTEXT" : `CAOS / ${active}`}</div><h1>{active}</h1></div>{error && <div className="error" role="alert" aria-live="assertive">{error}</div>}</div>{renderDestination()}</main>
-      </section>
-    </div>
-    <dialog ref={dialogRef} aria-labelledby="ask-title" aria-describedby="ask-description"><div className="dialog-body"><div className="panel-header"><h2 id="ask-title">Find evidence ⌘K</h2><button type="button" className="button small" onClick={() => dialogRef.current?.close()}>Close</button></div><p id="ask-description" className="muted">Describe the evidence you need. CAOS will open the most relevant case-scoped surface and keep your question in the URL for review.</p><form onSubmit={ask}><div className="field"><label htmlFor="ask">Question</label><input id="ask" name="question" autoComplete="off" value={askQuestion} onChange={(event) => setAskQuestion(event.target.value)} placeholder="What changed in the accepted snapshot…" /></div><button className="button primary" type="submit">Open evidence surface</button></form></div></dialog>
-  </>;
+  return (
+    <WorkbenchShell
+      active={active}
+      authority={authority}
+      cases={cases}
+      caseId={caseId}
+      drawer={drawer}
+      error={error}
+      onCaseChange={selectCase}
+      onDrawerChange={setDrawer}
+      role={role}
+      selectedCase={selectedCase}
+    >
+      <div key={`${active}:${caseId}`}>{renderDestination()}</div>
+    </WorkbenchShell>
+  );
 }
 
 function EmptyState({ text }: { text: string }) { return <div className="panel"><div className="empty">{text}</div></div>; }
