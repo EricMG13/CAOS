@@ -134,14 +134,37 @@ try {
     response.request().method() === "POST"
       && new URL(response.url()).pathname === `/api/runs/${nextRun.id}/accept`,
   );
+  let switchedToRaceCase = false;
+  const forbiddenAuthorityRequests = [];
+  const trackAuthorityRequest = (requestValue) => {
+    if (!switchedToRaceCase) return;
+    const pathname = new URL(requestValue.url()).pathname;
+    if (pathname === `/api/cases/${caseRecord.id}`
+      || pathname === `/api/cases/${caseRecord.id}/snapshot`) {
+      forbiddenAuthorityRequests.push(pathname);
+    }
+  };
+  page.on("request", trackAuthorityRequest);
   page.once("dialog", (dialog) => void dialog.accept());
   await acceptTrigger.click();
   await page.getByRole("combobox", { name: "Select case" }).selectOption(raceCase.id);
-  assert.equal((await delayedAcceptResponse).status(), 200);
+  switchedToRaceCase = true;
+  const acceptanceResponse = await delayedAcceptResponse;
+  assert.equal(acceptanceResponse.status(), 200);
+  await acceptanceResponse.finished();
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
   const authority = page.getByRole("region", { name: "Accepted authority" });
   await authority.getByText("Second / Authority Race").waitFor();
   await authority.getByText("No accepted snapshot").waitFor();
   assert.equal(await authority.getByText(/Source set v1/).count(), 0);
+  assert.deepEqual(
+    forbiddenAuthorityRequests,
+    [],
+    "accepted Case A mutation refreshed authority after switching to Case B",
+  );
+  page.off("request", trackAuthorityRequest);
 
   const qaTrigger = page.getByRole("button", { name: /QA unavailable/ });
   await qaTrigger.click();
