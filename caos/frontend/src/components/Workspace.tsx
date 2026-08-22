@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import EvidenceChip from "./EvidenceChip";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
 import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
@@ -39,6 +40,15 @@ async function request<T>(path: string, options: RequestInit = {}, signal?: Abor
     throw new Error(body.detail || `Request failed (${response.status})`);
   }
   return response.json() as Promise<T>;
+}
+
+function SourceQuerySync({ onChange }: { onChange: (sourceId: string) => void }) {
+  const sourceId = useSearchParams().get("source") || "";
+  useEffect(() => {
+    // URL state is external navigation state and must follow same-route Link updates.
+    onChange(sourceId);
+  }, [onChange, sourceId]);
+  return null;
 }
 
 export default function Workspace({ destination }: { destination: Destination }) {
@@ -149,7 +159,6 @@ export default function Workspace({ destination }: { destination: Destination })
     setRunId(queryParam("run"));
     setRouteQuestion(queryParam("q"));
     setRouteArtifactId(queryParam("artifact"));
-    setRouteSourceId(queryParam("source"));
     setHydrated(true);
     const controller = new AbortController();
     const guardDraftNavigation = (event: MouseEvent) => {
@@ -265,7 +274,8 @@ export default function Workspace({ destination }: { destination: Destination })
     }
   };
 
-  return (
+  return <>
+    <Suspense fallback={null}><SourceQuerySync onChange={setRouteSourceId} /></Suspense>
     <WorkbenchShell
       active={active}
       authority={authority}
@@ -282,7 +292,7 @@ export default function Workspace({ destination }: { destination: Destination })
     >
       <div key={`${active}:${caseId}`}>{renderDestination()}</div>
     </WorkbenchShell>
-  );
+  </>;
 }
 
 function EmptyState({ text }: { text: string }) { return <div className="panel"><div className="empty">{text}</div></div>; }
@@ -307,6 +317,7 @@ function SourcesView({ selectedCase, artifactId, sourceId, upload, pendingAction
   const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [readySourceCaseId, setReadySourceCaseId] = useState("");
   const [artifactError, setArtifactError] = useState("");
   const [linkedEvidenceId, setLinkedEvidenceId] = useState("");
   const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
@@ -316,8 +327,8 @@ function SourcesView({ selectedCase, artifactId, sourceId, upload, pendingAction
     let ignore = false;
     // The fetch boundary intentionally resets its loading and error state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true); setLoadError(""); setArtifactError(""); setArtifact(null);
-    void request<SourceRecord[]>(`/api/cases/${selectedCase.id}/sources`).then((next) => { if (!ignore) setSources(next); }).catch((caught) => { if (!ignore) setLoadError(caught instanceof Error ? caught.message : "Unable to load source objects"); }).finally(() => { if (!ignore) setLoading(false); });
+    setLoading(true); setLoadError(""); setReadySourceCaseId(""); setArtifactError(""); setArtifact(null);
+    void request<SourceRecord[]>(`/api/cases/${selectedCase.id}/sources`).then((next) => { if (!ignore) { setSources(next); setReadySourceCaseId(selectedCase.id); } }).catch((caught) => { if (!ignore) setLoadError(caught instanceof Error ? caught.message : "Unable to load source objects"); }).finally(() => { if (!ignore) setLoading(false); });
     if (artifactId) void request<ArtifactRecord>(`/api/cases/${selectedCase.id}/artifacts/${artifactId}`).then((next) => { if (!ignore) setArtifact(next); }).catch((caught) => { if (!ignore) setArtifactError(caught instanceof Error ? caught.message : "Unable to load evidence artifact"); });
     return () => { ignore = true; };
   }, [selectedCase, artifactId]);
@@ -335,7 +346,7 @@ function SourcesView({ selectedCase, artifactId, sourceId, upload, pendingAction
     onOpenEvidence(evidenceId, source);
   };
   useEffect(() => {
-    if (!selectedCase || !sourceId || loading) return;
+    if (!selectedCase || !sourceId || loading || readySourceCaseId !== selectedCase.id) return;
     const queryKey = `${selectedCase.id}:${sourceId}`;
     if (openedSourceQuery.current === queryKey) return;
     openedSourceQuery.current = queryKey;
@@ -349,7 +360,7 @@ function SourcesView({ selectedCase, artifactId, sourceId, upload, pendingAction
     // Exact source-query hydration is an external navigation boundary.
     setSelectedEvidenceId(sourceId);
     onOpenEvidence(sourceId, source);
-  }, [loading, onOpenEvidence, selectedCase, sourceById, sourceId]);
+  }, [loading, onOpenEvidence, readySourceCaseId, selectedCase, sourceById, sourceId]);
   return <div className="grid">
     {artifactId && <section className="panel span-12 evidence-focus"><div className="panel-header"><h2>Evidence focus</h2><span className="eyebrow">ARTIFACT {artifact?.module_id || artifactId}</span></div><div className="panel-body">{artifact ? <><p className="mono">{artifact.digest}</p><p>{artifact.payload?.summary || artifact.payload?.narrative?.takeaway || "No artifact summary available."}</p><p className="muted">{artifact.payload?.narrative?.basis || "Typed artifact lineage."}{artifact.payload?.visual?.freshness ? ` · ${artifact.payload.visual.freshness}` : ""}</p><div className="evidence-list" aria-label="Artifact evidence">{evidenceRefs.map((evidenceId) => <EvidenceChip evidenceId={evidenceId} key={evidenceId} linkedId={activeEvidenceId} onOpen={openEvidence} onPreview={setLinkedEvidenceId} onPreviewEnd={() => setLinkedEvidenceId("")} />)}</div></> : <LoadState loading={!artifactError && loading} error={artifactError} empty="No artifact details were returned." />}</div></section>}
     <section className="panel span-8"><div className="panel-header"><h2>Source set</h2><span className="eyebrow">{loading ? "LOADING…" : `${sources.length} immutable objects`}</span></div><div className="panel-body table-wrap">{selectedEvidenceId && <div className="selection-strip" role="status"><span>Evidence {selectedEvidenceId}</span><button type="button" className="button small" onClick={() => setSelectedEvidenceId("")}>Clear</button></div>}{artifactError && !artifactId && <p className="error" role="alert">{artifactError}</p>}<table><thead><tr><th scope="col">File</th><th scope="col">SHA-256</th><th scope="col">Blocks</th></tr></thead><tbody>{sources.map((source) => <tr id={`source-${source.id}`} className={activeEvidenceId === source.id ? "evidence-match" : undefined} key={source.id}><td><div className="source-file"><details><summary>{source.filename}</summary><div className="source-blocks">{source.blocks.slice(0, 20).map((block) => <article className="source-block" id={`block-${source.id}-${block.block_id}`} key={block.block_id}><div className="eyebrow">{block.block_id} · {JSON.stringify(block.locator)}</div><p>{block.text || "No extracted text."}</p></article>)}{source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Use the source object for the remaining {source.blocks.length - 20} blocks.</p>}</div></details>{evidenceRefs.includes(source.id) && <EvidenceChip evidenceId={source.id} linkedId={activeEvidenceId} onOpen={openEvidence} onPreview={setLinkedEvidenceId} onPreviewEnd={() => setLinkedEvidenceId("")} />}</div></td><td className="mono">{source.sha256.slice(0, 16)}…</td><td className="num">{source.blocks.length}</td></tr>)}</tbody></table>{!sources.length && <LoadState loading={loading} error={loadError} empty="No source objects in this case." />}{sources.length > 0 && loadError && <p className="error" role="alert">{loadError}</p>}</div></section>

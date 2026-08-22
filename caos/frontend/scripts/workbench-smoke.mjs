@@ -54,10 +54,17 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   let caseRequests = 0;
-  let expectedAuthorityFailure = false;
+  let expectedAuthorityFailureURL = "";
+  let expectedAuthorityFailureSeen = false;
   page.on("console", (message) => {
-    if (message.type() === "error"
-      && !(expectedAuthorityFailure && message.text().includes("503 (Service Unavailable)"))) errors.push(message.text());
+    if (message.type() !== "error") return;
+    if (!expectedAuthorityFailureSeen
+      && message.location().url === expectedAuthorityFailureURL
+      && message.text() === "Failed to load resource: the server responded with a status of 503 (Service Unavailable)") {
+      expectedAuthorityFailureSeen = true;
+      return;
+    }
+    errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (requestValue) => {
@@ -116,16 +123,18 @@ try {
     body: JSON.stringify({ detail: "authority unavailable" }),
   });
   await page.route(failedAuthorityDetail, failAuthorityDetail);
-  expectedAuthorityFailure = true;
+  expectedAuthorityFailureURL = `${baseURL}/api/cases/${failedCase.id}`;
+  expectedAuthorityFailureSeen = false;
   await page.getByRole("combobox", { name: "Select case" }).selectOption(failedCase.id);
   const unavailableSourcesTrigger = page.getByRole("button", { name: "Sources unavailable" });
   await unavailableSourcesTrigger.click();
   await sourceDrawer.getByText("Source authority unavailable.").waitFor();
   assert.equal(await sourceDrawer.getByText(/^0$/).count(), 0);
   assert.equal(await sourceDrawer.getByText(/No accepted/).count(), 0);
+  assert.equal(expectedAuthorityFailureSeen, true, "controlled authority 503 did not emit the expected console error");
   await page.keyboard.press("Escape");
   await page.unroute(failedAuthorityDetail, failAuthorityDetail);
-  expectedAuthorityFailure = false;
+  expectedAuthorityFailureURL = "";
   await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
 
@@ -265,6 +274,35 @@ try {
   await assert.doesNotReject(() => chip.evaluate((element) => {
     if (document.activeElement !== element) throw new Error("focus did not return to the evidence trigger");
   }));
+
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
+  const sourcePalette = page.getByRole("dialog", { name: "Command palette" });
+  await sourcePalette.getByRole("combobox", { name: "Search commands" }).fill(source.id);
+  await sourcePalette.getByRole("option", { name: "Open source ID in this case" }).click();
+  await page.waitForURL((url) => url.pathname.replace(/\/$/, "") === "/sources" && url.searchParams.get("source") === source.id);
+  await evidence.getByText("earnings.txt").waitFor();
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  assert.equal(await evidence.isVisible(), false, "same-route source query reopened after the drawer was closed");
+
+  const sourceListURL = `${baseURL}/api/cases/${caseRecord.id}/sources`;
+  const failedSourceList = (url) => url.href === sourceListURL;
+  const failSourceList = (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: "not-json",
+  });
+  await page.route(failedSourceList, failSourceList);
+  await page.goto(`${baseURL}/sources/?case=${caseRecord.id}&source=${source.id}`, { waitUntil: "networkidle" });
+  await page.getByRole("alert").getByText("Unable to load this view.").waitFor();
+  assert.equal(await page.getByText(/not in the active case source set/).count(), 0);
+  assert.equal(await evidence.count(), 0, "failed source authority opened an evidence drawer");
+  await page.unroute(failedSourceList, failSourceList);
+  await page.reload({ waitUntil: "networkidle" });
+  await evidence.getByText("earnings.txt").waitFor();
+  await page.keyboard.press("Escape");
 
   await page.setViewportSize({ width: 720, height: 900 });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
