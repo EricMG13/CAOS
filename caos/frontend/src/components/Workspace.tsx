@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import EvidenceChip from "./EvidenceChip";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
 import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
 
@@ -60,6 +61,7 @@ export default function Workspace({ destination }: { destination: Destination })
   const caseIdRef = useRef("");
   const [routeQuestion, setRouteQuestion] = useState("");
   const [routeArtifactId, setRouteArtifactId] = useState("");
+  const [routeSourceId, setRouteSourceId] = useState("");
 
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
 
@@ -147,6 +149,7 @@ export default function Workspace({ destination }: { destination: Destination })
     setRunId(queryParam("run"));
     setRouteQuestion(queryParam("q"));
     setRouteArtifactId(queryParam("artifact"));
+    setRouteSourceId(queryParam("source"));
     setHydrated(true);
     const controller = new AbortController();
     const guardDraftNavigation = (event: MouseEvent) => {
@@ -251,7 +254,7 @@ export default function Workspace({ destination }: { destination: Destination })
     if (!selectedCase && active !== "Cases") return <EmptyState text="Create or select a case in Cases before entering an analytical workspace." />;
     switch (active) {
       case "Cases": return <CasesView cases={cases} casesLoading={casesLoading} selectedCase={selectedCase} caseId={caseId} setCaseId={selectCase} createCase={createCase} upload={upload} pendingAction={pendingAction} />;
-      case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} upload={upload} pendingAction={pendingAction} />;
+      case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} sourceId={routeSourceId} upload={upload} pendingAction={pendingAction} onOpenEvidence={(evidenceId, source) => setDrawer({ kind: "evidence", evidenceId, source })} />;
       case "Run Console": return <RunConsole caseId={caseId} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} pendingAction={pendingAction} />;
       case "Deep-Dive": return <DeepDive selectedCase={selectedCase} question={routeQuestion} />;
       case "RV Screener": return <RVView caseId={caseId} />;
@@ -299,12 +302,15 @@ function CasesView({ cases, casesLoading, selectedCase, caseId, setCaseId, creat
   </div>;
 }
 
-function SourcesView({ selectedCase, artifactId, upload, pendingAction }: { selectedCase: CaseRecord | null; artifactId: string; upload: (event: FormEvent<HTMLFormElement>) => void; pendingAction: string }) {
+function SourcesView({ selectedCase, artifactId, sourceId, upload, pendingAction, onOpenEvidence }: { selectedCase: CaseRecord | null; artifactId: string; sourceId: string; upload: (event: FormEvent<HTMLFormElement>) => void; pendingAction: string; onOpenEvidence: (evidenceId: string, source: SourceRecord) => void }) {
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [artifactError, setArtifactError] = useState("");
+  const [linkedEvidenceId, setLinkedEvidenceId] = useState("");
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
+  const openedSourceQuery = useRef("");
   useEffect(() => {
     if (!selectedCase) return;
     let ignore = false;
@@ -316,9 +322,37 @@ function SourcesView({ selectedCase, artifactId, upload, pendingAction }: { sele
     return () => { ignore = true; };
   }, [selectedCase, artifactId]);
   const evidenceRefs = artifact?.payload?.evidence_refs || [];
+  const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
+  const activeEvidenceId = linkedEvidenceId || selectedEvidenceId;
+  const openEvidence = (evidenceId: string) => {
+    const source = sourceById.get(evidenceId);
+    if (!source) {
+      setArtifactError(`Evidence ${evidenceId} is not in the active case source set.`);
+      return;
+    }
+    setArtifactError("");
+    setSelectedEvidenceId(evidenceId);
+    onOpenEvidence(evidenceId, source);
+  };
+  useEffect(() => {
+    if (!selectedCase || !sourceId || loading) return;
+    const queryKey = `${selectedCase.id}:${sourceId}`;
+    if (openedSourceQuery.current === queryKey) return;
+    openedSourceQuery.current = queryKey;
+    const source = sourceById.get(sourceId);
+    if (!source) {
+      // The requested ID stays scoped to the active case source set.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setArtifactError(`Evidence ${sourceId} is not in the active case source set.`);
+      return;
+    }
+    // Exact source-query hydration is an external navigation boundary.
+    setSelectedEvidenceId(sourceId);
+    onOpenEvidence(sourceId, source);
+  }, [loading, onOpenEvidence, selectedCase, sourceById, sourceId]);
   return <div className="grid">
-    {artifactId && <section className="panel span-12 evidence-focus"><div className="panel-header"><h2>Evidence focus</h2><span className="eyebrow">ARTIFACT {artifact?.module_id || artifactId}</span></div><div className="panel-body">{artifact ? <><p className="mono">{artifact.digest}</p><p>{artifact.payload?.summary || artifact.payload?.narrative?.takeaway || "No artifact summary available."}</p><p className="muted">{artifact.payload?.narrative?.basis || "Typed artifact lineage."}{artifact.payload?.visual?.freshness ? ` · ${artifact.payload.visual.freshness}` : ""}</p><p className="mono">Evidence refs: {evidenceRefs.length || 0}</p></> : <LoadState loading={!artifactError && loading} error={artifactError} empty="No artifact details were returned." />}</div></section>}
-    <section className="panel span-8"><div className="panel-header"><h2>Source set</h2><span className="eyebrow">{loading ? "LOADING…" : `${sources.length} immutable objects`}</span></div><div className="panel-body table-wrap"><table><thead><tr><th scope="col">File</th><th scope="col">SHA-256</th><th scope="col">Blocks</th></tr></thead><tbody>{sources.map((source) => <tr id={`source-${source.id}`} className={evidenceRefs.includes(source.id) ? "evidence-match" : undefined} key={source.id}><td><details><summary>{source.filename}</summary><div className="source-blocks">{source.blocks.slice(0, 20).map((block) => <article className="source-block" id={`block-${source.id}-${block.block_id}`} key={block.block_id}><div className="eyebrow">{block.block_id} · {JSON.stringify(block.locator)}</div><p>{block.text || "No extracted text."}</p></article>)}{source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Use the source object for the remaining {source.blocks.length - 20} blocks.</p>}</div></details></td><td className="mono">{source.sha256.slice(0, 16)}…</td><td className="num">{source.blocks.length}</td></tr>)}</tbody></table>{!sources.length && <LoadState loading={loading} error={loadError} empty="No source objects in this case." />}{sources.length > 0 && loadError && <p className="error" role="alert">{loadError}</p>}</div></section>
+    {artifactId && <section className="panel span-12 evidence-focus"><div className="panel-header"><h2>Evidence focus</h2><span className="eyebrow">ARTIFACT {artifact?.module_id || artifactId}</span></div><div className="panel-body">{artifact ? <><p className="mono">{artifact.digest}</p><p>{artifact.payload?.summary || artifact.payload?.narrative?.takeaway || "No artifact summary available."}</p><p className="muted">{artifact.payload?.narrative?.basis || "Typed artifact lineage."}{artifact.payload?.visual?.freshness ? ` · ${artifact.payload.visual.freshness}` : ""}</p><div className="evidence-list" aria-label="Artifact evidence">{evidenceRefs.map((evidenceId) => <EvidenceChip evidenceId={evidenceId} key={evidenceId} linkedId={activeEvidenceId} onOpen={openEvidence} onPreview={setLinkedEvidenceId} onPreviewEnd={() => setLinkedEvidenceId("")} />)}</div></> : <LoadState loading={!artifactError && loading} error={artifactError} empty="No artifact details were returned." />}</div></section>}
+    <section className="panel span-8"><div className="panel-header"><h2>Source set</h2><span className="eyebrow">{loading ? "LOADING…" : `${sources.length} immutable objects`}</span></div><div className="panel-body table-wrap">{selectedEvidenceId && <div className="selection-strip" role="status"><span>Evidence {selectedEvidenceId}</span><button type="button" className="button small" onClick={() => setSelectedEvidenceId("")}>Clear</button></div>}{artifactError && !artifactId && <p className="error" role="alert">{artifactError}</p>}<table><thead><tr><th scope="col">File</th><th scope="col">SHA-256</th><th scope="col">Blocks</th></tr></thead><tbody>{sources.map((source) => <tr id={`source-${source.id}`} className={activeEvidenceId === source.id ? "evidence-match" : undefined} key={source.id}><td><div className="source-file"><details><summary>{source.filename}</summary><div className="source-blocks">{source.blocks.slice(0, 20).map((block) => <article className="source-block" id={`block-${source.id}-${block.block_id}`} key={block.block_id}><div className="eyebrow">{block.block_id} · {JSON.stringify(block.locator)}</div><p>{block.text || "No extracted text."}</p></article>)}{source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Use the source object for the remaining {source.blocks.length - 20} blocks.</p>}</div></details>{evidenceRefs.includes(source.id) && <EvidenceChip evidenceId={source.id} linkedId={activeEvidenceId} onOpen={openEvidence} onPreview={setLinkedEvidenceId} onPreviewEnd={() => setLinkedEvidenceId("")} />}</div></td><td className="mono">{source.sha256.slice(0, 16)}…</td><td className="num">{source.blocks.length}</td></tr>)}</tbody></table>{!sources.length && <LoadState loading={loading} error={loadError} empty="No source objects in this case." />}{sources.length > 0 && loadError && <p className="error" role="alert">{loadError}</p>}</div></section>
     <section className="panel span-4"><div className="panel-header"><h2>Add source</h2><span className="eyebrow">BOUNDARY</span></div><div className="panel-body">{selectedCase ? <form onSubmit={upload}><div className="field"><label htmlFor="source-file">Source file</label><input id="source-file" name="file" type="file" accept=".pdf,.xlsx,.json,.txt,.md,.csv" required /></div><button className="button primary" type="submit" disabled={pendingAction === "upload"}>{pendingAction === "upload" ? "Uploading…" : "Ingest safely"}</button></form> : <div className="empty">Select a case.</div>}</div></section>
   </div>;
 }

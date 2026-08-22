@@ -54,8 +54,10 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   let caseRequests = 0;
+  let expectedAuthorityFailure = false;
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
+    if (message.type() === "error"
+      && !(expectedAuthorityFailure && message.text().includes("503 (Service Unavailable)"))) errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (requestValue) => {
@@ -114,6 +116,7 @@ try {
     body: JSON.stringify({ detail: "authority unavailable" }),
   });
   await page.route(failedAuthorityDetail, failAuthorityDetail);
+  expectedAuthorityFailure = true;
   await page.getByRole("combobox", { name: "Select case" }).selectOption(failedCase.id);
   const unavailableSourcesTrigger = page.getByRole("button", { name: "Sources unavailable" });
   await unavailableSourcesTrigger.click();
@@ -122,6 +125,7 @@ try {
   assert.equal(await sourceDrawer.getByText(/No accepted/).count(), 0);
   await page.keyboard.press("Escape");
   await page.unroute(failedAuthorityDetail, failAuthorityDetail);
+  expectedAuthorityFailure = false;
   await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
 
@@ -244,11 +248,14 @@ try {
   }));
 
   await page.goto(`${baseURL}/sources/?case=${caseRecord.id}&artifact=${artifact.id}`, { waitUntil: "networkidle" });
-  const chip = page.locator(`[data-evidence-id="${source.id}"]`).first();
+  const matching = page.locator(`[data-evidence-id="${source.id}"]`);
+  assert.equal(await matching.count(), 2);
+  const chip = matching.first();
   await chip.focus();
-  await assert.doesNotReject(() => chip.evaluate((element) => {
-    if (!element.classList.contains("is-linked")) throw new Error("focused evidence was not linked");
-  }));
+  await page.waitForFunction((evidenceId) => {
+    const nodes = [...document.querySelectorAll(`[data-evidence-id="${evidenceId}"]`)];
+    return nodes.length === 2 && nodes.every((node) => node.classList.contains("is-linked"));
+  }, source.id);
   await chip.click();
   const evidence = page.getByRole("dialog", { name: `Evidence ${source.id}` });
   await evidence.getByText("earnings.txt").waitFor();
