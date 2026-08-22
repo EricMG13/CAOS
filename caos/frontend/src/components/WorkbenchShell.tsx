@@ -254,7 +254,7 @@ export default function WorkbenchShell({
             {selectedCase && authorityPending && <span className="muted">Loading authority…</span>}
             {selectedCase && authorityStatus === "error" && <span className="status warning">Authority unavailable</span>}
             {selectedCase && authorityStatus === "ready" && !accepted && <span className="status warning">No accepted snapshot</span>}
-            {authorityStatus === "ready" && accepted && <><span className="status success">Accepted {new Date(accepted.accepted_at).toLocaleString()}</span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
+            {authorityStatus === "ready" && accepted && <><span className="status success">Accepted <span className="optional">{new Date(accepted.accepted_at).toLocaleString()}</span></span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
             {(authority?.switch_required || authority?.diff?.changed) && <span className="status warning">New analysis available</span>}
           </div>
           <div className="top-actions">

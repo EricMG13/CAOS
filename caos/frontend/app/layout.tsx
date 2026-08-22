@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
+import Workspace from "../src/components/Workspace";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -6,6 +8,6 @@ export const metadata: Metadata = {
   description: "Evidence-forward institutional credit analysis",
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body>{children}</body></html>;
+export default function RootLayout() {
+  return <html lang="en"><body><Suspense fallback={null}><Workspace /></Suspense></body></html>;
 }

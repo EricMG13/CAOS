@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import EvidenceChip from "./EvidenceChip";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
-import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
+import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, withQuery } from "../lib/workbench";
 
 type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
 type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
@@ -51,8 +51,9 @@ function SourceQuerySync({ onChange }: { onChange: (sourceId: string) => void })
   return null;
 }
 
-export default function Workspace({ destination }: { destination: Destination }) {
-  const active = destination;
+export default function Workspace({ destination }: { destination?: Destination } = {}) {
+  const pathname = usePathname();
+  const active = destination ?? destinationFromSlug(pathname.split("/").filter(Boolean)[0] || "cases");
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [caseId, setCaseId] = useState("");
   const [runId, setRunId] = useState("");
@@ -298,7 +299,7 @@ export default function Workspace({ destination }: { destination: Destination })
 function EmptyState({ text }: { text: string }) { return <div className="panel"><div className="empty">{text}</div></div>; }
 
 function LoadState({ loading, error, empty }: { loading: boolean; error?: string; empty?: string }) {
-  if (loading) return <div className="empty" role="status" aria-live="polite">Loading…</div>;
+  if (loading) return <div className="state-skeleton" role="status" aria-live="polite" aria-label="Loading"><span /><span /><span /></div>;
   if (error) return <div className="empty error-state" role="alert"><strong>Unable to load this view.</strong><br /><span>{error}</span><br /><span className="muted">Retry by refreshing the destination.</span></div>;
   return <div className="empty">{empty || "No data available."}</div>;
 }

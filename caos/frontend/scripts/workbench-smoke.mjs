@@ -154,6 +154,13 @@ try {
         if (element.getAttribute("aria-current") !== "page") throw new Error("workflow is not active");
       });
   }
+  await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  caseRequests = 0;
+  for (const label of ["Overview", "Sources", "Analyse"]) {
+    await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).click();
+    await page.waitForLoadState("networkidle");
+  }
+  assert.equal(caseRequests, 0, "same-client workflow navigation repeated the case-list request");
   await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
   await page.getByRole("button", { name: /QA unavailable/ }).waitFor();
@@ -309,6 +316,20 @@ try {
   assert.equal(overflow, false, "workbench causes page-level horizontal overflow at reflow width");
   assert.deepEqual(errors, []);
   await context.close();
+
+  const reduced = await browser.newContext({
+    viewport: { width: 1024, height: 768 },
+    reducedMotion: "reduce",
+  });
+  const reducedPage = await reduced.newPage();
+  await reducedPage.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  const reducedStyle = await reducedPage.evaluate(() => {
+    const style = getComputedStyle(document.querySelector(".app-shell"));
+    return { iterationCount: style.animationIterationCount, playState: style.animationPlayState };
+  });
+  assert.equal(reducedStyle.iterationCount, "1");
+  assert.equal(reducedStyle.playState, "paused");
+  await reduced.close();
 } finally {
   await browser.close();
   await api.dispose();
