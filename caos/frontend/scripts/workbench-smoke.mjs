@@ -54,6 +54,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   let caseRequests = 0;
+  let authorityRequests = 0;
   let expectedAuthorityFailureURL = "";
   let expectedAuthorityFailureSeen = false;
   page.on("console", (message) => {
@@ -68,7 +69,9 @@ try {
   });
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (requestValue) => {
-    if (new URL(requestValue.url()).pathname === "/api/cases") caseRequests += 1;
+    const pathname = new URL(requestValue.url()).pathname;
+    if (pathname === "/api/cases") caseRequests += 1;
+    if (/^\/api\/cases\/[^/]+\/(?:lens|snapshot)$/.test(pathname)) authorityRequests += 1;
   });
 
   let releaseAuthorityDetail;
@@ -156,11 +159,40 @@ try {
   }
   await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
   caseRequests = 0;
+  authorityRequests = 0;
+
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
+  const artifactPalette = page.getByRole("dialog", { name: "Command palette" });
+  await artifactPalette.getByRole("combobox", { name: "Search commands" }).fill(artifact.id);
+  await artifactPalette.getByRole("option", { name: "Open artifact ID in this case" }).click();
+  await page.waitForURL((url) => url.pathname === "/sources/"
+    && url.searchParams.get("case") === caseRecord.id
+    && url.searchParams.get("artifact") === artifact.id);
+  const evidenceFocus = page.getByRole("heading", { name: "Evidence focus" }).locator("../..");
+  await evidenceFocus.getByText(artifact.digest, { exact: true }).waitFor();
+
+  const deepDiveQuestion = "What changed in refinancing capacity?";
+  await page.evaluate(({ caseId, question }) => {
+    const query = new URLSearchParams({ case: caseId, q: question });
+    window.history.pushState(null, "", `/deep-dive/?${query}`);
+  }, { caseId: caseRecord.id, question: deepDiveQuestion });
+  await page.waitForURL((url) => url.pathname === "/deep-dive/" && url.searchParams.get("q") === deepDiveQuestion);
+  await page.getByText(deepDiveQuestion, { exact: true }).waitFor();
+
+  const commandQuestion = "Which evidence changes the downside case?";
+  await page.evaluate(({ caseId, question }) => {
+    const query = new URLSearchParams({ case: caseId, q: question });
+    window.history.pushState(null, "", `/command-center/?${query}`);
+  }, { caseId: caseRecord.id, question: commandQuestion });
+  await page.waitForURL((url) => url.pathname === "/command-center/" && url.searchParams.get("q") === commandQuestion);
+  await page.getByText(commandQuestion, { exact: true }).waitFor();
+
   for (const label of ["Overview", "Sources", "Analyse"]) {
     await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).click();
     await page.waitForLoadState("networkidle");
   }
-  assert.equal(caseRequests, 0, "same-client workflow navigation repeated the case-list request");
+  assert.equal(caseRequests, 0, "same-client query/workflow navigation repeated the case-list request");
+  assert.ok(authorityRequests <= 12, `same-client navigation caused an authority refresh loop (${authorityRequests} requests)`);
   await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
   await page.getByRole("button", { name: /QA unavailable/ }).waitFor();

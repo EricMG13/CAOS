@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EvidenceChip from "./EvidenceChip";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
 import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, withQuery } from "../lib/workbench";
@@ -42,18 +42,15 @@ async function request<T>(path: string, options: RequestInit = {}, signal?: Abor
   return response.json() as Promise<T>;
 }
 
-function SourceQuerySync({ onChange }: { onChange: (sourceId: string) => void }) {
-  const sourceId = useSearchParams().get("source") || "";
-  useEffect(() => {
-    // URL state is external navigation state and must follow same-route Link updates.
-    onChange(sourceId);
-  }, [onChange, sourceId]);
-  return null;
-}
-
 export default function Workspace({ destination }: { destination?: Destination } = {}) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const active = destination ?? destinationFromSlug(pathname.split("/").filter(Boolean)[0] || "cases");
+  const requestedCaseId = searchParams.get("case") || "";
+  const requestedRunId = searchParams.get("run") || "";
+  const routeQuestion = searchParams.get("q") || "";
+  const routeArtifactId = searchParams.get("artifact") || "";
+  const routeSourceId = searchParams.get("source") || "";
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [caseId, setCaseId] = useState("");
   const [runId, setRunId] = useState("");
@@ -70,13 +67,10 @@ export default function Workspace({ destination }: { destination?: Destination }
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const authorityRequest = useRef(0);
   const caseIdRef = useRef("");
-  const [routeQuestion, setRouteQuestion] = useState("");
-  const [routeArtifactId, setRouteArtifactId] = useState("");
-  const [routeSourceId, setRouteSourceId] = useState("");
-
+  const routeAuthorityRef = useRef("");
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
 
-  const selectCase = (nextCaseId: string) => {
+  const selectCase = useCallback((nextCaseId: string) => {
     if (nextCaseId === caseId) return;
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
@@ -90,7 +84,7 @@ export default function Workspace({ destination }: { destination?: Destination }
     setRun(null);
     setRunError("");
     setError("");
-  };
+  }, [caseId, cases]);
 
   const refreshCases = async (signal?: AbortSignal) => {
     setCasesLoading(true);
@@ -152,14 +146,11 @@ export default function Workspace({ destination }: { destination?: Destination }
 
   useEffect(() => {
     // URL-derived state is hydrated after the server render to keep the shell deterministic.
-    const requestedCaseId = queryParam("case");
     caseIdRef.current = requestedCaseId;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCaseId(requestedCaseId);
     setAuthorityStatus(requestedCaseId ? "loading" : "idle");
-    setRunId(queryParam("run"));
-    setRouteQuestion(queryParam("q"));
-    setRouteArtifactId(queryParam("artifact"));
+    setRunId(requestedRunId);
     setHydrated(true);
     const controller = new AbortController();
     const guardDraftNavigation = (event: MouseEvent) => {
@@ -181,6 +172,28 @@ export default function Workspace({ destination }: { destination?: Destination }
     // The selected case is intentionally not a fetch dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const authorizedCase = requestedCaseId ? cases.find((item) => item.id === requestedCaseId) : null;
+    const routeAuthority = `${requestedCaseId}\u0000${requestedRunId}`;
+    if (routeAuthorityRef.current === routeAuthority || (requestedCaseId && !authorizedCase && casesLoading)) return;
+    routeAuthorityRef.current = routeAuthority;
+    const timer = window.setTimeout(() => {
+      if (authorizedCase && authorizedCase.id !== caseId) {
+        selectCase(authorizedCase.id);
+        if (requestedRunId) setRunId(requestedRunId);
+        return;
+      }
+      // A workflow link may omit `run`; in that case the selected case keeps its
+      // current execution. An explicit run query always wins for the same case.
+      if (requestedRunId && requestedRunId !== runId) {
+        setRun(null);
+        setRunId(requestedRunId);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [caseId, cases, casesLoading, hydrated, requestedCaseId, requestedRunId, runId, selectCase]);
 
   useEffect(() => {
     authorityRequest.current += 1;
@@ -275,9 +288,7 @@ export default function Workspace({ destination }: { destination?: Destination }
     }
   };
 
-  return <>
-    <Suspense fallback={null}><SourceQuerySync onChange={setRouteSourceId} /></Suspense>
-    <WorkbenchShell
+  return <WorkbenchShell
       active={active}
       authority={authority}
       authorityStatus={authorityStatus}
@@ -292,8 +303,7 @@ export default function Workspace({ destination }: { destination?: Destination }
       selectedCase={selectedCase}
     >
       <div key={`${active}:${caseId}`}>{renderDestination()}</div>
-    </WorkbenchShell>
-  </>;
+    </WorkbenchShell>;
 }
 
 function EmptyState({ text }: { text: string }) { return <div className="panel"><div className="empty">{text}</div></div>; }
