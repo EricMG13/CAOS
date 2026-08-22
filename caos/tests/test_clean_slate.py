@@ -58,6 +58,15 @@ def test_end_to_end_source_run_snapshot_and_stale_boundary(tmp_path: Path) -> No
         assert state["status"] == "succeeded"
         assert [node["module_id"] for node in state["nodes"]] == ["CP-PARSE", "CP-0", "CP-L10", "CP-5"]
         cp0 = next(value for value in client.app.state.store.artifacts.values() if value["run_id"] == run_id and value["module_id"] == "CP-0")
+        other_case_id = client.post(
+            "/api/cases",
+            json={"name": "Other", "issuer": "Other issuer", "sector": "Other"},
+        ).json()["id"]
+        assert client.get(f"/api/cases/{other_case_id}/artifacts/{cp0['id']}").status_code == 404
+        assert client.get(
+            f"/api/cases/{case_id}/artifacts/{cp0['id']}",
+            headers={"x-forwarded-user": "outsider"},
+        ).status_code == 404
         assert cp0["payload"]["lineage"]["upstream_artifacts"][0]["module_id"] == "CP-PARSE"
         assert client.get(f"/api/runs/{run_id}/events", headers={"last-event-id": "999"}).text == ""
         snapshot = client.post(f"/api/runs/{run_id}/accept")

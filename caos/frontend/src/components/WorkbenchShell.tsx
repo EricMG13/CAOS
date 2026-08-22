@@ -58,6 +58,9 @@ export default function WorkbenchShell({
   const activeWorkflow = workflowFor(active);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const drawerRef = useRef<HTMLDialogElement>(null);
+  const drawerHeadingRef = useRef<HTMLHeadingElement>(null);
+  const drawerTriggerRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -82,6 +85,27 @@ export default function WorkbenchShell({
   };
 
   const closePalette = () => dialogRef.current?.close();
+
+  const closeDrawer = () => {
+    onDrawerChange(null);
+    const trigger = drawerTriggerRef.current;
+    window.requestAnimationFrame(() => trigger?.focus());
+  };
+
+  useEffect(() => {
+    const dialog = drawerRef.current;
+    if (!dialog) return;
+    if (!drawer) {
+      if (dialog.open) dialog.close();
+      return;
+    }
+    if (!dialog.open) {
+      drawerTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      dialog.showModal();
+    }
+    const frame = window.requestAnimationFrame(() => drawerHeadingRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [drawer]);
 
   useEffect(() => {
     const openShortcut = (event: globalThis.KeyboardEvent) => {
@@ -119,6 +143,50 @@ export default function WorkbenchShell({
   });
   const overviewHref = selectedCase ? "/command-center" : "/cases";
   const accepted = authority?.accepted;
+  const drawerTitle = drawer?.kind === "qa"
+    ? "QA details"
+    : drawer?.kind === "sources"
+      ? "Source details"
+      : drawer?.kind === "evidence"
+        ? `Evidence ${drawer.evidenceId}`
+        : "Context";
+  let drawerBody: ReactNode = null;
+  if (drawer?.kind === "qa") {
+    drawerBody = <div className="state-block unavailable">
+      <strong>No governed snapshot-level QA summary is available.</strong>
+      <p>Run and artifact status are not substituted for QA. Review module exceptions in Analyse.</p>
+      <Link className="button small" href={withQuery("/run-console", { case: caseId })}>Open Run Console</Link>
+    </div>;
+  } else if (drawer?.kind === "sources") {
+    drawerBody = <div className="state-block">
+      <dl>
+        <dt>Current source count</dt><dd className="mono">{selectedCase?.source_count ?? 0}</dd>
+        <dt>Accepted source set</dt><dd className="mono">{accepted?.source_set_version == null ? "No accepted source set" : `v${accepted.source_set_version}`}</dd>
+      </dl>
+      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
+    </div>;
+  } else if (drawer?.kind === "evidence") {
+    drawerBody = <div className="state-block">
+      <dl>
+        <dt>Stable ID</dt><dd className="mono">{drawer.evidenceId}</dd>
+        <dt>Filename</dt><dd>{drawer.source.filename}</dd>
+        <dt>SHA-256</dt><dd className="mono">{drawer.source.sha256}</dd>
+        <dt>Accepted snapshot</dt><dd className="mono">{accepted?.id ?? "No accepted snapshot"}</dd>
+        <dt>Accepted source set</dt><dd className="mono">{accepted?.source_set_version == null ? "No accepted source set" : `v${accepted.source_set_version}`}</dd>
+      </dl>
+      <p className="status warning">Source-level reference; no block locator supplied by this artifact.</p>
+      <h3>Available source text</h3>
+      <div className="source-blocks">
+        {drawer.source.blocks.slice(0, 20).map((block) => <article className="source-block" key={block.block_id}>
+          <div className="eyebrow">{block.block_id}</div>
+          <p>{block.text || "No extracted text."}</p>
+        </article>)}
+        {!drawer.source.blocks.length && <p className="muted">No extracted source text.</p>}
+        {drawer.source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Open the full source for the remaining {drawer.source.blocks.length - 20} blocks.</p>}
+      </div>
+      <Link className="button small" href={withQuery("/sources", { case: caseId, source: drawer.source.id })}>Open full source</Link>
+    </div>;
+  }
   const evidenceHref = exactEvidenceKind === "source"
     ? withQuery("/sources", { case: caseId, source: query.trim() })
     : withQuery("/sources", { case: caseId, artifact: query.trim() });
@@ -169,8 +237,8 @@ export default function WorkbenchShell({
               <option value="">Select case</option>
               {cases.map((item) => <option key={item.id} value={item.id}>{item.issuer} — {item.name}</option>)}
             </select>
-            <button className="button small" type="button" disabled={!selectedCase} aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{selectedCase?.source_count ?? 0} sources</button>
-            <button className="button small" type="button" disabled={!selectedCase} aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA unavailable</button>
+            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{selectedCase?.source_count ?? 0} sources</button>
+            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA unavailable</button>
             <button ref={triggerRef} className="button small" type="button" aria-label="Open command palette" onClick={openPalette}>Command <span className="shortcut">⌘K</span></button>
           </div>
         </div>
@@ -245,6 +313,22 @@ export default function WorkbenchShell({
           {!resultCount && <p className="muted">No authorized matches</p>}
         </div>
       </div>
+    </dialog>
+    <dialog
+      className="context-drawer"
+      id="context-drawer"
+      ref={drawerRef}
+      aria-labelledby="drawer-title"
+      onClose={closeDrawer}
+    >
+      <div className="drawer-header">
+        <div>
+          <span className="eyebrow">CONTEXT</span>
+          <h2 id="drawer-title" ref={drawerHeadingRef} tabIndex={-1}>{drawerTitle}</h2>
+        </div>
+        <button className="button small" type="button" onClick={() => drawerRef.current?.close()}>Close</button>
+      </div>
+      <div className="drawer-body">{drawerBody}</div>
     </dialog>
   </>;
 }
