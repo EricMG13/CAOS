@@ -88,3 +88,16 @@ Confidence review found and fixed one real race: state-driven case selection bri
 | Fresh `CAOS_URL=http://127.0.0.1:8010 npm run a11y` | PASS; 27 route/viewport combinations, 0 violations |
 
 Confidence review: the highest-risk cases were (1) a stale same-case run response winning after the selected run changes, (2) an event-stream reconnect per polling response, (3) cross-case acceptance after URL injection, and (4) a cancelled draft transition consuming its retry token. Request ownership guards, primitive stream dependencies, the accept boundary, and the two live browser regressions address these cases. No server change was needed because the established run-detail payload already has `case_id`.
+
+## Residual reviewer follow-up — case-bound loading handoff
+
+- `selectCase` now invalidates the run request generation and clears `runLoading` before changing case/run ownership. A delayed response from the prior case cannot leave the next no-run case on a permanent skeleton.
+- The browser smoke delays a Case A run read, switches to a Case B with no run, releases the delayed response, and verifies the empty Run Console state with neither loading skeleton nor stale acceptance action.
+
+| Check | Result |
+|---|---|
+| `npm run lint -- --max-warnings=0` | PASS |
+| `npx tsc --noEmit` | PASS |
+| `npm run build` | PASS; 12 static pages generated |
+| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run test:workbench` | PASS; delayed A→B no-run handoff, cross-case guard, and draft retry regressions |
+| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run a11y` | PASS; 27 route/viewport combinations, 0 violations |

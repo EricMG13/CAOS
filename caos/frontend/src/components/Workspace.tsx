@@ -77,6 +77,9 @@ export default function Workspace({ destination }: { destination?: Destination }
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return false;
     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
+    // A case boundary owns both the active run and any in-flight run reads.
+    runRequest.current += 1;
+    setRunLoading(false);
     caseIdRef.current = nextCaseId;
     setDrawer(null);
     setAuthority(null);

@@ -41,6 +41,11 @@ const failedCaseResponse = await api.post("/api/cases", {
 });
 assert.equal(failedCaseResponse.status(), 201);
 const failedCase = await failedCaseResponse.json();
+const idleCaseResponse = await api.post("/api/cases", {
+  data: { name: "No Run Boundary", issuer: "Idle", sector: "Services" },
+});
+assert.equal(idleCaseResponse.status(), 201);
+const idleCase = await idleCaseResponse.json();
 const upload = await api.post(`/api/cases/${caseRecord.id}/sources`, {
   multipart: {
     file: {
@@ -179,6 +184,28 @@ try {
   assert.equal(cancelledRoutePrompts, 2, "a cancelled draft-bound route change was not retryable");
   page.off("dialog", cancelRouteChange);
   await page.evaluate((caseId) => window.sessionStorage.removeItem(`caos-report-draft:${caseId}`), caseRecord.id);
+
+  let releaseStaleRun;
+  const staleRunBarrier = new Promise((resolve) => { releaseStaleRun = resolve; });
+  const holdStaleRun = async (route) => {
+    await staleRunBarrier;
+    await route.continue().catch((caught) => {
+      if (!(caught instanceof Error) || !caught.message.includes("Route is already handled")) throw caught;
+    });
+  };
+  const staleRunPath = (url) => url.pathname === `/api/runs/${run.id}`;
+  await page.route(staleRunPath, holdStaleRun);
+  const staleRunRequest = page.waitForRequest((requestValue) => new URL(requestValue.url()).pathname === `/api/runs/${run.id}`);
+  await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}&run=${run.id}`, { waitUntil: "domcontentloaded" });
+  await staleRunRequest;
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(idleCase.id);
+  releaseStaleRun();
+  await page.unroute(staleRunPath, holdStaleRun);
+  await page.getByText("No current execution. Select a purpose and depth to create an immutable plan.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("status", { name: "Loading" }).count(), 0, "case switch left the run console permanently loading");
+  assert.equal(await page.getByRole("button", { name: "Accept analytical snapshot" }).count(), 0, "stale run data survived the case boundary");
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
+  await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
 
   let crossCaseAcceptRequests = 0;
   const countCrossCaseAccept = (requestValue) => {
