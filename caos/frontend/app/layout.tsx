@@ -9,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout() {
-  return <html lang="en"><body><Suspense fallback={null}><Workspace /></Suspense></body></html>;
+  return <html lang="en"><body><Suspense fallback={<div className="state-skeleton" role="status" aria-live="polite" aria-label="Loading"><span /><span /><span /></div>}><Workspace /></Suspense></body></html>;
 }
