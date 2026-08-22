@@ -56,6 +56,7 @@ export default function Workspace({ destination }: { destination: Destination })
   const [authority, setAuthority] = useState<SnapshotView | null>(null);
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const authorityRequest = useRef(0);
+  const caseIdRef = useRef("");
   const [routeQuestion, setRouteQuestion] = useState("");
   const [routeArtifactId, setRouteArtifactId] = useState("");
 
@@ -65,6 +66,7 @@ export default function Workspace({ destination }: { destination: Destination })
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
+    caseIdRef.current = nextCaseId;
     setDrawer(null);
     setAuthority(null);
     setCaseId(nextCaseId);
@@ -82,7 +84,10 @@ export default function Workspace({ destination }: { destination: Destination })
       const requestedCaseId = queryParam("case");
       const requestedRunId = queryParam("run");
       const resolvedCaseId = next.find((item) => item.id === caseId)?.id || next.find((item) => item.id === requestedCaseId)?.id || next[0]?.id || "";
-      if (resolvedCaseId !== caseId) setCaseId(resolvedCaseId);
+      if (resolvedCaseId !== caseId) {
+        caseIdRef.current = resolvedCaseId;
+        setCaseId(resolvedCaseId);
+      }
       if (!runId && !requestedRunId) {
         const resolvedCase = next.find((item) => item.id === resolvedCaseId);
         if (resolvedCase?.current_execution_id) setRunId(resolvedCase.current_execution_id);
@@ -95,18 +100,18 @@ export default function Workspace({ destination }: { destination: Destination })
   };
 
   const refreshCase = async (id = caseId, signal?: AbortSignal) => {
-    if (!id) return;
+    if (!id || id !== caseIdRef.current) return;
     const requestId = ++authorityRequest.current;
     try {
       const [detail, snapshot] = await Promise.all([
         request<CaseRecord>(`/api/cases/${id}`, {}, signal),
         request<SnapshotView>(`/api/cases/${id}/snapshot`, {}, signal),
       ]);
-      if (requestId !== authorityRequest.current) return;
+      if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
       setCases((previous) => previous.map((item) => item.id === id ? { ...item, ...detail } : item));
       setAuthority(snapshot);
     } catch (caught) {
-      if (requestId !== authorityRequest.current) return;
+      if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
       if (!(caught instanceof DOMException && caught.name === "AbortError")) {
         setError(caught instanceof Error ? caught.message : "Unable to load case authority");
       }
@@ -128,8 +133,10 @@ export default function Workspace({ destination }: { destination: Destination })
 
   useEffect(() => {
     // URL-derived state is hydrated after the server render to keep the shell deterministic.
+    const requestedCaseId = queryParam("case");
+    caseIdRef.current = requestedCaseId;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCaseId(queryParam("case"));
+    setCaseId(requestedCaseId);
     setRunId(queryParam("run"));
     setRouteQuestion(queryParam("q"));
     setRouteArtifactId(queryParam("artifact"));
@@ -259,6 +266,7 @@ export default function Workspace({ destination }: { destination: Destination })
       onCaseChange={selectCase}
       onDrawerChange={setDrawer}
       role={role}
+      runId={runId}
       selectedCase={selectedCase}
     >
       <div key={`${active}:${caseId}`}>{renderDestination()}</div>

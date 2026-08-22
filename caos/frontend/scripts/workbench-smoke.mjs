@@ -8,6 +8,11 @@ const created = await api.post("/api/cases", {
 });
 assert.equal(created.status(), 201);
 const caseRecord = await created.json();
+const raceCaseResponse = await api.post("/api/cases", {
+  data: { name: "Authority Race", issuer: "Second", sector: "Services" },
+});
+assert.equal(raceCaseResponse.status(), 201);
+const raceCase = await raceCaseResponse.json();
 const upload = await api.post(`/api/cases/${caseRecord.id}/sources`, {
   multipart: {
     file: {
@@ -97,6 +102,46 @@ try {
   await assert.doesNotReject(() => paletteTrigger.evaluate((element) => {
     if (document.activeElement !== element) throw new Error("focus did not return to the palette trigger");
   }));
+
+  await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}&run=${run.id}`, { waitUntil: "networkidle" });
+  const nextRunResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/cases/${caseRecord.id}/runs`,
+  );
+  await page.getByRole("button", { name: "Compile and run" }).click();
+  const nextRunResponse = await nextRunResponsePromise;
+  assert.equal(nextRunResponse.status(), 202);
+  const nextRun = await nextRunResponse.json();
+  await page.waitForFunction((expectedRunId) => Array.from(document.querySelectorAll('nav[aria-label="Analyse tools"] a'))
+    .some((element) => element.textContent?.includes("Run")
+      && new URL(element.href).searchParams.get("run") === expectedRunId), nextRun.id);
+
+  let nextRunState;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const response = await api.get(`/api/runs/${nextRun.id}`);
+    nextRunState = await response.json();
+    if (nextRunState.status === "succeeded") break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(nextRunState?.status, "succeeded");
+  const acceptTrigger = page.getByRole("button", { name: "Accept analytical snapshot" });
+  await acceptTrigger.waitFor();
+  await page.route(`**/api/runs/${nextRun.id}/accept`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.continue();
+  });
+  const delayedAcceptResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/runs/${nextRun.id}/accept`,
+  );
+  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptTrigger.click();
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(raceCase.id);
+  assert.equal((await delayedAcceptResponse).status(), 200);
+  const authority = page.getByRole("region", { name: "Accepted authority" });
+  await authority.getByText("Second / Authority Race").waitFor();
+  await authority.getByText("No accepted snapshot").waitFor();
+  assert.equal(await authority.getByText(/Source set v1/).count(), 0);
 
   const qaTrigger = page.getByRole("button", { name: /QA unavailable/ });
   await qaTrigger.click();

@@ -36,6 +36,7 @@ type Props = {
   onCaseChange: (caseId: string) => void;
   onDrawerChange: (drawer: DrawerState | null) => void;
   role: string;
+  runId: string;
   selectedCase: CaseRecord | null;
   children: ReactNode;
 };
@@ -50,6 +51,7 @@ export default function WorkbenchShell({
   onCaseChange,
   onDrawerChange,
   role,
+  runId,
   selectedCase,
   children,
 }: Props) {
@@ -61,7 +63,6 @@ export default function WorkbenchShell({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeResult, setActiveResult] = useState(0);
-  const [runId, setRunId] = useState("");
 
   const caseItems = useMemo(() => cases.filter((item) =>
     `${item.issuer} ${item.name} ${item.sector}`.toLowerCase().includes(query.toLowerCase()),
@@ -71,11 +72,6 @@ export default function WorkbenchShell({
   ), [query]);
   const exactEvidenceKind = caseId ? evidenceKind(query) : null;
   const resultCount = caseItems.length + workflowItems.length + (exactEvidenceKind ? 1 : 0);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setRunId(new URLSearchParams(window.location.search).get("run") || ""), 0);
-    return () => window.clearTimeout(timer);
-  }, [active, caseId]);
 
   const openPalette = () => {
     setPaletteOpen(true);
