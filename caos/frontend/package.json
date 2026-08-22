@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "a11y": "node scripts/a11y-axe.mjs"
+    "a11y": "node scripts/a11y-axe.mjs",
+    "test:workbench": "node scripts/workbench-smoke.mjs"
   },
   "dependencies": {
     "next": "^16.3.1",
