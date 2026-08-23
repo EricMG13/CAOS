@@ -223,7 +223,7 @@ class MemoryStore:
 
     def finish_job(self, run_id: str, attempt_token: str) -> None:
         with self.lock:
-            if run_id in self.jobs and self.jobs[run_id].get("attempt_token") == attempt_token:
+            if self._job_is_current_locked(run_id, attempt_token):
                 self.jobs[run_id]["status"] = "finished"
                 self.jobs[run_id]["budget_reserved"] = 0
                 self.persist()
@@ -541,7 +541,7 @@ class PostgresStore(MemoryStore):
     def finish_job(self, run_id: str, attempt_token: str) -> None:
         with self._psycopg.connect(self._dsn) as connection:
             with connection.cursor() as cursor:
-                cursor.execute("UPDATE jobs SET state='succeeded', lease_until=NULL, budget_reserved=0 WHERE run_id=%s AND attempt_token=%s RETURNING id", (run_id, attempt_token))
+                cursor.execute("UPDATE jobs SET state='succeeded', lease_until=NULL, budget_reserved=0 WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() RETURNING id", (run_id, attempt_token))
                 finished = cursor.fetchone() is not None
             connection.commit()
         if finished:

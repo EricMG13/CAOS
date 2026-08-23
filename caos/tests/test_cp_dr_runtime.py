@@ -4,6 +4,7 @@ import copy
 import os
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ import pytest
 from caos.config import Settings
 from caos.store import JobFencedError, MemoryStore, PostgresStore
 from caos.workflows import domain as workflow_domain
-from caos.workflows.domain import WorkflowRuntime
+from caos.workflows.domain import WorkflowRuntime, _LeaseFence
 
 
 DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
@@ -38,10 +39,17 @@ def _artifact(run_id: str, module_id: str = "CP-TEST") -> dict[str, Any]:
     return {"id": f"artifact-{run_id}", "run_id": run_id, "module_id": module_id, "input_fingerprint": "fingerprint"}
 
 
-def _postgres_store() -> PostgresStore:
+def _postgres_url() -> str:
     database_url = os.getenv("CAOS_TEST_DATABASE_URL")
     if not database_url:
         pytest.skip("CAOS_TEST_DATABASE_URL is required for real PostgreSQL lease tests")
+    return database_url
+
+
+def _postgres_store(application_name: str | None = None) -> PostgresStore:
+    database_url = _postgres_url()
+    if application_name:
+        database_url = f"{database_url}{'&' if '?' in database_url else '?'}application_name={application_name}"
     return PostgresStore(database_url)
 
 
@@ -67,13 +75,34 @@ def test_memory_lease_renewal_refuses_expired_and_stale_tokens() -> None:
     assert store.renew_job(run_id, token) is False
 
 
+def test_memory_finish_job_requires_current_lease() -> None:
+    store = MemoryStore()
+    run_id, token = _claim(store)
+    store.jobs[run_id]["lease_until"] = time.monotonic() - 1
+    before = copy.deepcopy(store.jobs[run_id])
+
+    store.finish_job(run_id, token)
+
+    assert store.jobs[run_id] == before
+
+
+def test_memory_finish_job_releases_current_lease_reservation() -> None:
+    store = MemoryStore()
+    run_id, token = _claim(store)
+
+    store.finish_job(run_id, token)
+
+    assert store.jobs[run_id]["status"] == "finished"
+    assert store.jobs[run_id]["budget_reserved"] == 0
+
+
 def test_memory_takeover_fences_all_worker_writes() -> None:
     store = MemoryStore()
     run_id, token = _claim(store)
     store.jobs[run_id]["lease_until"] = time.monotonic() - 1
     replacement = store.claim_job(run_id, "replacement")
     assert replacement is not None
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts))
+    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
 
     with pytest.raises(JobFencedError):
         store.update_run_fenced(run_id, token, status="succeeded")
@@ -83,8 +112,9 @@ def test_memory_takeover_fences_all_worker_writes() -> None:
         store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
     with pytest.raises(JobFencedError):
         store.put_artifact_fenced(run_id, token, _artifact(run_id))
+    store.finish_job(run_id, token)
 
-    assert (store.runs, store.events, store.audit, store.artifacts) == before
+    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
 
 
 def test_successful_fenced_event_wakes_waiter() -> None:
@@ -215,6 +245,38 @@ def test_runtime_fails_closed_when_heartbeat_loses_lease(monkeypatch: pytest.Mon
 
     assert store.runs[run["id"]]["status"] == "running"
     assert [event["event"] for event in store.events[run["id"]]] == ["run.running"]
+    assert store.jobs[run["id"]]["status"] == "running"
+    assert store.jobs[run["id"]]["budget_reserved"] == 1
+
+
+def test_runtime_serializes_loss_publication_before_lifecycle_write() -> None:
+    fence = _LeaseFence()
+    write_started = threading.Event()
+    release_write = threading.Event()
+    loss_started = threading.Event()
+    writes: list[str] = []
+
+    def write(value: str) -> None:
+        write_started.set()
+        assert release_write.wait(1)
+        writes.append(value)
+
+    def lose() -> None:
+        loss_started.set()
+        fence.lose()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writing = pool.submit(fence.call, write, "before-loss")
+        assert write_started.wait(1)
+        losing = pool.submit(lose)
+        assert loss_started.wait(1)
+        release_write.set()
+        writing.result(timeout=1)
+        losing.result(timeout=1)
+
+    with pytest.raises(JobFencedError):
+        fence.call(writes.append, "after-loss")
+    assert writes == ["before-loss"]
 
 
 @pytest.mark.parametrize(
@@ -294,7 +356,7 @@ def test_postgres_takeover_fences_all_worker_writes() -> None:
         connection.commit()
     replacement = store.claim_job(run_id, "replacement")
     assert replacement is not None
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts))
+    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
 
     with pytest.raises(JobFencedError):
         store.update_run_fenced(run_id, token, status="succeeded")
@@ -304,16 +366,49 @@ def test_postgres_takeover_fences_all_worker_writes() -> None:
         store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
     with pytest.raises(JobFencedError):
         store.put_artifact_fenced(run_id, token, _artifact(run_id))
+    store.finish_job(run_id, token)
 
-    assert (store.runs, store.events, store.audit, store.artifacts) == before
+    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
+
+
+def test_postgres_finish_job_requires_current_lease() -> None:
+    store = _postgres_store()
+    run_id, token = _claim(store)
+    with store._psycopg.connect(store._dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
+        connection.commit()
+
+    store.finish_job(run_id, token)
+
+    with store._psycopg.connect(store._dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT state, budget_reserved, lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
+            assert cursor.fetchone() == ("claimed", 1, True)
+    assert store.jobs[run_id]["status"] == "running"
+
+
+def test_postgres_finish_job_releases_current_lease_reservation() -> None:
+    store = _postgres_store()
+    run_id, token = _claim(store)
+
+    store.finish_job(run_id, token)
+
+    with store._psycopg.connect(store._dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT state, budget_reserved, lease_until FROM jobs WHERE run_id = %s", (run_id,))
+            assert cursor.fetchone() == ("succeeded", 0, None)
+    assert store.jobs[run_id]["status"] == "finished"
 
 
 def test_postgres_lease_renewal_uses_database_time_after_row_lock() -> None:
-    store = _postgres_store()
+    database_url = _postgres_url()
+    application_name = f"caos-lease-renew-{uuid.uuid4().hex}"
+    store = _postgres_store(application_name)
     run_id, token = _claim(store)
     started = threading.Event()
 
-    with store._psycopg.connect(store._dsn) as locking_connection:
+    with store._psycopg.connect(database_url) as locking_connection:
         with locking_connection.cursor() as cursor:
             cursor.execute("SELECT id FROM jobs WHERE run_id = %s FOR UPDATE", (run_id,))
 
@@ -324,6 +419,25 @@ def test_postgres_lease_renewal_uses_database_time_after_row_lock() -> None:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 waiting = pool.submit(renew)
                 assert started.wait(1)
+                observed: tuple[str, str, str, str] | None = None
+                deadline = time.monotonic() + 1
+                with store._psycopg.connect(database_url, autocommit=True) as observer:
+                    while observed is None and time.monotonic() < deadline:
+                        with observer.cursor() as observer_cursor:
+                            observer_cursor.execute(
+                                "SELECT state, wait_event_type, wait_event, query FROM pg_stat_activity WHERE application_name = %s AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE %s AND query LIKE %s AND query LIKE %s",
+                                (application_name, "UPDATE jobs SET lease_until = now() + interval '60 seconds'%", "%attempt_token%", "%lease_until > now()%"),
+                            )
+                            observed = observer_cursor.fetchone()
+                        if observed is None:
+                            time.sleep(0.01)
+                if observed is None:
+                    locking_connection.rollback()
+                    waiting.result(timeout=1)
+                    pytest.fail("renewal UPDATE was not observed waiting on the locked job row")
+                assert observed[0:2] == ("active", "Lock")
+                assert "UPDATE jobs SET lease_until = now() + interval '60 seconds'" in observed[3]
+                assert "attempt_token" in observed[3] and "lease_until > now()" in observed[3]
                 with pytest.raises(TimeoutError):
                     waiting.result(timeout=0.1)
                 cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))

@@ -17,6 +17,22 @@ from ..store import JobFencedError, MemoryStore
 HEARTBEAT_INTERVAL_SECONDS = 20
 
 
+class _LeaseFence:
+    def __init__(self) -> None:
+        self.lost = threading.Event()
+        self.lock = threading.Lock()
+
+    def call(self, method: Any, *args: Any, **kwargs: Any) -> Any:
+        with self.lock:
+            if self.lost.is_set():
+                raise JobFencedError("lost workflow lease")
+            return method(*args, **kwargs)
+
+    def lose(self) -> None:
+        with self.lock:
+            self.lost.set()
+
+
 class WorkflowError(ValueError):
     pass
 
@@ -67,7 +83,10 @@ class WorkflowRuntime:
         if not attempt_token:
             return
         heartbeat_stop = threading.Event()
-        lost_lease = threading.Event()
+        lease_fence = _LeaseFence()
+
+        def fenced_call(method: Any, *args: Any, **kwargs: Any) -> Any:
+            return lease_fence.call(method, run_id, attempt_token, *args, **kwargs)
 
         def heartbeat() -> None:
             while not heartbeat_stop.wait(HEARTBEAT_INTERVAL_SECONDS):
@@ -76,63 +95,64 @@ class WorkflowRuntime:
                         continue
                 except Exception:
                     pass
-                lost_lease.set()
+                lease_fence.lose()
                 return
 
         heartbeat_thread = threading.Thread(target=heartbeat, name=f"{worker}-heartbeat", daemon=True)
         heartbeat_thread.start()
         try:
-            self.store.update_run_fenced(run_id, attempt_token, status="running", error=None)
-            self.store.emit_fenced(run_id, attempt_token, "run.running", {"run_id": run_id, "worker": worker})
+            fenced_call(self.store.update_run_fenced, status="running", error=None)
+            fenced_call(self.store.emit_fenced, "run.running", {"run_id": run_id, "worker": worker})
             while True:
-                if lost_lease.is_set() or not self.store.job_is_current(run_id, attempt_token):
+                if lease_fence.lost.is_set() or not self.store.job_is_current(run_id, attempt_token):
                     return
                 run = self.store.get_run(run_id)
-                if lost_lease.is_set() or not run:
+                if lease_fence.lost.is_set() or not run:
                     return
                 pending = [node for node in run["nodes"] if node["status"] in {"pending", "ready"}]
                 completed = {node["module_id"] for node in run["nodes"] if node["status"] == "succeeded"}
                 if not pending:
-                    self.store.update_run_fenced(run_id, attempt_token, status="succeeded", current_node_id=None)
-                    self.store.emit_fenced(run_id, attempt_token, "run.succeeded", {"run_id": run_id})
+                    fenced_call(self.store.update_run_fenced, status="succeeded", current_node_id=None)
+                    fenced_call(self.store.emit_fenced, "run.succeeded", {"run_id": run_id})
                     return
                 ready = [node for node in pending if set(node["dependencies"]).issubset(completed)]
                 if not ready:
-                    self.store.update_run_fenced(run_id, attempt_token, status="failed", error={"code": "DAG_BLOCKED", "message": "No dependency-safe ready nodes remain."})
-                    self.store.emit_fenced(run_id, attempt_token, "run.failed", {"code": "DAG_BLOCKED"})
+                    fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "No dependency-safe ready nodes remain."})
+                    fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
                     return
                 for node in ready:
-                    self.store.update_node_fenced(run_id, attempt_token, node["id"], status="running", attempt=node["attempt"] + 1)
-                    self.store.emit_fenced(run_id, attempt_token, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
+                    fenced_call(self.store.update_node_fenced, node["id"], status="running", attempt=node["attempt"] + 1)
+                    fenced_call(self.store.emit_fenced, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
                 with ThreadPoolExecutor(max_workers=min(4, len(ready)), thread_name_prefix="caos-node") as pool:
                     futures = {pool.submit(self._build_artifact_with_slot, run, node, actor): node for node in ready}
                     for future, node in ((future, futures[future]) for future in futures):
                         try:
                             artifact_data = future.result()
-                            if lost_lease.is_set():
+                            if lease_fence.lost.is_set():
                                 return
-                            artifact = self.store.put_artifact_fenced(run_id, attempt_token, artifact_data)
+                            artifact = fenced_call(self.store.put_artifact_fenced, artifact_data)
                         except JobFencedError:
                             return
                         except Exception as exc:
-                            if lost_lease.is_set():
+                            if lease_fence.lost.is_set():
                                 return
                             try:
-                                self.store.update_node_fenced(run_id, attempt_token, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
-                                self.store.update_run_fenced(run_id, attempt_token, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
+                                fenced_call(self.store.update_node_fenced, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
+                                fenced_call(self.store.update_run_fenced, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
                             except JobFencedError:
                                 return
-                            self.store.emit_fenced(run_id, attempt_token, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
-                            self.store.emit_fenced(run_id, attempt_token, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
+                            fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
+                            fenced_call(self.store.emit_fenced, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
                             return
-                        self.store.update_node_fenced(run_id, attempt_token, node["id"], status="succeeded", artifact_id=artifact["id"], error=None)
-                        self.store.emit_fenced(run_id, attempt_token, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
+                        fenced_call(self.store.update_node_fenced, node["id"], status="succeeded", artifact_id=artifact["id"], error=None)
+                        fenced_call(self.store.emit_fenced, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
         except JobFencedError:
             return
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join()
-            self.store.finish_job(run_id, attempt_token)
+            if not lease_fence.lost.is_set():
+                self.store.finish_job(run_id, attempt_token)
 
     def _build_artifact_with_slot(self, run: dict[str, Any], node: dict[str, Any], actor: str) -> dict[str, Any]:
         with self._node_slots:

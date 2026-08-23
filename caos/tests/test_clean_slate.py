@@ -1054,7 +1054,7 @@ def test_worker_respects_poll_interval_while_job_is_active(monkeypatch: pytest.M
     assert sleeps == [expected, expected, expected]
 
 
-def test_expired_start_attempt_is_finalized(tmp_path: Path) -> None:
+def test_expired_start_attempt_is_not_finalized(tmp_path: Path) -> None:
     class ExpiringStore(MemoryStore):
         def update_run_fenced(self, run_id: str, attempt_token: str, **changes: object) -> None:
             if changes.get("status") == "running":
@@ -1069,7 +1069,8 @@ def test_expired_start_attempt_is_finalized(tmp_path: Path) -> None:
     run = store.create_run(case["id"], "analyst", runtime.bundle.compile("EARNINGS_UPDATE", "screen", None), [])
     runtime._execute(run["id"], "analyst")
     runtime.close()
-    assert store.jobs[run["id"]]["status"] == "finished"
+    assert store.jobs[run["id"]]["status"] == "running"
+    assert store.jobs[run["id"]]["budget_reserved"] == 1
 
 
 def test_run_is_queued_only_after_its_nodes_are_durable(tmp_path: Path) -> None:
