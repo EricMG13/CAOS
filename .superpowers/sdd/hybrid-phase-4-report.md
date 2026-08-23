@@ -12,15 +12,20 @@ Remediation commit: `be242e1` — `fix(server): harden CP-DR execution boundarie
 
 Second remediation commit: `2bb8af6` — `fix(server): close CP-DR second review gaps`
 
+Third remediation commit: `131713e` — `fix(server): close Phase 4 third review gaps`
+
+Fourth remediation commit: `1f400d8` — `fix(server): make CP-DR finalization atomic`
+
 ## Status
 
-Corrected after two independent rejections. Commits `ae0400a..a8005f3` and the
-first remediation at `be242e1` were independently rejected because their
+Corrected after four independent review rejections. Commits `ae0400a..a8005f3`
+and the first three remediation passes were rejected because their
 verification missed critical cross-process recovery, canonical-artifact,
 host-provenance, completion-time, terminal-telemetry, manifest-allocation, and
-installed-SDK roots. Earlier implementation/test narratives below are retained
-as historical evidence only; the second-remediation addendum at the end is the
-current result and is pending fresh independent review.
+installed-SDK roots, followed by final-success atomicity, normalized-row drift,
+and incomplete post-interaction terminalization. Earlier implementation/test
+narratives below are historical evidence only; the fourth-remediation addendum
+at the end is the current result and is pending fresh independent review.
 
 After `be242e1`, an approved FULL issuer CP-DR run executes through one concrete
 Anthropic Messages/client-tool loop only when the server flag, original run
@@ -648,13 +653,11 @@ was used.
 
 ### Root fixes
 
-1. **Final success budget boundary.** The no-pending branch now times and
-   durably charges the complete strict CP-DR artifact validation under the
-   current lease before success. It separately times the success-state write.
-   Either operation reaching or exceeding three active minutes changes the
-   CP-DR node/run to the bounded `AGENT_BUDGET_EXCEEDED` failure and emits no
-   `run.succeeded`. The exact 179-to-181-second scorer and success-write probes
-   both pass.
+1. **Final success budget boundary (superseded by pass four).** This pass timed
+   and durably charged strict CP-DR artifact validation and then timed the
+   success-state write. The fourth review correctly rejected that ordering:
+   timing after success could require a fallible post-success ledger write.
+   Current behavior is described in the fourth-remediation addendum.
 2. **Post-interaction terminal guarantee.** Post-call lease checking,
    active-time charging, and ordinary attempt recording now share one guarded
    boundary. A transient ordinary failure maps to sanitized
@@ -667,13 +670,13 @@ was used.
    renderer, or handoff validator. Forced integrity failure now rejects the
    same canonical artifact at fingerprint reuse, no-pending run success, and
    snapshot construction.
-4. **Normalized PostgreSQL authority.** Claim setup no longer overwrites an
+4. **Normalized PostgreSQL authority (superseded by pass four).** Claim setup no longer overwrites an
    existing normalized run row from a stale process mirror. After the fenced
    transaction locks and adopts authoritative `caos_state` and recovers stale
    nodes, it rewrites normalized status, bounded error, plan, and accepted
    snapshot identity from that authoritative run before the same transaction
-   commits. The real two-store regression asserts all four fields immediately
-   after takeover and again after atomic completion.
+   commits. This covered takeover only; the fourth review correctly required
+   synchronization from the exact state at every shared persistence boundary.
 
 ### TDD and focused evidence
 
@@ -682,8 +685,9 @@ entrypoints accepted the canonical artifact, final validation succeeded after
 the active ceiling, a transient ordinary record failure escaped as raw
 `RuntimeError`, and a post-count budget loss left no terminal attempt. The
 cross-process PostgreSQL extension also exposed the stale normalized row. The
-root fixes made that matrix green, and confidence review added a separate
-success-state-write ceiling regression.
+root fixes made that matrix green. The former success-state-write regression is
+historical evidence only; pass four replaces that design with pre-reservation
+and one atomic terminal operation.
 
 Final focused, real-PostgreSQL result:
 
@@ -719,10 +723,10 @@ with no indexed callers.
 
 Least-confident points and dispositions:
 
-1. **Success-write time could become the next uncharged edge:** confirmed test
-   gap, not a production gap after the root fix. A fake-clock wrapper moves the
-   write from 179 to 181 seconds and proves the durable failure/no-success-event
-   outcome.
+1. **Success-write time could become the next uncharged edge:** the third pass
+   classified this as only a test gap, but the fourth review proved a production
+   atomicity gap. Pass four reserves bounded time before success and removes all
+   post-success ledger writes.
 2. **Terminalization might hide a real stale lease:** verified fine. The
    existing in-flight loss regression plus the new ordinary/budget cases prove
    `JobFencedError` remains silent while lease-permitted failures receive stable
@@ -734,9 +738,9 @@ Least-confident points and dispositions:
    its transaction:** verified fine. The update reads `self.runs` only after
    `adopt_current=True` enters, uses the yielded fenced connection, and the
    two-store PostgreSQL assertions pass before and after completion.
-5. **Exact ceiling equality and secrecy:** verified fine. The new final helper
-   uses `>=`; stored events contain no transient exception sentinel. No known
-   implementation correctness issue remains.
+5. **Exact ceiling equality and secrecy:** equality and secrecy were verified,
+   but the later atomicity finding remained. The fourth addendum records its
+   root fix and final confidence disposition.
 
 ### Final verification evidence
 
@@ -776,6 +780,201 @@ and their focused tests.
   deliberately fail-closed and adds bounded active time; production evaluation
   should measure its latency without caching away the current-integrity check.
 - The provider semaphore remains process-local, and whole-envelope PostgreSQL
+  persistence remains the accepted topology. Horizontal workers require a
+  separate durable concurrency/storage design and review.
+
+## Fourth independent-review remediation addendum
+
+The fourth independent review of `131713e`/`9b7ea6f` returned **NOT APPROVED —
+CRITICAL** because terminal success was not atomic, normalized PostgreSQL run
+rows drifted after later writes, and post-interaction provider work still had
+unterminated exception paths. Implementation commit `1f400d8` closes those
+roots without broadening the disabled issuer-only pilot. No live provider,
+external document, web request, or new methodology authority was used.
+
+### Exact changed paths
+
+- `.agent-reviews/redteam.md` — append-only RT-088..091.
+- `caos/server/caos/store.py` — one atomic fenced terminal-success operation in
+  both stores and exact normalized-run synchronization at shared persistence.
+- `caos/server/caos/workflows/domain.py` — pre-success finalization reservation,
+  stable failure mapping, and removal of post-success ledger/event writes.
+- `caos/server/caos/workflows/provider.py` — one outer fail-closed boundary
+  around every post-interaction operation.
+- `caos/server/migrations/001_baseline.sql` — normalized run status accepts the
+  real `planning` state that `MemoryStore.create_run()` durably persists before
+  the workflow moves to queued/paused.
+- `caos/tests/test_clean_slate.py` and `caos/tests/test_cp_dr_runtime.py` — fake
+  transaction contract update and the complete deterministic remediation
+  matrix.
+
+### Root fixes
+
+1. **Atomic terminal success.** Strict artifact validation and its actual active
+   time charge complete while the run is non-successful. The host then durably
+   reserves a fixed five-second finalization allowance. Only one fenced store
+   operation may set `status=succeeded`; that same operation persists the
+   reserved research ledger and `run.succeeded` event, while PostgreSQL also
+   synchronizes the normalized run row in the same database transaction.
+   Memory snapshots status/event before persistence and restores both on any
+   failure. PostgreSQL rollback restores the locked authoritative envelope.
+   No budget or lifecycle-event write follows success.
+2. **Conservative finalization ceiling.** The original one-second draft reserve
+   was rejected during review because the adversarial finalization takes two
+   seconds. The final constant is five seconds. Its ponytail ceiling requires
+   an increase if measured p99 exceeds four seconds; unused time is deliberately
+   overcharged. A fake-clock two-second terminal operation proves actual time is
+   inside the reserve, and 175 seconds plus the reserve fails at exact equality.
+   A run at 179 seconds cannot enter terminal success.
+3. **Exact normalized PostgreSQL state.** `_persist_connection()` upserts each
+   run's status, error, plan, accepted snapshot, and immutable required fields
+   from the exact merged state that is written to `caos_state`, before the same
+   commit. Referenced cases are inserted first for FK integrity; an absent case
+   fails closed. The real two-store probe compares normalized and authoritative
+   state after takeover/recovery, completion, plan/error mutation, atomic
+   finalization, and snapshot acceptance. Forced terminal persistence failure
+   rolls both authorities back.
+4. **Complete provider terminal boundary.** The full count/create/reconcile,
+   generation/retry telemetry, evidence, repair, and local-validation loop is
+   enclosed once. After a real interaction, ordinary failures map to sanitized
+   `AGENT_OUTPUT_INVALID`, `AgentError` retains its stable code, and terminal
+   recording is best-effort and one-shot. `JobFencedError` is re-raised silently
+   and unchanged. Fine-grained provider retry, usage reconciliation, one repair,
+   and request hashing remain unchanged.
+
+### TDD evidence
+
+The first targeted run was intentionally red at **14 failed, 3 passed, 1
+skipped**. It reproduced success before atomic persistence, reservation and
+terminal-event failure acceptance, missing normalized updates, and ordinary
+post-interaction exceptions. The initial real-PostgreSQL subset added three
+failures for normalized drift and missing atomic terminal methods. After the
+root changes, the targeted matrix reached **17 passed, 1 skipped**.
+
+The completed deterministic matrix covers:
+
+- 179 seconds plus final work cannot succeed;
+- fixed-reserve equality, reservation persistence failure, and a measured
+  two-second terminal operation;
+- atomic status/event rollback and `RUN_NOT_READY` acceptance in memory and
+  PostgreSQL;
+- exactly one successful terminal run mutation;
+- real two-store normalized parity through acceptance; and
+- ordinary and `AgentError` failures at reconcile, generation record,
+  provider-retry record, evidence handling, and final validation, plus silent
+  post-interaction fencing.
+
+The first full backend attempt reported **269 passed, 13 failed**. One failure
+was genuine: an older fake persistence test used intentionally partial case/run
+dictionaries, exposing that the first sync draft eagerly dereferenced every
+case. The root fix synchronizes only run-referenced cases and the fixture now
+models the required normalized fields. The other twelve failures were local
+PostgreSQL `Operation not permitted` sandbox denials. The isolated fake
+transaction regression then passed, and the authorized real-database rerun was
+clean at **282 passed**.
+
+### Rewrite tournament
+
+The required no-argument tournament ran inline over the two most material
+symbols after caller and invariant review. GitNexus resolved `_execute` as LOW
+with one stale test caller; it could not resolve the rewritten gateway `run`, so
+live repository callers and the focused matrix supplied its impact set.
+
+- **Winner: Incumbent holds — `WorkflowRuntime._execute`.** Speed and memory
+  candidates reduced defensive reads but could reserve from stale research;
+  the readability candidate split attempt-local fencing and terminal ordering
+  across another interface. The incumbent keeps validation, durable reserve,
+  atomic success, and sanitized failure visibly ordered under one attempt.
+- **Winner: Incumbent holds — `AnthropicGateway.run`.** Speed/memory candidates
+  did not remove an SDK or persistence interaction. A helper-method extraction
+  widened the callback surface and made `provider_interacted`/one-shot terminal
+  state cross another seam. The nested loop plus single outer boundary is the
+  smallest verified structure that preserves retry, repair, reconciliation,
+  fencing, and secrecy contracts.
+
+The smaller new store methods were skipped under the skill's two-symbol cap;
+they are single-purpose transaction wrappers covered directly in memory and
+real-PostgreSQL rollback tests. No challenger provided a verified semantic or
+complexity improvement, so no tournament rewrite was applied. The post-
+tournament focused file passed **154/154** and the full backend passed
+**282/282**.
+
+### Confidence review
+
+Least-confident points and dispositions:
+
+1. **A failed atomic commit might leave an in-memory successful mirror.**
+   Verified fine after adversarial failure: memory restores status/event
+   snapshots; `_fenced_connection()` rolls back PostgreSQL and re-adopts the
+   locked database state. Acceptance remains `RUN_NOT_READY` in both stores.
+2. **The fixed allowance might undercharge realistic terminal persistence.**
+   Confirmed weakness in the one-second draft and fixed at five seconds. The
+   reviewed two-second clock probe is inside the allowance; equality at the
+   three-minute ceiling fails before success. The p99>4s trigger is explicit.
+3. **Shared normalized sync might use a pre-merge mirror or incomplete FK
+   ordering.** Verified/fixed: synchronization receives the exact post-merge
+   state from `_persist_connection()`, inserts only referenced cases before
+   runs, and shares its transaction. The fake-state regression and multi-stage
+   two-store PostgreSQL comparison both pass.
+4. **`planning` could be a test-only status accidentally widening production.**
+   Verified production behavior: `MemoryStore.create_run()` sets `planning` and
+   immediately persists; `WorkflowService.create_run()` moves it to
+   queued/paused only afterward. The migration restores schema/state parity.
+5. **The provider boundary might double-record terminals or swallow fencing.**
+   Verified fine: `terminal_recorded` makes conversion idempotent, and explicit
+   `JobFencedError` branches bypass `abort`. Ten typed/ordinary cases and the
+   separate fencing-silence probe pass without secret text.
+6. **A successful run might receive a later run/ledger mutation.** Verified
+   fine: the successful regression records one terminal run mutation; `finally`
+   only releases the job reservation and does not rewrite run state or events.
+
+Fixed during confidence review: eager normalization of unreferenced partial
+fake cases and the too-small one-second finalization reserve. No known
+implementation correctness issue remains. External rollout doubts remain below.
+
+### Final verification evidence
+
+- Focused, real PostgreSQL:
+  `CAOS_TEST_DATABASE_URL=postgresql://caos_test:…@127.0.0.1:55460/caos_test
+  PYTHONPATH=caos/server caos/server/.venv/bin/python -m pytest -q
+  caos/tests/test_cp_dr_runtime.py` → **`154 passed in 378.85s (0:06:18)`**.
+- Full backend, real PostgreSQL:
+  `CAOS_TEST_DATABASE_URL=postgresql://caos_test:…@127.0.0.1:55460/caos_test
+  PYTHONPATH=caos/server caos/server/.venv/bin/python -m pytest -q caos/tests`
+  → **`282 passed in 237.96s (0:03:57)`**.
+- Vendored scorer: `caos/server/.venv/bin/python
+  caos/server/caos/methodology/vendor/deploy_v/skills/cp-dr-deep-research/scripts/confidence_score.py
+  --self-check` → **`confidence_score self-check: OK`**.
+- Ruff: `caos/server/.venv/bin/python -m ruff check caos/server/caos caos/tests`
+  → **`All checks passed!`**.
+- Dependency integrity: `caos/server/.venv/bin/python -m pip check` →
+  **`No broken requirements found.`**. The disabled user-cache warning is
+  environmental and does not affect package integrity.
+- Root security audit: `caos/server/.venv/bin/python run_sec_audit.py` →
+  **`[]`**.
+- Cached checks: `git diff --cached --check` was clean. The cached red-team diff
+  contained only RT-088..091; its unstaged diff was empty. Frontend and the
+  controller-owned progress file were not staged.
+
+Staged GitNexus `detect_changes()` reported **CRITICAL** with eleven indexed
+changed symbols, sixteen affected processes, and seven files. The controller
+acknowledged that warning before commit. Exact zero-context inspection shows
+the stale index assigned inserted store lines to untouched `_merge_state`,
+`get_snapshot`, `latest_run_for_case`, `versioned`, and `append_version`, and
+inserted runtime lines to untouched `start_run`/`stream_events`; it omitted the
+rewritten provider method. The actual cached surfaces were atomic finalization,
+shared exact-state persistence, provider terminalization, migration parity, and
+their tests. The 154-test focused and 282-test full real-PostgreSQL suites cover
+the genuinely affected workflow, persistence, acceptance, and provider paths.
+
+### Remaining doubts and external gates
+
+- Five seconds is a measured single-worker finalization allowance, not a
+  universal database SLA. Production p99 above four seconds requires raising
+  the constant and rerunning the hard-ceiling matrix before rollout.
+- Live-provider behavior remains intentionally untested until approved
+  processing/ZDR and shadow-evaluation gates are satisfied.
+- The provider semaphore remains process-local and whole-envelope PostgreSQL
   persistence remains the accepted topology. Horizontal workers require a
   separate durable concurrency/storage design and review.
 - Unresolved in-flight spend remains charged and fails closed for operator
