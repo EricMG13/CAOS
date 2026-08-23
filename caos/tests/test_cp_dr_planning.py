@@ -462,18 +462,32 @@ def _case_with_source(store: MemoryStore, name: str, actor: str = "owner") -> di
 
 
 def _approval_run(store: MemoryStore, case_id: str, actor: str = "owner") -> tuple[str, str]:
-    source_set = store.source_sets[case_id]
-    plan = DeployVBundle(DEPLOY_V).compile("DEEP_RESEARCH", "full", source_set["id"], source_set_version=source_set["version"])
-    run = store.create_run(case_id, actor, plan, [])
-    proposed_plan = {"source_set": {"id": source_set["id"], "version": source_set["version"]}}
-    plan_hash = f"sha256:{digest(proposed_plan)}"
-    store.update_run(
-        run["id"],
-        status="paused",
-        error={"code": "PLAN_APPROVAL_REQUIRED", "message": "Approve the proposed research plan before execution."},
-        research={"phase": "awaiting_approval", "proposed_plan_hash": plan_hash, "proposed_plan": proposed_plan},
-    )
-    return run["id"], plan_hash
+    brief = ResearchBrief.model_validate(BRIEF).model_dump(mode="json")
+    runtime = _runtime(store)
+    try:
+        run = runtime.start_run(case_id, actor, "DEEP_RESEARCH", "full", [], brief)
+        runtime._execute(run["id"], actor)
+    finally:
+        runtime.close()
+    paused = store.get_run(run["id"])
+    assert paused is not None and paused["status"] == "paused"
+    assert paused["error"]["code"] == "PLAN_APPROVAL_REQUIRED"
+    research = paused["research"]
+    assert research["phase"] == "awaiting_approval"
+    expected_brief = {**brief, "scope_type": "issuer", "scope_key": case_id.replace("_", "-"), "subject_name": store.cases[case_id]["issuer"], "source_mode": "supplied_only", "research_budget": "standard", "plan_approval": "required"}
+    expected_limits = {"turns": 8, "evidence_reads": 12, "evidence_bytes": 1024 * 1024, "input_tokens": 100_000, "output_tokens": 8_000, "active_minutes": 3, "provider_retries": 1, "repairs": 1}
+    assert research["brief"] == expected_brief
+    assert research["budget_limits"] == expected_limits
+    assert research["budget_used"] == {key: 0 for key in research["budget_limits"]}
+    assert research["proposed_plan"] and re.fullmatch(r"sha256:[0-9a-f]{64}", research["proposed_plan_hash"])
+    cp0 = next(node for node in paused["nodes"] if node["module_id"] == "CP-0")
+    cp_dr = next(node for node in paused["nodes"] if node["module_id"] == "CP-DR")
+    assert cp0["status"] == "succeeded" and cp0["artifact_id"]
+    assert cp_dr["status"] == "pending" and cp_dr["artifact_id"] is None
+    cp0_artifact = store.get_artifact(cp0["artifact_id"])
+    assert cp0_artifact is not None
+    assert research["proposed_plan"]["upstream_artifacts"] == [{"module_id": "CP-0", "artifact_id": cp0_artifact["id"], "digest": cp0_artifact["digest"]}]
+    return run["id"], research["proposed_plan_hash"]
 
 
 def test_research_plan_approval_route_validates_hash_and_maps_conflicts(tmp_path: Path) -> None:
