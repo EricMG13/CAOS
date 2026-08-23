@@ -630,3 +630,155 @@ matrix and 256-test full suite.
   resolution rather than risking a duplicate paid request.
 - LITE, sector/theme, web, external retrieval, other providers, dynamic DAGs,
   and horizontal scale-out remain unauthorized.
+
+## Third independent-review remediation addendum
+
+The third independent review of `2bb8af6`/`e08d598` found no Critical defects
+but returned **NOT APPROVED — IMPORTANT**. Commit `131713e` closes all four
+Important roots from the third corrective brief. It changes only:
+
+- `caos/server/caos/artifacts/domain.py`
+- `caos/server/caos/store.py`
+- `caos/server/caos/workflows/domain.py`
+- `caos/server/caos/workflows/provider.py`
+- `caos/tests/test_cp_dr_runtime.py`
+
+No live provider, external document, web request, or new methodology authority
+was used.
+
+### Root fixes
+
+1. **Final success budget boundary.** The no-pending branch now times and
+   durably charges the complete strict CP-DR artifact validation under the
+   current lease before success. It separately times the success-state write.
+   Either operation reaching or exceeding three active minutes changes the
+   CP-DR node/run to the bounded `AGENT_BUDGET_EXCEEDED` failure and emits no
+   `run.succeeded`. The exact 179-to-181-second scorer and success-write probes
+   both pass.
+2. **Post-interaction terminal guarantee.** Post-call lease checking,
+   active-time charging, and ordinary attempt recording now share one guarded
+   boundary. A transient ordinary failure maps to sanitized
+   `AGENT_OUTPUT_INVALID`; post-call budget failures retain their stable code;
+   both make a best-effort terminal attempt after interaction. True
+   `JobFencedError` remains unmodified and silent. No exception text, prompt,
+   body, evidence, or key enters telemetry.
+3. **Current methodology integrity.** The shared strict CP-DR artifact
+   validator calls current `bundle.verify()` before using any cached scorer,
+   renderer, or handoff validator. Forced integrity failure now rejects the
+   same canonical artifact at fingerprint reuse, no-pending run success, and
+   snapshot construction.
+4. **Normalized PostgreSQL authority.** Claim setup no longer overwrites an
+   existing normalized run row from a stale process mirror. After the fenced
+   transaction locks and adopts authoritative `caos_state` and recovers stale
+   nodes, it rewrites normalized status, bounded error, plan, and accepted
+   snapshot identity from that authoritative run before the same transaction
+   commits. The real two-store regression asserts all four fields immediately
+   after takeover and again after atomic completion.
+
+### TDD and focused evidence
+
+The initial targeted run reproduced six failures: three current-bundle
+entrypoints accepted the canonical artifact, final validation succeeded after
+the active ceiling, a transient ordinary record failure escaped as raw
+`RuntimeError`, and a post-count budget loss left no terminal attempt. The
+cross-process PostgreSQL extension also exposed the stale normalized row. The
+root fixes made that matrix green, and confidence review added a separate
+success-state-write ceiling regression.
+
+Final focused, real-PostgreSQL result:
+
+`CAOS_TEST_DATABASE_URL=postgresql://caos_test:…@127.0.0.1:55460/caos_test
+caos/server/.venv/bin/python -m pytest -q caos/tests/test_cp_dr_runtime.py` →
+**`135 passed in 12.22s`**.
+
+### Rewrite tournament
+
+The required no-argument tournament ran inline over the two material changed
+symbols, `WorkflowRuntime._execute` and `PostgresStore.claim_job`, after exact
+GitNexus context/impact review. Both incumbents held:
+
+- `_execute`: speed and memory candidates reduced lookups but risked charging
+  stale research or emitting success before the hard-ceiling checkpoint; the
+  readability candidate moved attempt-local fenced closures across a wider
+  interface. The incumbent preserves current-token persistence and explicit
+  validation/write/event ordering.
+- `PostgresStore.claim_job`: a combined SQL/CTE candidate shortened the method
+  but obscured the existing authoritative-envelope persistence and rollback;
+  a helper extraction separated normalized synchronization from the adopted
+  transaction. The incumbent keeps adoption, recovery, normalized update, and
+  envelope persistence visibly in the one fenced transaction.
+
+Signatures and side effects stayed unchanged. The post-tournament invariant
+probe passed **3/3**: both final-budget cases and the real two-store normalized
+takeover. GitNexus reported `_execute` LOW with one test caller, but that
+`test_expired_start_attempt_is_finalized` symbol is absent from the current
+tree and is a stale-index false positive; `PostgresStore.claim_job` was LOW
+with no indexed callers.
+
+### Confidence review
+
+Least-confident points and dispositions:
+
+1. **Success-write time could become the next uncharged edge:** confirmed test
+   gap, not a production gap after the root fix. A fake-clock wrapper moves the
+   write from 179 to 181 seconds and proves the durable failure/no-success-event
+   outcome.
+2. **Terminalization might hide a real stale lease:** verified fine. The
+   existing in-flight loss regression plus the new ordinary/budget cases prove
+   `JobFencedError` remains silent while lease-permitted failures receive stable
+   bounded telemetry; the adversarial set passed **9/9**.
+3. **Current verification might cover only one acceptance path:** verified
+   fine. One parameterized canonical-artifact mutation exercises reuse,
+   no-pending success, and snapshot acceptance, and all three fail closed.
+4. **Normalized synchronization might use the pre-adoption mirror or escape
+   its transaction:** verified fine. The update reads `self.runs` only after
+   `adopt_current=True` enters, uses the yielded fenced connection, and the
+   two-store PostgreSQL assertions pass before and after completion.
+5. **Exact ceiling equality and secrecy:** verified fine. The new final helper
+   uses `>=`; stored events contain no transient exception sentinel. No known
+   implementation correctness issue remains.
+
+### Final verification evidence
+
+- Full real-PostgreSQL backend:
+  `CAOS_TEST_DATABASE_URL=postgresql://caos_test:…@127.0.0.1:55460/caos_test
+  caos/server/.venv/bin/python -m pytest -q caos/tests` →
+  **`263 passed in 22.57s`**.
+- Vendored CP-DR scorer:
+  `caos/server/.venv/bin/python
+  caos/server/caos/methodology/vendor/deploy_v/skills/cp-dr-deep-research/scripts/confidence_score.py
+  --self-check` → **`confidence_score self-check: OK`**.
+- Ruff:
+  `caos/server/.venv/bin/python -m ruff check caos/server/caos caos/tests` →
+  **`All checks passed!`**.
+- Dependency integrity:
+  `caos/server/.venv/bin/python -m pip check` →
+  **`No broken requirements found.`**. The disabled user-cache warning is
+  environmental and does not affect package integrity.
+- Root security audit:
+  `caos/server/.venv/bin/python run_sec_audit.py` → **`[]`**.
+- Cached patch: `git diff --cached --check` was clean and contained only the
+  five owned server/test paths. No frontend or progress path was staged.
+
+Staged GitNexus `detect_changes()` reported **LOW**: four indexed changed
+symbols, zero affected symbols/processes, and five files. Its line-shift mapping
+named untouched `WorkflowRuntime.stream_events` and
+`AnthropicGateway.__init__`; the inspected zero-context cached diff shows the
+actual changes are `_execute`, `PostgresStore.claim_job`,
+`AnthropicGateway.run`'s interaction boundary, the strict artifact validator,
+and their focused tests.
+
+### Remaining doubts and external gates
+
+- Live-provider behavior remains intentionally untested until approved
+  processing/ZDR and shadow-evaluation gates are satisfied.
+- Full bundle integrity verification at every strict artifact boundary is
+  deliberately fail-closed and adds bounded active time; production evaluation
+  should measure its latency without caching away the current-integrity check.
+- The provider semaphore remains process-local, and whole-envelope PostgreSQL
+  persistence remains the accepted topology. Horizontal workers require a
+  separate durable concurrency/storage design and review.
+- Unresolved in-flight spend remains charged and fails closed for operator
+  resolution rather than risking a duplicate paid request.
+- LITE, sector/theme, web, external retrieval, other providers, dynamic DAGs,
+  and horizontal scale-out remain unauthorized.

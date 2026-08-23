@@ -3768,3 +3768,21 @@ focused real-PostgreSQL matrix passes 128 tests and the full backend suite passe
 256 tests. The pilot remains disabled by default and does not authorize a live
 provider, external documents, LITE, sector/theme, web, other providers, or
 horizontal worker scale-out.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 third-review corrective pass
+
+Decision under review: close the four Important findings from the third
+independent review without weakening the now-passing Critical controls or
+broadening the disabled issuer-only pilot.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-084 | Hard-budget reviewer | The no-pending branch can spend two seconds revalidating a CP-DR artifact after 179 seconds of durable active time, then mark the run succeeded while the ledger remains below the real work performed. | High | Resolved and verified | Final strict validation and the success-state write are each timed and durably charged under the current lease. Reaching or exceeding three minutes terminalizes the CP-DR node/run with `AGENT_BUDGET_EXCEEDED` before any `run.succeeded` event. Separate fake-clock probes cover the scorer and success-write crossings. |
+| RT-2026-08-23-085 | Provider-telemetry reviewer | A transient ordinary-record failure or post-call lease/budget `AgentError` can escape after an SDK interaction without a bounded terminal attempt, while an overbroad catch could accidentally hide true fencing. | High | Resolved and verified | Post-call lease checking, active-time charging, and ordinary recording share one guarded boundary. Ordinary failures map to sanitized `AGENT_OUTPUT_INVALID`, budget failures retain their stable code, and both make a best-effort terminal record; `JobFencedError` remains silent and is re-raised unchanged. No prompt, body, evidence, key, or exception text is persisted. |
+| RT-2026-08-23-086 | Methodology-integrity reviewer | Cached scorer/renderer/validator modules can remain callable after the current vendored bundle fails integrity, allowing reuse, run success, or snapshot acceptance under stale authority. | High | Resolved and verified | The one strict CP-DR artifact validator now invokes current `bundle.verify()` before any cached methodology component. A forced integrity failure rejects the same canonical artifact at reuse, no-pending run success, and snapshot construction. |
+| RT-2026-08-23-087 | PostgreSQL-authority reviewer | Takeover can correctly adopt `caos_state` yet leave the normalized `runs` row populated from the replacement process's stale pre-claim mirror. | High | Resolved and verified | Pre-claim FK setup no longer overwrites an existing run row. Inside the fenced adoption/recovery transaction, status, bounded error, plan, and accepted-snapshot identity are rewritten from the locked authoritative run before commit. The real two-store test asserts all four normalized fields after takeover and after atomic completion. |
+
+Decision: return the third corrective pass for fresh independent review after
+the focused and full real-PostgreSQL gates. The pilot remains disabled by
+default; live-provider testing, external documents, web, LITE, sector/theme,
+other providers, and horizontal worker scale-out remain unauthorized.
