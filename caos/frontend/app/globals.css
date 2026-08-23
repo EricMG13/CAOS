@@ -261,3 +261,5 @@ dialog:not(.context-drawer) { width: min(680px, calc(100% - 32px)); max-width: 6
 .evidence-rail-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-sm); }
 .evidence-rail-list li { border-top: 1px solid var(--caos-border); padding-top: var(--space-sm); }
 .evidence-rail-list li:first-child { border-top: 0; padding-top: 0; }
+.worklist-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-md); border-bottom: 1px solid var(--caos-border); padding: var(--space-sm) var(--space-md); }
+.worklist-toolbar .field { margin: 0; flex: 1 1 180px; }

@@ -314,6 +314,21 @@ try {
     "evidence rail lists no artifacts for an accepted snapshot",
   );
 
+  await page.goto(`${baseURL}/cases/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  const registerMeta = page.locator(".cases-register .panel-meta");
+  const caseSearch = page.getByRole("searchbox", { name: "Search cases" });
+  await caseSearch.fill("zzzz-no-such-issuer");
+  await page.getByText("No cases match this search and filter.", { exact: true }).waitFor();
+  assert.ok(
+    (await registerMeta.innerText()).startsWith("0 of "),
+    "case register count did not follow the search filter",
+  );
+  await caseSearch.fill("");
+  const snapshotFilter = page.getByRole("combobox", { name: "Snapshot" });
+  await snapshotFilter.selectOption("accepted");
+  await page.locator(".cases-register tbody tr").first().waitFor();
+  await snapshotFilter.selectOption("all");
+
   const commandQuestion = "Which evidence changes the downside case?";
   await page.evaluate(({ caseId, question }) => {
     const query = new URLSearchParams({ case: caseId, q: question });
