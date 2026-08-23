@@ -302,6 +302,18 @@ try {
   await page.waitForURL((url) => url.pathname === "/deep-dive/" && url.searchParams.get("q") === deepDiveQuestion);
   await page.getByText(deepDiveQuestion, { exact: true }).waitFor();
 
+  const rail = page.locator(".evidence-rail");
+  assert.equal(
+    await rail.getByText("Artifact links open the matching source rail.").count(),
+    0,
+    "evidence rail still renders its static policy copy",
+  );
+  await rail.getByText(/Pinned to source set v/).waitFor();
+  assert.ok(
+    await rail.locator(".evidence-rail-list li").count() > 0,
+    "evidence rail lists no artifacts for an accepted snapshot",
+  );
+
   const commandQuestion = "Which evidence changes the downside case?";
   await page.evaluate(({ caseId, question }) => {
     const query = new URLSearchParams({ case: caseId, q: question });
