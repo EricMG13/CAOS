@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-23
 
-**Status:** Approved design; implementation planning pending written-spec review
+**Status:** Approved design; implementation plan ready
 
 **Initial scope:** CP-DR Deep Research only
 
@@ -157,7 +157,8 @@ Provider output is untrusted until all checks pass:
 4. require entity, period, unit, and perimeter on material numeric claims;
 5. render canonical Markdown with the required YAML envelope and six ordered
    H2 sections;
-6. run the vendored CP-DR completeness, confidence, and handoff validators;
+6. run the vendored CP-DR confidence scorer and handoff validator plus the host
+   semantic-completeness gate;
 7. persist only through the existing fenced, idempotent artifact path.
 
 The current host payload/render contract and the vendored canonical contract do
