@@ -16,16 +16,19 @@ Third remediation commit: `131713e` — `fix(server): close Phase 4 third review
 
 Fourth remediation commit: `1f400d8` — `fix(server): make CP-DR finalization atomic`
 
+Fifth remediation commit: `64fdacf` — `fix(server): enforce CP-DR deadline and SSE refresh`
+
 ## Status
 
-Corrected after four independent review rejections. Commits `ae0400a..a8005f3`
-and the first three remediation passes were rejected because their
+Corrected after five independent review rejections. Commits `ae0400a..a8005f3`
+and the first four remediation passes were rejected because their
 verification missed critical cross-process recovery, canonical-artifact,
 host-provenance, completion-time, terminal-telemetry, manifest-allocation, and
 installed-SDK roots, followed by final-success atomicity, normalized-row drift,
-and incomplete post-interaction terminalization. Earlier implementation/test
-narratives below are historical evidence only; the fourth-remediation addendum
-at the end is the current result and is pending fresh independent review.
+incomplete post-interaction terminalization, an unenforced prepaid terminal
+allowance, and stale open SSE streams. Earlier implementation/test narratives
+below are historical evidence only; the fifth-remediation addendum is the
+current result and is pending fresh independent review.
 
 After `be242e1`, an approved FULL issuer CP-DR run executes through one concrete
 Anthropic Messages/client-tool loop only when the server flag, original run
@@ -636,6 +639,176 @@ matrix and 256-test full suite.
 - LITE, sector/theme, web, external retrieval, other providers, dynamic DAGs,
   and horizontal scale-out remain unauthorized.
 
+## Fifth independent-review remediation addendum (current)
+
+The fifth independent review of `1f400d8`/`2472efe` found one Critical and one
+Important root. Implementation commit `64fdacf` closes only those roots: the
+prepaid five-second finalization window is now an absolute deadline inside the
+atomic terminal operation, and an already-open production SSE stream refreshes
+durable cross-process events. No live provider, external document, web request,
+or new methodology authority was used.
+
+This is the current result. The retained third- and fourth-pass historical
+addenda follow below; their superseded claims do not override this fifth-pass
+evidence.
+
+### Exact changed paths
+
+- `.agent-reviews/redteam.md` — append-only RT-092..094.
+- `caos/server/caos/store.py` — deadline checks and rollback in memory; opt-in
+  transaction statement timeout and post-persistence/pre-commit enforcement in
+  PostgreSQL.
+- `caos/server/caos/workflows/domain.py` — compute/pass the absolute CP-DR
+  deadline, map expiry to bounded budget failure, and refresh SSE polling state.
+- `caos/tests/test_cp_dr_runtime.py` — deterministic memory/real-PostgreSQL
+  deadline, fencing, snapshot, and already-open two-store SSE probes.
+
+The controller-owned `.superpowers/sdd/progress.md`, concurrent
+`caos/frontend/src/components/Workspace.tsx`, and the user's untracked
+`.claude/workspace-case-boundary-fix.patch` remained untouched/unstaged.
+
+### Root fixes
+
+1. **Enforced absolute terminal deadline.** After the five-second reservation is
+   durably recorded and remains below the three-minute limit, `_execute()`
+   computes `time.monotonic() + 5` and passes that exact absolute deadline only
+   to CP-DR terminal finalization. Memory validates the current lease first,
+   checks the deadline before mutation, and checks again after persistence
+   inside the rollback guard. PostgreSQL validates the authoritative lease,
+   applies the remaining duration as transaction-local `statement_timeout`,
+   re-tightens it immediately before exact-state persistence, and rechecks after
+   persistence and before commit. Expiry or PostgreSQL cancellation rolls back
+   the state envelope, normalized row, terminal status, and success event; the
+   runtime stores sanitized `AGENT_BUDGET_EXCEEDED` failure while the lease is
+   current. `JobFencedError` retains precedence and remains silent.
+2. **Open production SSE refresh.** Each stream polling iteration calls
+   `refresh()` before the existing one-second local wait, refreshes once more
+   after the wait, then loads events strictly after the current cursor. Memory
+   refresh remains a no-op. PostgreSQL API processes therefore observe worker
+   commits without reconnecting, preserve event ID order, emit no duplicates,
+   and exit only after terminal events have been delivered.
+
+### TDD evidence
+
+The deadline matrix began red in memory at **2 failed, 1 passed**: both the
+outer ten-second delay and ten-second persistence delay committed success; the
+two-second control passed. The first SSE probe was also red at the absent
+deadline contract. After implementation, the combined memory/real-PostgreSQL
+deadline and SSE matrix passed. Confidence review then introduced an already-
+expired lease plus expired-deadline probe; it failed because deadline checking
+masked fencing, and the root ordering fix made both memory and PostgreSQL green.
+
+The final targeted matrix contains nine deterministic cases:
+
+- 174 seconds plus the five-second reserve plus a ten-second delay before store
+  entry, in memory and PostgreSQL;
+- the same 174+10 reproduction with the delay inside memory persistence and
+  PostgreSQL exact-state persistence;
+- a two-second terminal operation inside the deadline in both stores;
+- expired deadline plus expired lease in both stores, proving fencing
+  precedence; and
+- a two-store PostgreSQL SSE stream instantiated before the run, opened before
+  worker completion, and consumed through terminal exit without reconnecting.
+
+Every ten-second case ends failed with no `run.succeeded` event, PostgreSQL
+reload remains non-successful, and `accept_run()` returns `RUN_NOT_READY`.
+
+### Rewrite tournament
+
+The required inline no-argument tournament covered the two most material
+symbols after GitNexus caller review:
+
+- **Winner: Incumbent holds — `PostgresStore._fenced_connection`.** GitNexus
+  reported HIGH with three direct fenced persistence callers. The deadline is
+  opt-in, leaving those callers unchanged. A readability extraction obscured
+  the intentional difference between the first lease-before-deadline check and
+  the later mandatory remaining-time checks; speed/memory candidates removed
+  no database statement without weakening rollback or statement-timeout scope.
+- **Winner: Incumbent holds — `WorkflowRuntime.stream_events`.** Skipping the
+  pre-wait refresh misses already durable work; skipping the post-wait refresh
+  recreates the reviewed cross-process gap. Reading through `events_after()`
+  after both refreshes is the smallest form that preserves cursor order and
+  terminal delivery.
+
+No tournament rewrite was applied. `_execute()` received only the small
+deadline construction/pass-through required by the root; its LOW impact and
+existing atomic/failure ordering were preserved.
+
+### Confidence review
+
+Least-confident points and dispositions:
+
+1. **Deadline expiry might mask stale-worker fencing.** Confirmed and fixed.
+   Memory checks the current job first; PostgreSQL checks the authoritative
+   lease row before rejecting an already-expired deadline. Both regressions
+   raise `JobFencedError`.
+2. **A PostgreSQL statement could overrun while cumulative work remains
+   unchecked.** Verified fine: transaction-local timeout bounds individual
+   statements, the timeout is recalculated before persistence, and monotonic
+   checks after persistence and immediately before commit catch cumulative
+   overrun. The inner ten-second probe rolls back state/event/normalized row.
+3. **Memory persistence might expose success before the post-check.** Verified
+   fine for the supported memory adapter: mutation, persistence, and post-check
+   are inside one lock/rollback guard; the delayed persistence probe restores
+   the prior run and event list before failure mapping.
+4. **Two refreshes could duplicate SSE events or exit before terminal delivery.**
+   Verified fine: the cursor advances only from emitted durable IDs, refreshed
+   reads use `events_after(cursor)`, and the two-store test emits IDs 1/2/3 once
+   in order before generator termination.
+5. **The fresh database could hide accumulated-state behavior.** The old
+   `caos_test` database was retained. Its initial focused run progressed through
+   short rotating transactions but was stopped at 29 passes by controller
+   direction because historical envelope accumulation distorted gate time. The
+   new explicitly named disposable database starts from the same migrations and
+   runs the exact targeted, focused, and full contracts without stale test data.
+
+No known implementation correctness issue remains after this review.
+
+### Final verification evidence
+
+Fresh disposable database (old `caos_test` retained):
+`postgresql://caos_test:…@127.0.0.1:55460/caos_phase4_pass5_test`.
+
+- Exact deadline/SSE/fencing matrix: `CAOS_TEST_DATABASE_URL=.../caos_phase4_pass5_test
+  PYTHONPATH=caos/server caos/server/.venv/bin/python -m pytest -q
+  caos/tests/test_cp_dr_runtime.py -k <pass-5-matrix>` →
+  **`9 passed, 154 deselected in 9.48s`**.
+- Focused, real PostgreSQL: same environment with
+  `caos/tests/test_cp_dr_runtime.py` → **`163 passed in 50.89s`**.
+- Full backend, real PostgreSQL: same environment with `caos/tests` →
+  **`291 passed in 80.39s (0:01:20)`**.
+- Vendored scorer → **`confidence_score self-check: OK`**.
+- Ruff → **`All checks passed!`**.
+- Dependency integrity → **`No broken requirements found.`**. The disabled
+  user-cache warning is environmental only.
+- Root security audit → **`[]`**.
+- Cached patch check → clean; cached red-team diff contains only RT-092..094
+  and its unstaged diff is empty.
+
+Staged GitNexus `detect_changes()` reported **MEDIUM** with four indexed changed
+symbols, four affected persistence flows, and four files. The current index
+again line-shifted inserted store code onto untouched `_merge_state` and
+`MemoryStore.__init__`; exact cached inspection shows the actual surfaces are
+the opt-in terminal deadline, SSE polling refresh, and their tests. The genuine
+HIGH `_fenced_connection` blast radius was acknowledged before edit, and its
+three existing non-terminal callers remain unchanged because `deadline=None`
+preserves their prior path.
+
+### Remaining doubts and external gates
+
+- Five seconds is deliberately hard: a slower terminal operation rolls back
+  and fails the run. Changing that product limit requires a separate budget and
+  rollback review; it is not an adaptive latency or p99 mechanism.
+- Live-provider behavior remains intentionally untested until approved
+  processing/ZDR and shadow-evaluation gates are satisfied.
+- The provider semaphore remains process-local and whole-envelope PostgreSQL
+  persistence remains the accepted topology. Horizontal workers require a
+  separate durable concurrency/storage design and review.
+- Unresolved in-flight spend remains charged and fails closed for operator
+  resolution rather than risking duplicate paid work.
+- LITE, sector/theme, web, external retrieval, other providers, dynamic DAGs,
+  and horizontal scale-out remain unauthorized.
+
 ## Third independent-review remediation addendum
 
 The third independent review of `2bb8af6`/`e08d598` found no Critical defects
@@ -819,13 +992,11 @@ external document, web request, or new methodology authority was used.
    Memory snapshots status/event before persistence and restores both on any
    failure. PostgreSQL rollback restores the locked authoritative envelope.
    No budget or lifecycle-event write follows success.
-2. **Conservative finalization ceiling.** The original one-second draft reserve
-   was rejected during review because the adversarial finalization takes two
-   seconds. The final constant is five seconds. Its ponytail ceiling requires
-   an increase if measured p99 exceeds four seconds; unused time is deliberately
-   overcharged. A fake-clock two-second terminal operation proves actual time is
-   inside the reserve, and 175 seconds plus the reserve fails at exact equality.
-   A run at 179 seconds cannot enter terminal success.
+2. **Finalization allowance (superseded by pass five).** This pass increased the
+   prepaid reserve from one second to five and verified a two-second operation,
+   but did not enforce five seconds as a deadline. The p99/allowance claim was
+   therefore insufficient: a ten-second operation could still commit success.
+   Current hard-deadline behavior is described in the fifth addendum.
 3. **Exact normalized PostgreSQL state.** `_persist_connection()` upserts each
    run's status, error, plan, accepted snapshot, and immutable required fields
    from the exact merged state that is written to `caos_state`, before the same
@@ -908,9 +1079,9 @@ Least-confident points and dispositions:
    snapshots; `_fenced_connection()` rolls back PostgreSQL and re-adopts the
    locked database state. Acceptance remains `RUN_NOT_READY` in both stores.
 2. **The fixed allowance might undercharge realistic terminal persistence.**
-   Confirmed weakness in the one-second draft and fixed at five seconds. The
-   reviewed two-second clock probe is inside the allowance; equality at the
-   three-minute ceiling fails before success. The p99>4s trigger is explicit.
+   The fourth pass incorrectly treated a five-second prepayment and p99 trigger
+   as sufficient. The fifth review proved the remaining production bug and pass
+   five now enforces the prepaid duration as an absolute transaction deadline.
 3. **Shared normalized sync might use a pre-merge mirror or incomplete FK
    ordering.** Verified/fixed: synchronization receives the exact post-merge
    state from `_persist_connection()`, inserts only referenced cases before
@@ -969,9 +1140,9 @@ the genuinely affected workflow, persistence, acceptance, and provider paths.
 
 ### Remaining doubts and external gates
 
-- Five seconds is a measured single-worker finalization allowance, not a
-  universal database SLA. Production p99 above four seconds requires raising
-  the constant and rerunning the hard-ceiling matrix before rollout.
+- The fourth-pass p99/allowance statement is superseded. Five seconds is now an
+  absolute deadline: expiry rolls back terminal state/event persistence and
+  leaves snapshot acceptance unavailable.
 - Live-provider behavior remains intentionally untested until approved
   processing/ZDR and shadow-evaluation gates are satisfied.
 - The provider semaphore remains process-local and whole-envelope PostgreSQL
