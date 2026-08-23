@@ -46,6 +46,10 @@ services:
       CLAMAV_HOST: clamav
       CLAMAV_PORT: "3310"
       PORT: "8000"
+      CPDR_AGENT_ENABLED: ${CPDR_AGENT_ENABLED:-false}
+      CPDR_PILOT_CASE_IDS: ${CPDR_PILOT_CASE_IDS:-}
+      CPDR_PILOT_SUBJECTS: ${CPDR_PILOT_SUBJECTS:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
     volumes:
       - vault-data:/vault
     security_opt: ["no-new-privileges:true"]
@@ -76,6 +80,11 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
       CLAMAV_HOST: clamav
       CLAMAV_PORT: "3310"
+      CPDR_AGENT_ENABLED: ${CPDR_AGENT_ENABLED:-false}
+      CPDR_PILOT_CASE_IDS: ${CPDR_PILOT_CASE_IDS:-}
+      CPDR_PILOT_SUBJECTS: ${CPDR_PILOT_SUBJECTS:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - vault-data:/vault
     security_opt: ["no-new-privileges:true"]

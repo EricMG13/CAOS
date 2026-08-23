@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import stat
 import subprocess
 import threading
@@ -1017,6 +1018,39 @@ def test_env_example_covers_required_compose_inputs() -> None:
     }
     names = {line.split("=", 1)[0] for line in env_example.splitlines() if "=" in line and not line.startswith("#")}
     assert required <= names
+
+
+def test_cpdr_compose_defaults_are_deny_all_and_provider_key_is_worker_only() -> None:
+    root = Path(__file__).parents[1]
+    compose = (root / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
+    env_example = (root / ".env.example").read_text(encoding="utf-8")
+    defaults = dict(line.split("=", 1) for line in env_example.splitlines() if "=" in line and not line.startswith("#"))
+    services = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|^volumes:\n)", compose, flags=re.MULTILINE | re.DOTALL))
+
+    assert {name: defaults[name] for name in ("CPDR_AGENT_ENABLED", "CPDR_PILOT_CASE_IDS", "CPDR_PILOT_SUBJECTS", "ANTHROPIC_MODEL", "ANTHROPIC_API_KEY")} == {
+        "CPDR_AGENT_ENABLED": "false",
+        "CPDR_PILOT_CASE_IDS": "",
+        "CPDR_PILOT_SUBJECTS": "",
+        "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+        "ANTHROPIC_API_KEY": "",
+    }
+    shared = {
+        "CPDR_AGENT_ENABLED: ${CPDR_AGENT_ENABLED:-false}",
+        "CPDR_PILOT_CASE_IDS: ${CPDR_PILOT_CASE_IDS:-}",
+        "CPDR_PILOT_SUBJECTS: ${CPDR_PILOT_SUBJECTS:-}",
+        "ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}",
+    }
+    for service_name in ("app", "worker"):
+        block = services[service_name]
+        assert all(setting in block for setting in shared)
+        assert 'security_opt: ["no-new-privileges:true"]' in block
+        assert 'cap_drop: ["ALL"]' in block
+        assert "read_only: true" in block
+    assert "ANTHROPIC_API_KEY" not in services["app"]
+    assert "ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}" in services["worker"]
+    assert "ANTHROPIC_API_KEY" not in services["oauth2-proxy"]
+    assert "ANTHROPIC_API_KEY" not in services["caddy"]
+    assert sum("ANTHROPIC_API_KEY:" in line for line in compose.splitlines()) == 1
 
 
 @pytest.mark.parametrize(("poll_value", "expected"), [("0.25", 0.25), ("nan", 0.01), ("0", 0.01)])

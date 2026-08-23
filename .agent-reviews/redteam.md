@@ -3858,3 +3858,23 @@ persisted plan or the hash submitted for approval.
 Decision: return the scoped Phase 5 remediation for fresh independent review.
 The pilot remains disabled by default, exact-hash approval is unchanged, and no
 endpoint, read model, dependency, or state abstraction was added.
+
+## 2026-08-23 — Hybrid CP-DR Phase 6 deployment critic pass
+
+Decision under review: expose the existing CP-DR settings through the
+self-hosted Compose stack while keeping the pilot deny-all by default and the
+provider key confined to the worker.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-104 | Secret-boundary reviewer | Copying one shared environment block to app and worker could place the Anthropic key in the API or proxy containers, where requests or diagnostics could expose it. | Critical | Resolved and verified | Compose declares `ANTHROPIC_API_KEY` only in the worker block. Source assertions, rendered default/sentinel configurations, and live container checks prove the variable is absent from app and proxies and present only in the worker. |
+| RT-2026-08-23-105 | Safe-default reviewer | A required interpolation or eager provider validation could prevent a disabled deployment from booting with an empty key. | High | Resolved and verified | Optional empty interpolation is used for the worker key; both exact Compose config gates pass. An isolated production stack migrated and reached healthy db, ClamAV, app, and worker states with CP-DR disabled and the key empty. |
+| RT-2026-08-23-106 | Pilot-boundary reviewer | Enabling the flag with empty allowlists, or omitting an allowlist from one process, could accidentally make the provider path generally available. | Critical | Resolved and verified | App and worker receive the same existing strict flag, exact subject/case allowlists, and model settings. Empty values preserve the existing deny-all tuples. A live single-subject pilot accepted that subject, while the API continued to recheck eligibility at run start. |
+| RT-2026-08-23-107 | Failure-scope reviewer | A missing provider key could crash startup or contaminate unrelated run pathways instead of failing only an eligible approved CP-DR run. | High | Resolved and verified | Live health remained green with an empty key. A source-backed eligible CP-DR run paused for exact approval and then failed `AGENT_PROVIDER_UNAVAILABLE`; a Full Credit Screen run in the same stack succeeded afterward. |
+| RT-2026-08-23-108 | Telemetry reviewer | Provider credentials or source text could leak into container logs or bounded run/audit/job state during the missing-key path. | Critical | Resolved and verified | Bounded live app/worker logs contained neither test sentinel. The complete persisted state contained no key sentinel, and the persisted runs/events/audit/jobs subset contained no source-text sentinel. The existing Phase 4 failure-metadata tests independently reject key, provider-body, prompt, and evidence text. |
+| RT-2026-08-23-109 | Container-hardening reviewer | Editing service environments could accidentally remove the read-only filesystem, dropped capabilities, or no-new-privileges controls. | High | Resolved and verified | The Compose source test asserts all three exact hardening settings on app and worker, and the production verification ran against those services without weakening them. |
+
+Decision: accept Phase 6 for the disabled-by-default single-provider pilot. The
+change adds no parser, provider, metrics system, image variant, or secret to the
+API/proxy boundary. Enablement and rollback require only operator environment
+changes plus service recreation; the immutable image is unchanged.
