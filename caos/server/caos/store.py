@@ -211,6 +211,16 @@ class MemoryStore:
             self.persist()
             return token
 
+    def renew_job(self, run_id: str, attempt_token: str) -> bool:
+        with self.lock:
+            try:
+                self._assert_job_locked(run_id, attempt_token)
+            except JobFencedError:
+                return False
+            self.jobs[run_id]["lease_until"] = time.monotonic() + 60
+            self.persist()
+            return True
+
     def finish_job(self, run_id: str, attempt_token: str) -> None:
         with self.lock:
             if run_id in self.jobs and self.jobs[run_id].get("attempt_token") == attempt_token:
@@ -238,6 +248,22 @@ class MemoryStore:
             condition = self.event_conditions.get(run_id)
             if condition:
                 condition.notify_all()
+
+    def emit_fenced(self, run_id: str, attempt_token: str, event: str, data: dict[str, Any]) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            item = {"id": len(self.events.setdefault(run_id, [])) + 1, "event": event, "at": now_iso(), "data": copy.deepcopy(data)}
+            self.events[run_id].append(item)
+            self.persist()
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def audit_event_fenced(self, run_id: str, attempt_token: str, action: str, actor: str, **details: Any) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            self.audit.append({"id": self._id("aud"), "action": action, "actor": actor, "at": now_iso(), "run_id": run_id, **details})
+            self.persist()
 
     def events_after(self, run_id: str, cursor: int = 0) -> list[dict[str, Any]]:
         with self.lock:
@@ -440,6 +466,22 @@ class PostgresStore(MemoryStore):
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60}
         return token
 
+    def renew_job(self, run_id: str, attempt_token: str) -> bool:
+        with self._psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE jobs SET lease_until = now() + interval '60 seconds' WHERE run_id = %s AND state = 'claimed' AND attempt_token = %s AND lease_until > now() RETURNING id",
+                    (run_id, attempt_token),
+                )
+                renewed = cursor.fetchone() is not None
+            connection.commit()
+        if renewed:
+            with self.lock:
+                job = self.jobs.get(run_id)
+                if job and job.get("attempt_token") == attempt_token:
+                    job["lease_until"] = time.monotonic() + 60
+        return renewed
+
     @contextmanager
     def _fenced_connection(self, run_id: str, attempt_token: str) -> Iterator[Any]:
         with self.lock:
@@ -468,6 +510,19 @@ class PostgresStore(MemoryStore):
             if self.nodes[node_id]["run_id"] != run_id:
                 raise JobFencedError("node does not belong to run")
             self.nodes[node_id].update(copy.deepcopy(changes))
+
+    def emit_fenced(self, run_id: str, attempt_token: str, event: str, data: dict[str, Any]) -> None:
+        with self._fenced_connection(run_id, attempt_token):
+            item = {"id": len(self.events.setdefault(run_id, [])) + 1, "event": event, "at": now_iso(), "data": copy.deepcopy(data)}
+            self.events[run_id].append(item)
+        with self.lock:
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def audit_event_fenced(self, run_id: str, attempt_token: str, action: str, actor: str, **details: Any) -> None:
+        with self._fenced_connection(run_id, attempt_token):
+            self.audit.append({"id": self._id("aud"), "action": action, "actor": actor, "at": now_iso(), "run_id": run_id, **details})
 
     def job_is_current(self, run_id: str, attempt_token: str) -> bool:
         with self._psycopg.connect(self._dsn) as connection:

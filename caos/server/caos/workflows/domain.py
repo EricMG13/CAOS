@@ -14,6 +14,9 @@ from ..sources.domain import Vault, current_source_set
 from ..store import JobFencedError, MemoryStore
 
 
+HEARTBEAT_INTERVAL_SECONDS = 20
+
+
 class WorkflowError(ValueError):
     pass
 
@@ -63,50 +66,72 @@ class WorkflowRuntime:
         attempt_token = self.store.claim_job(run_id, worker)
         if not attempt_token:
             return
+        heartbeat_stop = threading.Event()
+        lost_lease = threading.Event()
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(HEARTBEAT_INTERVAL_SECONDS):
+                try:
+                    if self.store.renew_job(run_id, attempt_token):
+                        continue
+                except Exception:
+                    pass
+                lost_lease.set()
+                return
+
+        heartbeat_thread = threading.Thread(target=heartbeat, name=f"{worker}-heartbeat", daemon=True)
+        heartbeat_thread.start()
         try:
             self.store.update_run_fenced(run_id, attempt_token, status="running", error=None)
-            self.store.emit(run_id, "run.running", {"run_id": run_id, "worker": worker})
+            self.store.emit_fenced(run_id, attempt_token, "run.running", {"run_id": run_id, "worker": worker})
             while True:
-                if not self.store.job_is_current(run_id, attempt_token):
+                if lost_lease.is_set() or not self.store.job_is_current(run_id, attempt_token):
                     return
                 run = self.store.get_run(run_id)
-                if not run:
+                if lost_lease.is_set() or not run:
                     return
                 pending = [node for node in run["nodes"] if node["status"] in {"pending", "ready"}]
                 completed = {node["module_id"] for node in run["nodes"] if node["status"] == "succeeded"}
                 if not pending:
                     self.store.update_run_fenced(run_id, attempt_token, status="succeeded", current_node_id=None)
-                    self.store.emit(run_id, "run.succeeded", {"run_id": run_id})
+                    self.store.emit_fenced(run_id, attempt_token, "run.succeeded", {"run_id": run_id})
                     return
                 ready = [node for node in pending if set(node["dependencies"]).issubset(completed)]
                 if not ready:
                     self.store.update_run_fenced(run_id, attempt_token, status="failed", error={"code": "DAG_BLOCKED", "message": "No dependency-safe ready nodes remain."})
-                    self.store.emit(run_id, "run.failed", {"code": "DAG_BLOCKED"})
+                    self.store.emit_fenced(run_id, attempt_token, "run.failed", {"code": "DAG_BLOCKED"})
                     return
                 for node in ready:
                     self.store.update_node_fenced(run_id, attempt_token, node["id"], status="running", attempt=node["attempt"] + 1)
-                    self.store.emit(run_id, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
+                    self.store.emit_fenced(run_id, attempt_token, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
                 with ThreadPoolExecutor(max_workers=min(4, len(ready)), thread_name_prefix="caos-node") as pool:
                     futures = {pool.submit(self._build_artifact_with_slot, run, node, actor): node for node in ready}
                     for future, node in ((future, futures[future]) for future in futures):
                         try:
-                            artifact = self.store.put_artifact_fenced(run_id, attempt_token, future.result())
+                            artifact_data = future.result()
+                            if lost_lease.is_set():
+                                return
+                            artifact = self.store.put_artifact_fenced(run_id, attempt_token, artifact_data)
                         except JobFencedError:
                             return
                         except Exception as exc:
+                            if lost_lease.is_set():
+                                return
                             try:
                                 self.store.update_node_fenced(run_id, attempt_token, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
                                 self.store.update_run_fenced(run_id, attempt_token, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
                             except JobFencedError:
                                 return
-                            self.store.emit(run_id, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
-                            self.store.emit(run_id, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
+                            self.store.emit_fenced(run_id, attempt_token, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
+                            self.store.emit_fenced(run_id, attempt_token, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
                             return
                         self.store.update_node_fenced(run_id, attempt_token, node["id"], status="succeeded", artifact_id=artifact["id"], error=None)
-                        self.store.emit(run_id, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
+                        self.store.emit_fenced(run_id, attempt_token, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
         except JobFencedError:
             return
         finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join()
             self.store.finish_job(run_id, attempt_token)
 
     def _build_artifact_with_slot(self, run: dict[str, Any], node: dict[str, Any], actor: str) -> dict[str, Any]:
