@@ -235,7 +235,12 @@ export default function Workspace({ destination, children }: { destination?: Des
     const authorizedCase = requestedCaseId ? cases.find((item) => item.id === requestedCaseId) : null;
     const routeAuthority = `${requestedCaseId}\u0000${requestedRunId}`;
     if (routeAuthorityRef.current === routeAuthority || (requestedCaseId && !authorizedCase && casesLoading)) return;
+    const scheduledUnder = routeAuthorityRef.current;
     const timer = window.setTimeout(() => {
+      // A local case selection acknowledges its own authority synchronously below.
+      // If that happened after this route was queued, the query string it was
+      // scheduled from is stale and must not be replayed over the newer selection.
+      if (routeAuthorityRef.current !== scheduledUnder) return;
       if (authorizedCase && authorizedCase.id !== caseId) {
         if (!selectCase(authorizedCase.id)) {
           const url = new URL(window.location.href);
@@ -285,6 +290,11 @@ export default function Workspace({ destination, children }: { destination?: Des
     const url = new URL(window.location.href);
     if (caseId) url.searchParams.set("case", caseId); else url.searchParams.delete("case");
     if (runId) url.searchParams.set("run", runId); else url.searchParams.delete("run");
+    // `useSearchParams` trails this write by a render, so the route effect above can
+    // still observe the previous case/run. Claim that authority here, synchronously,
+    // or a case switch can be reverted by its own stale query string and the previous
+    // issuer's run re-attached after the analyst has already moved on.
+    routeAuthorityRef.current = `${caseId}\u0000${runId}`;
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }, [hydrated, caseId, runId]);
 
