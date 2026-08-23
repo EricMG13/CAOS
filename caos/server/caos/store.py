@@ -5,7 +5,7 @@ import json
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -351,6 +351,7 @@ class MemoryStore:
         node_id: str,
         artifact: dict[str, Any],
         research: dict[str, Any] | None,
+        artifact_validator: Callable[[dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             self._assert_job_locked(run_id, attempt_token)
@@ -361,7 +362,12 @@ class MemoryStore:
             prior_node = copy.deepcopy(node)
             prior_run = copy.deepcopy(self.runs[run_id])
             try:
+                if artifact_validator is not None and not artifact_validator(artifact):
+                    raise ValueError("ARTIFACT_INVALID")
                 completed = self.artifact_for_fingerprint(run_id, node["module_id"], artifact["input_fingerprint"])
+                if completed is not None and artifact_validator is not None and not artifact_validator(completed):
+                    self.artifacts.pop(completed["id"], None)
+                    completed = None
                 if completed is None:
                     self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
                     completed = copy.deepcopy(artifact)
@@ -542,7 +548,7 @@ class PostgresStore(MemoryStore):
             connection.commit()
         with self.lock:
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60}
-        with self._fenced_connection(run_id, token):
+        with self._fenced_connection(run_id, token, adopt_current=True):
             self._recover_running_nodes_locked(run_id)
         return token
 
@@ -563,10 +569,11 @@ class PostgresStore(MemoryStore):
         return renewed
 
     @contextmanager
-    def _fenced_connection(self, run_id: str, attempt_token: str) -> Iterator[Any]:
+    def _fenced_connection(self, run_id: str, attempt_token: str, *, adopt_current: bool = False) -> Iterator[Any]:
         with self.lock:
             database_state = copy.deepcopy(self._base_state)
             database_revision = self._state_revision
+            claimed_job = copy.deepcopy(self.jobs.get(run_id))
             body_entered = False
             try:
                 with self._psycopg.connect(self._dsn) as connection:
@@ -574,6 +581,17 @@ class PostgresStore(MemoryStore):
                         cursor.execute("SELECT 1 FROM jobs WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE", (run_id, attempt_token))
                         if cursor.fetchone() is None:
                             raise JobFencedError("stale workflow attempt")
+                        if adopt_current:
+                            cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                            row = cursor.fetchone()
+                            if row is None:
+                                raise JobFencedError("authoritative workflow state is unavailable")
+                            database_revision, database_state = row
+                            self._restore(copy.deepcopy(database_state))
+                            self._state_revision = database_revision
+                            self._base_state = self._snapshot()
+                            if claimed_job is not None:
+                                self.jobs[run_id] = claimed_job
                         body_entered = True
                         yield connection
                         state, revision, database_state, database_revision = self._persist_connection(connection)
@@ -640,12 +658,18 @@ class PostgresStore(MemoryStore):
         node_id: str,
         artifact: dict[str, Any],
         research: dict[str, Any] | None,
+        artifact_validator: Callable[[dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any]:
         with self._fenced_connection(run_id, attempt_token):
             node = self.nodes[node_id]
             if node.get("run_id") != run_id or artifact.get("run_id") != run_id or artifact.get("module_id") != node.get("module_id"):
                 raise JobFencedError("artifact does not match the fenced node")
+            if artifact_validator is not None and not artifact_validator(artifact):
+                raise ValueError("ARTIFACT_INVALID")
             completed = self.artifact_for_fingerprint(run_id, node["module_id"], artifact["input_fingerprint"])
+            if completed is not None and artifact_validator is not None and not artifact_validator(completed):
+                self.artifacts.pop(completed["id"], None)
+                completed = None
             if completed is None:
                 self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
                 completed = copy.deepcopy(artifact)

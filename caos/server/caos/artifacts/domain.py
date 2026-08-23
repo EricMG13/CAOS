@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from typing import Any
 
 from ..contracts import RecommendationMatrixRequest, ThesisRequest, digest
+from ..methodology.cpdr import confidence_inputs, render_cpdr_markdown, validate_cpdr_payload
 from ..store import MemoryStore, now_iso
 
 
@@ -289,7 +291,7 @@ def mark_assumptions_stale(store: MemoryStore, case_id: str, changed_source_ids:
                 raise
 
 
-def build_snapshot_payload(store: MemoryStore, run: dict[str, Any]) -> dict[str, Any]:
+def build_snapshot_payload(store: MemoryStore, run: dict[str, Any], bundle: Any | None = None) -> dict[str, Any]:
     if run.get("status") != "succeeded" or len(run.get("nodes", [])) != len(run.get("node_ids", [])):
         raise ValueError("RUN_NOT_READY")
     artifacts = []
@@ -304,7 +306,7 @@ def build_snapshot_payload(store: MemoryStore, run: dict[str, Any]) -> dict[str,
             or artifact.get("digest") != digest(artifact.get("payload"))
         ):
             raise ValueError("RUN_NOT_READY")
-        if node.get("module_id") == "CP-DR" and not cpdr_artifact_is_valid(store, run, node, artifact):
+        if node.get("module_id") == "CP-DR" and not cpdr_artifact_is_valid(store, run, node, artifact, bundle):
             raise ValueError("RUN_NOT_READY")
         artifacts.append(artifact)
     source_set = store.source_set_by_id(run["plan"].get("source_set_id"))
@@ -320,47 +322,164 @@ def build_snapshot_payload(store: MemoryStore, run: dict[str, Any]) -> dict[str,
     }
 
 
-def cpdr_artifact_is_valid(store: MemoryStore, run: dict[str, Any], node: dict[str, Any], artifact: dict[str, Any]) -> bool:
-    envelope = artifact.get("payload")
-    expected_keys = {
-        "schema_version", "module_id", "transport", "host_confidence", "canonical_output",
-        "methodology", "source_set", "upstream_artifacts",
-    }
-    source_set = store.source_set_by_id(run["plan"].get("source_set_id"))
-    research = run.get("research") or {}
-    expected_upstream = []
-    for dependency in node.get("dependencies", []):
-        dependency_node = next((item for item in run["nodes"] if item.get("module_id") == dependency), None)
-        dependency_artifact = store.get_artifact(dependency_node.get("artifact_id")) if dependency_node else None
-        if not dependency_artifact:
+def cpdr_artifact_is_valid(
+    store: MemoryStore,
+    run: dict[str, Any],
+    node: dict[str, Any],
+    artifact: dict[str, Any],
+    bundle: Any | None,
+) -> bool:
+    try:
+        if bundle is None:
             return False
-        expected_upstream.append({"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]})
-    transport = envelope.get("transport") if isinstance(envelope, dict) else None
-    canonical_output = envelope.get("canonical_output") if isinstance(envelope, dict) else None
-    host_identity = transport if isinstance(transport, dict) else None
-    return bool(
-        isinstance(envelope, dict)
-        and set(envelope) == expected_keys
-        and envelope.get("schema_version") == "caos.cpdr.artifact.v1"
-        and envelope.get("module_id") == "CP-DR"
-        and isinstance(envelope.get("host_confidence"), dict)
-        and isinstance(canonical_output, dict)
-        and set(canonical_output) == {"filename", "markdown_sha256"}
-        and canonical_output.get("filename") == artifact.get("filename")
-        and canonical_output.get("markdown_sha256") == hashlib.sha256(artifact.get("markdown", "").encode("utf-8")).hexdigest()
-        and envelope.get("methodology") == {"build_id": run["plan"].get("build_id"), "approved_plan_hash": research.get("approved_plan_hash")}
-        and source_set
-        and envelope.get("source_set") == {"id": source_set["id"], "version": source_set["version"], "digest": digest(source_set)}
-        and envelope.get("upstream_artifacts") == expected_upstream
-        and isinstance(host_identity, dict)
-        and host_identity.get("run_id") == run.get("id")
-        and host_identity.get("case_id") == run.get("case_id")
-        and host_identity.get("source_set_id") == source_set["id"]
-        and host_identity.get("source_set_version") == source_set["version"]
-        and host_identity.get("approved_plan_hash") == research.get("approved_plan_hash")
-        and host_identity.get("upstream_digests") == [item["digest"] for item in expected_upstream]
-        and artifact.get("digest") == digest(envelope)
-    )
+        envelope = artifact["payload"]
+        expected_keys = {
+            "schema_version", "module_id", "transport", "host_confidence", "canonical_output",
+            "methodology", "source_set", "upstream_artifacts",
+        }
+        if not isinstance(envelope, dict) or set(envelope) != expected_keys:
+            return False
+        source_set = store.source_set_by_id(run["plan"].get("source_set_id"))
+        research = run.get("research") or {}
+        approved_plan = research.get("proposed_plan")
+        brief = research.get("brief")
+        if not source_set or not isinstance(approved_plan, dict) or not isinstance(brief, dict):
+            return False
+        expected_upstream = []
+        for dependency in node.get("dependencies", []):
+            dependency_node = next((item for item in run["nodes"] if item.get("module_id") == dependency), None)
+            dependency_artifact = store.get_artifact(dependency_node.get("artifact_id")) if dependency_node else None
+            if not dependency_artifact:
+                return False
+            expected_upstream.append(
+                {"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]}
+            )
+        approved_hash = research.get("approved_plan_hash")
+        expected_scope = {
+            "type": brief.get("scope_type"),
+            "key": brief.get("scope_key"),
+            "source_mode": brief.get("source_mode"),
+        }
+        expected_fingerprint = digest(
+            {
+                "plan": run["plan"]["plan_digest"],
+                "module": "CP-DR",
+                "source_set": source_set,
+                "source_ids": list(source_set["source_ids"]),
+                "upstream_artifacts": expected_upstream,
+            }
+        )
+        if (
+            approved_hash != f"sha256:{digest(approved_plan)}"
+            or approved_hash != research.get("proposed_plan_hash")
+            or approved_plan.get("methodology_build_id") != bundle.build_id
+            or approved_plan.get("brief_digest") != digest(brief)
+            or approved_plan.get("source_set") != {"id": source_set["id"], "version": source_set["version"]}
+            or approved_plan.get("scope") != expected_scope
+            or approved_plan.get("upstream_artifacts") != expected_upstream
+            or artifact.get("case_id") != run["case_id"]
+            or artifact.get("run_id") != run["id"]
+            or artifact.get("module_id") != "CP-DR"
+            or artifact.get("input_fingerprint") != expected_fingerprint
+        ):
+            return False
+        host_identity = {
+            "module_id": "CP-DR",
+            "run_id": run["id"],
+            "case_id": run["case_id"],
+            "profile_id": run["plan"]["profile_id"],
+            "selection_id": run["plan"]["selection_id"],
+            "source_set_id": source_set["id"],
+            "source_set_version": source_set["version"],
+            "approved_plan_hash": approved_hash,
+            "upstream_digests": [item["digest"] for item in expected_upstream],
+            "scope_type": brief["scope_type"],
+            "scope_key": brief["scope_key"],
+            "subject_name": brief["subject_name"],
+            "research_question": brief["research_question"],
+            "reporting_period": brief["as_of_date"],
+            "source_mode": "supplied_only",
+        }
+        transport = envelope["transport"]
+        if not isinstance(transport, dict):
+            return False
+        pinned_sources: dict[str, dict[str, Any]] = {}
+        for source_id in source_set["source_ids"]:
+            source = store.sources.get(source_id)
+            source_digest = (source or {}).get("sha256")
+            blocks = (source or {}).get("blocks")
+            if (
+                not source
+                or source.get("case_id") != run["case_id"]
+                or source.get("withdrawn")
+                or not isinstance(source_digest, str)
+                or len(source_digest) != 64
+                or any(character not in "0123456789abcdef" for character in source_digest)
+                or not isinstance(blocks, list)
+                or len({block.get("block_id") for block in blocks if isinstance(block, dict)}) != len(blocks)
+            ):
+                return False
+            pinned_sources[source_id] = source
+        returned_evidence: dict[tuple[str, str], dict[str, str]] = {}
+        for row in transport.get("evidence", []):
+            if not isinstance(row, dict):
+                return False
+            source = pinned_sources.get(row.get("source_id"))
+            if source is None:
+                return False
+            blocks = [item for item in source.get("blocks", []) if item.get("block_id") == row.get("block_id")]
+            if len(blocks) != 1:
+                return False
+            block = blocks[0]
+            source_digest = source["sha256"]
+            returned_evidence[(source["id"], block["block_id"])] = {
+                "source_digest": source_digest,
+                "origin_family": source_digest,
+                "authority_class": "unclassified",
+                "locator": json.dumps(block.get("locator"), sort_keys=True, separators=(",", ":")),
+                "extractor_version": str(block.get("extractor_version")),
+                "confidence": str(block.get("confidence")),
+            }
+        workstream_ids = {item["id"] for item in approved_plan.get("workstreams", [])}
+        payload = validate_cpdr_payload(
+            transport,
+            host_identity,
+            workstream_ids,
+            returned_evidence,
+            approved_plan,
+            brief,
+        )
+        if payload.model_dump(mode="json") != transport:
+            return False
+        confidence = bundle.cpdr_confidence(confidence_inputs(payload, returned_evidence))
+        if envelope["host_confidence"] != confidence:
+            return False
+        filename, markdown = render_cpdr_markdown(payload, confidence, run["created_at"][:10], expected_upstream)
+        canonical_output = envelope["canonical_output"]
+        validation = bundle.validate_cpdr_handoff(markdown, filename, run["id"], brief["as_of_date"])
+        return bool(
+            envelope["schema_version"] == "caos.cpdr.artifact.v1"
+            and envelope["module_id"] == "CP-DR"
+            and envelope["methodology"]
+            == {"build_id": bundle.build_id, "approved_plan_hash": approved_hash}
+            and envelope["source_set"]
+            == {"id": source_set["id"], "version": source_set["version"], "digest": digest(source_set)}
+            and envelope["upstream_artifacts"] == expected_upstream
+            and isinstance(canonical_output, dict)
+            and set(canonical_output) == {"filename", "markdown_sha256"}
+            and canonical_output == {
+                "filename": filename,
+                "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+            }
+            and artifact.get("filename") == filename
+            and artifact.get("markdown") == markdown
+            and artifact.get("digest") == digest(envelope)
+            and not validation.identity_mismatches
+            and not validation.errors
+            and validation.exit_code == 0
+        )
+    except Exception:
+        return False
 
 
 def snapshot_diff(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:

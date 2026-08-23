@@ -89,9 +89,20 @@ class AnthropicGateway:
         def abort(code: str, message: str = "") -> AgentError:
             nonlocal terminal_recorded
             if provider_interacted and not terminal_recorded:
-                record("terminal", terminal_code=code)
+                try:
+                    record("terminal", terminal_code=code)
+                except Exception:
+                    pass
                 terminal_recorded = True
             return AgentError(code, message)
+
+        def finish_interaction(kind: str, elapsed: float, **details: Any) -> None:
+            lease_check()
+            try:
+                active_time(elapsed)
+                record(kind, **details, latency_ms=round(elapsed * 1_000))
+            except AgentError as exc:
+                raise abort(exc.code) from exc
 
         def provider_call(kind: str, kwargs: dict[str, Any], before: Callable[[bool], None] | None = None) -> Any:
             nonlocal provider_interacted
@@ -117,9 +128,7 @@ class AnthropicGateway:
                         result = getattr(self.client.messages, kind)(**call_kwargs)
                     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
                         elapsed = time.monotonic() - started
-                        lease_check()
-                        active_time(elapsed)
-                        record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000))
+                        finish_interaction(kind, elapsed, retry=int(retry))
                         raise abort("AGENT_PROVIDER_REJECTED") from exc
                     except (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.RateLimitError) as exc:
                         retryable = True
@@ -128,28 +137,21 @@ class AnthropicGateway:
                         status = getattr(exc, "status_code", 0)
                         if 400 <= status < 500 and status not in {408, 409, 429}:
                             elapsed = time.monotonic() - started
-                            lease_check()
-                            active_time(elapsed)
-                            record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000))
+                            finish_interaction(kind, elapsed, retry=int(retry))
                             raise abort("AGENT_PROVIDER_REJECTED") from exc
                         retryable = status in {408, 409, 429} or status >= 500
                         if not retryable:
                             elapsed = time.monotonic() - started
-                            lease_check()
-                            active_time(elapsed)
-                            record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000))
+                            finish_interaction(kind, elapsed, retry=int(retry))
                             raise abort("AGENT_OUTPUT_INVALID") from exc
                         error = exc
                     else:
                         elapsed = time.monotonic() - started
-                        lease_check()
-                        active_time(elapsed)
-                        record(kind, retry=int(retry), request_id=getattr(result, "_request_id", None), latency_ms=round(elapsed * 1_000))
+                        finish_interaction(kind, elapsed, retry=int(retry), request_id=getattr(result, "_request_id", None))
                         return result
                 finally:
                     semaphore.release()
-                active_time(time.monotonic() - started)
-                record(kind, retry=int(retry), terminal_code="AGENT_PROVIDER_TIMEOUT")
+                finish_interaction(kind, time.monotonic() - started, retry=int(retry), terminal_code="AGENT_PROVIDER_TIMEOUT")
                 if not retryable or retry_used:
                     raise abort("AGENT_PROVIDER_TIMEOUT") from error
                 record("provider_retry", operation=kind)
@@ -239,7 +241,10 @@ class AnthropicGateway:
                 except AgentError as exc:
                     raise abort(exc.code) from exc
                 finally:
-                    active_time(time.monotonic() - started)
+                    try:
+                        active_time(time.monotonic() - started)
+                    except AgentError as exc:
+                        raise abort(exc.code) from exc
                 messages.append({"role": "assistant", "content": content})
                 messages.append(
                     {
@@ -282,4 +287,7 @@ class AnthropicGateway:
                     }
                 )
             finally:
-                active_time(time.monotonic() - validation_started)
+                try:
+                    active_time(time.monotonic() - validation_started)
+                except AgentError as exc:
+                    raise abort(exc.code) from exc

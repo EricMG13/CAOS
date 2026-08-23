@@ -17,7 +17,7 @@ import anthropic
 import httpx2
 from caos.config import Settings
 from caos.contracts import digest
-from caos.artifacts.domain import build_snapshot_payload, create_note, promote_note
+from caos.artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid, create_note, promote_note
 from caos.methodology.bundle import DeployVBundle
 from caos.methodology.cpdr import CPDRPayload, CPDRValidationError, confidence_inputs, validate_cpdr_payload
 from caos.methodology.prompt import compile_cpdr_prompts
@@ -519,6 +519,32 @@ def test_postgres_takeover_recovers_running_node_and_completion_is_durable() -> 
     assert len([item for item in reloaded.artifacts.values() if item.get("run_id") == run["id"]]) == 1
 
 
+def test_postgres_cross_process_takeover_adopts_authoritative_state_before_recovery() -> None:
+    first = _postgres_store()
+    run, node = _queued_run(first, dependencies=[])
+    assert node is not None
+    replacement_process = PostgresStore(first._dsn)
+    token = first.claim_job(run["id"], "first-process")
+    assert token is not None
+    first.update_run_fenced(run["id"], token, status="running")
+    first.update_node_fenced(run["id"], token, node["id"], status="running", attempt=1)
+    with first._psycopg.connect(first._dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
+        connection.commit()
+
+    replacement = replacement_process.claim_job(run["id"], "replacement-process")
+
+    assert replacement is not None
+    recovered = replacement_process.get_run(run["id"])
+    recovered_node = next(item for item in recovered["nodes"] if item["id"] == node["id"]) if recovered else None
+    assert recovered_node is not None and recovered_node["status"] == "pending"
+    artifact = replacement_process.complete_node_fenced(run["id"], replacement, node["id"], _artifact(run["id"]), None)
+    durable = PostgresStore(first._dsn).get_run(run["id"])
+    durable_node = next(item for item in durable["nodes"] if item["id"] == node["id"]) if durable else None
+    assert durable_node is not None and durable_node["status"] == "succeeded" and durable_node["artifact_id"] == artifact["id"]
+
+
 def test_postgres_atomic_completion_rolls_back_artifact_node_and_research(monkeypatch: pytest.MonkeyPatch) -> None:
     store = _postgres_store()
     run, node = _queued_run(store, dependencies=[])
@@ -696,7 +722,7 @@ def _cpdr_host() -> dict[str, Any]:
 
 
 def _returned_evidence() -> dict[tuple[str, str], dict[str, str]]:
-    return {("src-1", "b00001"): {"source_digest": "e" * 64, "origin_family": "e" * 64, "authority_class": "unclassified", "locator": "{\"line\":1}", "extractor_version": "builtin-v1", "confidence": "HIGH"}}
+    return {("src-1", "b00001"): {"source_digest": "e" * 64, "origin_family": "e" * 64, "authority_class": "primary_authority", "locator": "{\"line\":1}", "extractor_version": "builtin-v1", "confidence": "HIGH"}}
 
 
 def test_cpdr_transport_is_strict_and_host_validated() -> None:
@@ -740,13 +766,17 @@ def test_cpdr_concatenated_numeric_claim_requires_context() -> None:
 
 def test_cpdr_host_provenance_controls_adequacy_and_confidence() -> None:
     fact = {**_cpdr_payload()["material_claims"][0], "claim_type": "fact"}
+    unclassified = {
+        key: {**metadata, "authority_class": "unclassified"}
+        for key, metadata in _returned_evidence().items()
+    }
     with pytest.raises(CPDRValidationError, match="host coverage"):
-        validate_cpdr_payload(_cpdr_payload(material_claims=[fact]), _cpdr_host(), {"WS-1"}, _returned_evidence())
+        validate_cpdr_payload(_cpdr_payload(material_claims=[fact]), _cpdr_host(), {"WS-1"}, unclassified)
 
     second_row = {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src-2", "source_digest": "f" * 64, "block_id": "b00002", "independence_family": "forged-second-family"}
     two_refs = [{"source_id": "src-1", "block_id": "b00001"}, {"source_id": "src-2", "block_id": "b00002"}]
     fact["evidence_refs"] = two_refs
-    copied = {**_returned_evidence(), ("src-2", "b00002"): {**_returned_evidence()[("src-1", "b00001")], "source_digest": "f" * 64}}
+    copied = {**unclassified, ("src-2", "b00002"): {**unclassified[("src-1", "b00001")], "source_digest": "f" * 64}}
     with pytest.raises(CPDRValidationError, match="host coverage"):
         validate_cpdr_payload(_cpdr_payload(material_claims=[fact], evidence=[_cpdr_payload()["evidence"][0], second_row]), _cpdr_host(), {"WS-1"}, copied)
 
@@ -756,6 +786,31 @@ def test_cpdr_host_provenance_controls_adequacy_and_confidence() -> None:
     inputs = confidence_inputs(forged, independent)
     assert inputs["lineage_counts"] == {"Weak Lineage": 1}
     assert inputs["source_gate"] == "pass" and inputs["findings"] == {}
+
+
+def test_material_source_characterisation_cannot_forge_host_provenance_or_complete_coverage() -> None:
+    forged_claim = {
+        **_cpdr_payload()["material_claims"][0],
+        "claim": "The issuer has ample liquidity according to the supplied document.",
+        "claim_type": "source_characterisation",
+        "lineage": "Directly Sourced",
+        "confidence": 100,
+        "material": True,
+    }
+    forged_evidence = {
+        **_cpdr_payload()["evidence"][0],
+        "lineage": "Directly Sourced",
+        "independence_family": "provider-forged-family",
+    }
+    unclassified = {
+        key: {**metadata, "authority_class": "unclassified"}
+        for key, metadata in _returned_evidence().items()
+    }
+    with pytest.raises(CPDRValidationError, match="host coverage"):
+        validate_cpdr_payload(
+            _cpdr_payload(material_claims=[forged_claim], evidence=[forged_evidence]),
+            _cpdr_host(), {"WS-1"}, unclassified,
+        )
 
 
 def test_promoted_note_origin_digest_is_exact_canonical_content_bytes() -> None:
@@ -959,6 +1014,18 @@ def test_gateway_real_sdk_constructor_disables_hidden_retries_and_sets_timeout()
 
 def test_gateway_real_sdk_mock_transport_serializes_expected_messages_request() -> None:
     requests: list[tuple[str, dict[str, Any]]] = []
+    brief = {
+        "research_question": "sdk-question-sentinel",
+        "decision_context": "sdk-decision-sentinel",
+        "as_of_date": "2026-08-23",
+        "time_horizon": "sdk-horizon-sentinel",
+        "must_answer": ["sdk-must-answer-sentinel"],
+        "exclusions": ["sdk-exclusion-sentinel"],
+    }
+    system_prompt, user_prompt = compile_cpdr_prompts(
+        "verified authority", _cpdr_host(), brief,
+        {"workstreams": [{"id": "WS-1", "assigned_questions": brief["must_answer"]}]}, [], [],
+    )
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
@@ -980,7 +1047,7 @@ def test_gateway_real_sdk_mock_transport_serializes_expected_messages_request() 
         http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
     )
     result = AnthropicGateway("constructor-probe-only", "claude-sonnet-4-6", client=sdk).run(
-        system="verified authority", user="complete brief", read_evidence=lambda *_: [],
+        system=system_prompt, user=user_prompt, read_evidence=lambda *_: [],
         validate=lambda value: value, lease_check=lambda: None, reserve=lambda *_: None,
         reconcile=lambda *_: None, record=lambda *_args, **_kwargs: None,
         active_time=lambda _elapsed: None, semaphore=threading.BoundedSemaphore(2),
@@ -990,7 +1057,13 @@ def test_gateway_real_sdk_mock_transport_serializes_expected_messages_request() 
     assert [path for path, _body in requests] == ["/v1/messages/count_tokens", "/v1/messages"]
     create = requests[1][1]
     assert create["model"] == "claude-sonnet-4-6" and create["max_tokens"] == 2_000
-    assert create["system"] == "verified authority" and create["messages"] == [{"role": "user", "content": "complete brief"}]
+    serialized_create = json.dumps(create, sort_keys=True)
+    assert create["system"] == system_prompt and create["messages"] == [{"role": "user", "content": user_prompt}]
+    for sentinel in (
+        "sdk-question-sentinel", "sdk-decision-sentinel", "sdk-horizon-sentinel",
+        "sdk-must-answer-sentinel", "sdk-exclusion-sentinel",
+    ):
+        assert sentinel in serialized_create
     assert create["tools"][0]["name"] == "read_evidence" and create["output_config"]["format"]["type"] == "json_schema"
 
 
@@ -1211,7 +1284,12 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
         "withdrawn": False,
         "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
     }
-    store.register_source_set({"id": "set_cpdr", "case_id": case["id"], "version": 1, "source_ids": [source_id], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
+    store.sources["src_cpdr_2"] = {
+        "id": "src_cpdr_2", "case_id": case["id"], "filename": "facility.txt", "media_type": "text/plain",
+        "sha256": "f" * 64, "withdrawn": False,
+        "blocks": [{"block_id": "b00002", "locator": {"line": 2}, "text": "Facility availability extends through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    }
+    store.register_source_set({"id": "set_cpdr", "case_id": case["id"], "version": 1, "source_ids": [source_id, "src_cpdr_2"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
     brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite first-lien risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
     try:
         run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
@@ -1236,13 +1314,17 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
                 {"workstream_id": item["id"], "finding": "The supplied evidence resolves this approved lane." if index == 0 else "No additional material claim was required for this lane.", "claim_ids": ["C-1"] if index == 0 else [], "status": "complete"}
                 for index, item in enumerate(workstreams)
             ],
-            material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}]}],
-            evidence=[{**_cpdr_payload()["evidence"][0], "source_id": source_id, "block_id": "b00001"}],
+            material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": "src_cpdr_2", "block_id": "b00002"}]}],
+            evidence=[
+                {**_cpdr_payload()["evidence"][0], "source_id": source_id, "block_id": "b00001"},
+                {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_cpdr_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
+            ],
         )
         request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
         client = _Client([
             anthropic.APITimeoutError(request),
             _Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})]),
+            _Response("tool_use", [_Block("tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_cpdr_2", "block_ids": ["b00002"]})]),
             _Response("end_turn", [_Block("text", text="{}")], request_id="req-invalid"),
             _Response("end_turn", [_Block("text", text=json.dumps(final))], request_id="req-final"),
         ])
@@ -1273,7 +1355,7 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
         assert len([item for item in store.artifacts.values() if item["run_id"] == run["id"] and item["module_id"] == "CP-DR"]) == 1
         assert completed["research"]["budget_used"]["provider_retries"] == 1
         assert completed["research"]["budget_used"]["repairs"] == 1
-        assert completed["research"]["budget_used"]["turns"] == 4
+        assert completed["research"]["budget_used"]["turns"] == 5
         original_artifact = copy.deepcopy(store.artifacts[artifact["id"]])
         mutations = [
             lambda item: item["payload"]["host_confidence"].update(confidence_score=99),
@@ -1287,7 +1369,7 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
             store.artifacts[artifact["id"]] = copy.deepcopy(original_artifact)
             mutate(store.artifacts[artifact["id"]])
             with pytest.raises(ValueError, match="RUN_NOT_READY"):
-                build_snapshot_payload(store, store.get_run(run["id"]) or {})
+                build_snapshot_payload(store, store.get_run(run["id"]) or {}, runtime.bundle)
         store.artifacts[artifact["id"]] = original_artifact
         snapshot = runtime.accept_run(case["id"], run["id"], "analyst")
         assert any(item["module_id"] == "CP-DR" for item in snapshot["artifacts"])
@@ -1326,8 +1408,8 @@ def test_approved_cpdr_disabled_or_missing_key_fails_explicitly(settings: Settin
         runtime.close()
 
 
-def _approved_cpdr_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], str]:
-    store = MemoryStore()
+def _approved_cpdr_case(store: MemoryStore | None = None) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], str]:
+    store = store or MemoryStore()
     settings = Settings(
         environment="production",
         storage_dir=Path("/tmp/caos-cpdr-matrix"),
@@ -1348,7 +1430,16 @@ def _approved_cpdr_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any],
         "withdrawn": False,
         "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
     }
-    store.register_source_set({"id": "set_matrix", "case_id": case["id"], "version": 1, "source_ids": [source_id], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
+    store.sources["src_matrix_2"] = {
+        "id": "src_matrix_2",
+        "case_id": case["id"],
+        "filename": "facility.txt",
+        "media_type": "text/plain",
+        "sha256": "f" * 64,
+        "withdrawn": False,
+        "blocks": [{"block_id": "b00002", "locator": {"line": 2}, "text": "The facility remains available through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    }
+    store.register_source_set({"id": "set_matrix", "case_id": case["id"], "version": 1, "source_ids": [source_id, "src_matrix_2"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
     brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
     run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
     runtime._execute(run["id"], "analyst")
@@ -1376,9 +1467,51 @@ def _approved_final(store: MemoryStore, approved: dict[str, Any], source_id: str
             {"workstream_id": item["id"], "finding": "The lane is supported." if index == 0 else "No additional material claim was required.", "claim_ids": ["C-1"] if index == 0 else [], "status": "complete"}
             for index, item in enumerate(workstreams)
         ],
-        material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}]}],
-        evidence=[{**_cpdr_payload()["evidence"][0], "source_id": source_id}],
+        material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": "src_matrix_2", "block_id": "b00002"}]}],
+        evidence=[
+            {**_cpdr_payload()["evidence"][0], "source_id": source_id},
+            {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_matrix_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
+        ],
     )
+
+
+def _canonical_cpdr_artifact(store: MemoryStore, runtime: WorkflowRuntime, approved: dict[str, Any], source_id: str) -> dict[str, Any]:
+    cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
+    cp0 = store.get_artifact(cp0_node["artifact_id"])
+    source_set = store.source_set_by_id(approved["plan"]["source_set_id"])
+    assert cp0 is not None and source_set is not None
+    upstream = [{"module_id": "CP-0", "artifact_id": cp0["id"], "digest": cp0["digest"]}]
+    raw = _approved_final(store, approved, source_id)
+    returned = {
+        (source_id, "b00001"): {
+            "source_digest": "e" * 64, "origin_family": "e" * 64, "authority_class": "unclassified",
+            "locator": "{\"line\":1}", "extractor_version": "builtin-v1", "confidence": "HIGH",
+        },
+        ("src_matrix_2", "b00002"): {
+            "source_digest": "f" * 64, "origin_family": "f" * 64, "authority_class": "unclassified",
+            "locator": "{\"line\":2}", "extractor_version": "builtin-v1", "confidence": "HIGH",
+        },
+    }
+    host = {key: raw[key] for key in _cpdr_host()}
+    workstreams = {item["id"] for item in approved["research"]["proposed_plan"]["workstreams"]}
+    payload = validate_cpdr_payload(
+        raw, host, workstreams, returned, approved["research"]["proposed_plan"], approved["research"]["brief"]
+    )
+    confidence = runtime.bundle.cpdr_confidence(confidence_inputs(payload, returned))
+    filename, markdown = workflow_domain.render_cpdr_markdown(payload, confidence, approved["created_at"][:10], upstream)
+    envelope = workflow_domain._build_cpdr_envelope(
+        payload.model_dump(mode="json"), confidence, filename, markdown, runtime.bundle.build_id,
+        approved["research"]["approved_plan_hash"], source_set, upstream,
+    )
+    fingerprint = digest({
+        "plan": approved["plan"]["plan_digest"], "module": "CP-DR", "source_set": source_set,
+        "source_ids": list(source_set["source_ids"]), "upstream_artifacts": upstream,
+    })
+    return {
+        "id": "art-canonical", "case_id": approved["case_id"], "run_id": approved["id"], "module_id": "CP-DR",
+        "created_by": "analyst", "payload": envelope, "markdown": markdown, "filename": filename,
+        "digest": digest(envelope), "input_fingerprint": fingerprint, "created_at": approved["created_at"],
+    }
 
 
 @pytest.mark.parametrize(
@@ -1423,6 +1556,7 @@ def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget
     final = _approved_final(store, approved, source_id)
     client = _Client([
         _Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})]),
+        _Response("tool_use", [_Block("tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_matrix_2", "block_ids": ["b00002"]})]),
         _Response("end_turn", [_Block("text", text=json.dumps(final))]),
     ])
     monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test", "claude-sonnet-4-6", client=client))
@@ -1437,31 +1571,9 @@ def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget
 
 def test_cpdr_existing_fingerprint_is_relinked_without_provider_call(monkeypatch: pytest.MonkeyPatch) -> None:
     store, runtime, approved, source_id = _approved_cpdr_case()
-    cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    cp0 = store.get_artifact(cp0_node["artifact_id"])
-    source_set = store.source_set_by_id(approved["plan"]["source_set_id"])
-    assert cp0 is not None and source_set is not None
-    upstream = [{"module_id": "CP-0", "artifact_id": cp0["id"], "digest": cp0["digest"]}]
-    fingerprint = digest({
-        "plan": approved["plan"]["plan_digest"], "module": "CP-DR", "source_set": source_set,
-        "source_ids": list(source_set["source_ids"]), "upstream_artifacts": upstream,
-    })
-    markdown = "canonical recovered handoff"
-    filename = f"{approved['id']}_CP-DR_20260823.md"
-    envelope = {
-        "schema_version": "caos.cpdr.artifact.v1", "module_id": "CP-DR",
-        "transport": _approved_final(store, approved, source_id), "host_confidence": {"confidence_score": 40},
-        "canonical_output": {"filename": filename, "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest()},
-        "methodology": {"build_id": approved["plan"]["build_id"], "approved_plan_hash": approved["research"]["approved_plan_hash"]},
-        "source_set": {"id": source_set["id"], "version": source_set["version"], "digest": digest(source_set)},
-        "upstream_artifacts": upstream,
-    }
-    recovered = {
-        **_artifact(approved["id"]), "id": "art-reconciled", "case_id": approved["case_id"],
-        "module_id": "CP-DR", "input_fingerprint": fingerprint, "payload": envelope,
-        "digest": digest(envelope), "markdown": markdown, "filename": filename,
-    }
+    recovered = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    assert cpdr_artifact_is_valid(store, approved, cpdr_node, recovered, runtime.bundle)
     store.artifacts[recovered["id"]] = recovered
     store.runs[approved["id"]]["research"]["phase"] = "researching"
     monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider called")))
@@ -1472,6 +1584,92 @@ def test_cpdr_existing_fingerprint_is_relinked_without_provider_call(monkeypatch
         assert completed is not None and completed["status"] == "succeeded"
         assert linked is not None and linked["artifact_id"] == recovered["id"]
         assert len([item for item in store.artifacts.values() if item.get("module_id") == "CP-DR"]) == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["markdown", "transport", "confidence", "filename", "digest", "fingerprint", "plan_hash", "withdrawn"]
+)
+def test_strict_cpdr_artifact_validator_rejects_noncanonical_artifacts(mutation: str) -> None:
+    store, runtime, approved, source_id = _approved_cpdr_case()
+    cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
+    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    invalid = copy.deepcopy(canonical)
+    if mutation == "markdown":
+        invalid["markdown"] += "forged\n"
+    elif mutation == "transport":
+        invalid["payload"]["transport"]["evidence"][0]["independence_family"] = "provider-forged-family"
+        invalid["digest"] = digest(invalid["payload"])
+    elif mutation == "confidence":
+        invalid["payload"]["host_confidence"]["confidence_score"] += 1
+        invalid["digest"] = digest(invalid["payload"])
+    elif mutation == "filename":
+        invalid["filename"] = "forged.md"
+    elif mutation == "digest":
+        invalid["digest"] = "0" * 64
+    elif mutation == "fingerprint":
+        invalid["input_fingerprint"] = "forged"
+    elif mutation == "plan_hash":
+        store.runs[approved["id"]]["research"]["approved_plan_hash"] = "sha256:" + "0" * 64
+        approved = store.get_run(approved["id"]) or approved
+    else:
+        store.sources["src_matrix_2"]["withdrawn"] = True
+    try:
+        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, invalid, runtime.bundle)
+        store.artifacts[invalid["id"]] = invalid
+        store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=invalid["id"])
+        store.runs[approved["id"]]["status"] = "succeeded"
+        with pytest.raises(ValueError, match="RUN_NOT_READY"):
+            build_snapshot_payload(store, store.get_run(approved["id"]) or {}, runtime.bundle)
+    finally:
+        runtime.close()
+
+
+def test_strict_cpdr_artifact_validator_requires_real_vendored_handoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, source_id = _approved_cpdr_case()
+    cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
+    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    monkeypatch.setattr(
+        runtime.bundle,
+        "validate_cpdr_handoff",
+        lambda *_args, **_kwargs: type("InvalidHandoff", (), {"identity_mismatches": [], "errors": ["invalid"], "exit_code": 1})(),
+    )
+    try:
+        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, canonical, runtime.bundle)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+def test_atomic_completion_replaces_invalid_same_fingerprint_artifact(backend: str) -> None:
+    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
+    store, runtime, approved, source_id = _approved_cpdr_case(store)
+    cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
+    valid = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    valid["id"] = f"art-valid-{backend}"
+    invalid = copy.deepcopy(valid)
+    invalid["id"] = f"art-invalid-{backend}"
+    invalid["markdown"] += "forged\n"
+    store.artifacts[invalid["id"]] = invalid
+    store.persist()
+    token = store.claim_job(approved["id"], "collision-worker")
+    assert token is not None
+    full_run = store.get_run(approved["id"])
+    assert full_run is not None
+    def validator(candidate: dict[str, Any]) -> bool:
+        return cpdr_artifact_is_valid(store, full_run, cpdr_node, candidate, runtime.bundle)
+    try:
+        completed = store.complete_node_fenced(
+            approved["id"], token, cpdr_node["id"], valid, {**approved["research"], "phase": "complete"}, validator
+        )
+        assert completed["id"] == valid["id"]
+        assert invalid["id"] not in store.artifacts
+        durable = PostgresStore(store._dsn) if isinstance(store, PostgresStore) else store
+        durable_run = durable.get_run(approved["id"])
+        durable_node = next(node for node in durable_run["nodes"] if node["id"] == cpdr_node["id"]) if durable_run else None
+        assert durable_node is not None and durable_node["artifact_id"] == valid["id"]
+        assert cpdr_artifact_is_valid(durable, durable_run or {}, durable_node, completed, runtime.bundle)
     finally:
         runtime.close()
 
@@ -1554,22 +1752,74 @@ def test_cpdr_manifest_ceiling_fails_before_provider_construction(monkeypatch: p
         runtime.close()
 
 
-def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("field", ["filename", "media_type", "locator", "extractor_version", "confidence"])
+def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
     store, runtime, approved, source_id = _approved_cpdr_case()
     source = store.sources[source_id]
-    block = source["blocks"][0]
-    expected_manifest = [{
-        "source_id": source_id,
-        "digest": source["sha256"],
-        "filename": source["filename"],
-        "media_type": source["media_type"],
-        "blocks": [{
-            "block_id": block["block_id"], "locator": block["locator"],
-            "extractor_version": block["extractor_version"], "confidence": block["confidence"],
-        }],
-    }]
+    sentinel = "manifest-sentinel-" + "x" * (512 * 1_024)
+    if field in {"filename", "media_type"}:
+        source[field] = sentinel
+    elif field == "locator":
+        source["blocks"][0][field] = {"nested": sentinel}
+    else:
+        source["blocks"][0][field] = sentinel
+    original_dumps = workflow_domain.json.dumps
+
+    def guarded_dumps(value: Any, *args: Any, **kwargs: Any) -> str:
+        if isinstance(value, dict):
+            assert sentinel not in value.values()
+            locator = value.get("locator")
+            assert not isinstance(locator, dict) or sentinel not in locator.values()
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
+    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: pytest.fail("provider constructed"))
+    try:
+        runtime._execute(approved["id"], "approver")
+        failed = store.get_run(approved["id"])
+        assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
+    finally:
+        runtime.close()
+
+
+def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, source_id = _approved_cpdr_case()
+    locator = {"groups": [list(range(100)) for _ in range(6)]}
+    store.sources[source_id]["blocks"][0]["locator"] = locator
+    original_dumps = workflow_domain.json.dumps
+
+    def guarded_dumps(value: Any, *args: Any, **kwargs: Any) -> str:
+        assert not isinstance(value, dict) or value.get("locator") is not locator
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
+    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: pytest.fail("provider constructed"))
+    try:
+        runtime._execute(approved["id"], "approver")
+        failed = store.get_run(approved["id"])
+        assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
+    finally:
+        runtime.close()
+
+
+def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, source_id = _approved_cpdr_case()
+    expected_manifest = []
+    for manifest_source_id in (source_id, "src_matrix_2"):
+        source = store.sources[manifest_source_id]
+        block = source["blocks"][0]
+        expected_manifest.append({
+            "source_id": manifest_source_id,
+            "digest": source["sha256"],
+            "filename": source["filename"],
+            "media_type": source["media_type"],
+            "blocks": [{
+                "block_id": block["block_id"], "locator": block["locator"],
+                "extractor_version": block["extractor_version"], "confidence": block["confidence"],
+            }],
+        })
     encoded_bytes = len(json.dumps(expected_manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
-    monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BLOCKS", 1)
+    monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BLOCKS", 2)
     monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BYTES", encoded_bytes)
     constructed: list[bool] = []
 
@@ -1592,6 +1842,7 @@ def test_cpdr_unexpected_post_provider_failure_is_sanitized_and_terminal(monkeyp
     final = _approved_final(store, approved, source_id)
     client = _Client([
         _Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})]),
+        _Response("tool_use", [_Block("tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_matrix_2", "block_ids": ["b00002"]})]),
         _Response("end_turn", [_Block("text", text=json.dumps(final))]),
     ])
     monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test", "claude-sonnet-4-6", client=client))
@@ -1692,6 +1943,7 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
         def run(self, **kwargs: Any) -> Any:
             kwargs["remaining_time"]()
             kwargs["read_evidence"](source_id, ["b00001"])
+            kwargs["read_evidence"]("src_matrix_2", ["b00002"])
             return kwargs["validate"](final)
 
     original_render = workflow_domain.render_cpdr_markdown
@@ -1712,6 +1964,80 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
         runtime.close()
 
 
+@pytest.mark.parametrize("operation", ["scorer", "renderer", "validator", "envelope"])
+def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
+    store, runtime, approved, source_id = _approved_cpdr_case()
+    final = _approved_final(store, approved, source_id)
+
+    class Clock:
+        now = 1_000.0
+
+    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
+
+    class LocalGateway:
+        def run(self, **kwargs: Any) -> Any:
+            kwargs["read_evidence"](source_id, ["b00001"])
+            kwargs["read_evidence"]("src_matrix_2", ["b00002"])
+            return kwargs["validate"](final)
+
+    def throwing(*_args: Any, **_kwargs: Any) -> Any:
+        Clock.now += 2.0
+        raise RuntimeError("host operation failed")
+
+    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: LocalGateway())
+    if operation == "scorer":
+        monkeypatch.setattr(runtime.bundle, "cpdr_confidence", throwing)
+    elif operation == "renderer":
+        monkeypatch.setattr(workflow_domain, "render_cpdr_markdown", throwing)
+    elif operation == "validator":
+        monkeypatch.setattr(runtime.bundle, "validate_cpdr_handoff", throwing)
+    else:
+        monkeypatch.setattr(workflow_domain, "_build_cpdr_envelope", throwing)
+    try:
+        runtime._execute(approved["id"], "approver")
+        failed = store.get_run(approved["id"])
+        assert failed is not None and failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
+        assert failed["research"]["budget_used"]["active_minutes"] >= 2 / 60
+    finally:
+        runtime.close()
+
+
+def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, source_id = _approved_cpdr_case()
+    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    final = _approved_final(store, approved, source_id)
+
+    class Clock:
+        now = 1_000.0
+
+    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
+
+    class LocalGateway:
+        def run(self, **kwargs: Any) -> Any:
+            kwargs["read_evidence"](source_id, ["b00001"])
+            kwargs["read_evidence"]("src_matrix_2", ["b00002"])
+            return kwargs["validate"](final)
+
+    original_completion = store.complete_node_fenced
+
+    def slow_completion(*args: Any, **kwargs: Any) -> Any:
+        Clock.now += 2.0
+        return original_completion(*args, **kwargs)
+
+    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: LocalGateway())
+    monkeypatch.setattr(store, "complete_node_fenced", slow_completion)
+    try:
+        runtime._execute(approved["id"], "approver")
+        failed = store.get_run(approved["id"])
+        cpdr_node = next(node for node in failed["nodes"] if node["module_id"] == "CP-DR") if failed else None
+        assert failed is not None and failed["status"] == "failed"
+        assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
+        assert failed["research"]["budget_used"]["active_minutes"] >= 181 / 60
+        assert cpdr_node is not None and cpdr_node["status"] == "failed"
+    finally:
+        runtime.close()
+
+
 def test_gateway_fake_clock_charges_slow_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     moments = iter([0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
     monkeypatch.setattr(provider_module.time, "monotonic", lambda: next(moments))
@@ -1727,6 +2053,28 @@ def test_gateway_fake_clock_charges_slow_validation(monkeypatch: pytest.MonkeyPa
 
     assert result["module_id"] == "CP-DR"
     assert charged[-1] == 2.0
+
+
+@pytest.mark.parametrize("operation", ["count", "create"])
+def test_gateway_crossing_active_ceiling_records_terminal_attempt(operation: str) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    calls = 0
+    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+
+    def charge(_elapsed: float) -> None:
+        nonlocal calls
+        calls += 1
+        if (operation == "count" and calls == 1) or (operation == "create" and calls == 2):
+            raise AgentError("AGENT_BUDGET_EXCEEDED")
+
+    with pytest.raises(AgentError, match="AGENT_BUDGET_EXCEEDED"):
+        AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
+            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
+            record=lambda kind, **details: events.append((kind, details)), active_time=charge,
+            semaphore=threading.BoundedSemaphore(2),
+        )
+    assert any(details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED" for _kind, details in events)
 
 
 def test_gateway_discards_result_when_lease_is_lost_during_sdk_call() -> None:

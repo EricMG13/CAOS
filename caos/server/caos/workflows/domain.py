@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -23,6 +24,71 @@ from .provider import AgentError, AnthropicGateway, ProviderUnavailable
 HEARTBEAT_INTERVAL_SECONDS = 20
 MAX_CPDR_MANIFEST_BLOCKS = 2_000
 MAX_CPDR_MANIFEST_BYTES = 256 * 1_024
+MAX_CPDR_MANIFEST_FILENAME_CHARS = 255
+MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS = 160
+MAX_CPDR_MANIFEST_FIELD_CHARS = 160
+MAX_CPDR_MANIFEST_LOCATOR_CHARS = 500
+MAX_CPDR_MANIFEST_LOCATOR_ITEMS = 100
+MAX_CPDR_MANIFEST_LOCATOR_DEPTH = 8
+MAX_CPDR_MANIFEST_LOCATOR_NODES = 500
+
+
+def _manifest_locator_is_bounded(value: Any, *, depth: int = 0, remaining: list[int] | None = None) -> bool:
+    remaining = [MAX_CPDR_MANIFEST_LOCATOR_NODES] if remaining is None else remaining
+    remaining[0] -= 1
+    if remaining[0] < 0 or depth > MAX_CPDR_MANIFEST_LOCATOR_DEPTH:
+        return False
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return not isinstance(value, float) or math.isfinite(value)
+    if isinstance(value, str):
+        return len(value) <= MAX_CPDR_MANIFEST_LOCATOR_CHARS
+    if isinstance(value, list):
+        return len(value) <= MAX_CPDR_MANIFEST_LOCATOR_ITEMS and all(
+            _manifest_locator_is_bounded(item, depth=depth + 1, remaining=remaining) for item in value
+        )
+    if isinstance(value, dict):
+        return len(value) <= MAX_CPDR_MANIFEST_LOCATOR_ITEMS and all(
+            isinstance(key, str)
+            and len(key) <= MAX_CPDR_MANIFEST_FIELD_CHARS
+            and _manifest_locator_is_bounded(item, depth=depth + 1, remaining=remaining)
+            for key, item in value.items()
+        )
+    return False
+
+
+def _manifest_text_is_bounded(value: Any, limit: int) -> bool:
+    return isinstance(value, str) and len(value) <= limit
+
+
+def _build_cpdr_envelope(
+    typed_payload: dict[str, Any],
+    confidence: dict[str, Any],
+    filename: str,
+    markdown: str,
+    build_id: str,
+    approved_plan_hash: str,
+    source_set: dict[str, Any],
+    upstream_artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "caos.cpdr.artifact.v1",
+        "module_id": "CP-DR",
+        "transport": typed_payload,
+        "host_confidence": copy.deepcopy(confidence),
+        "canonical_output": {
+            "filename": filename,
+            "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+        },
+        "methodology": {"build_id": build_id, "approved_plan_hash": approved_plan_hash},
+        "source_set": {
+            "id": source_set["id"],
+            "version": source_set["version"],
+            "digest": digest(source_set),
+        },
+        "upstream_artifacts": upstream_artifacts,
+    }
 
 
 class _LeaseFence:
@@ -165,6 +231,10 @@ class WorkflowRuntime:
                         or not (artifact := self.store.get_artifact(node["artifact_id"]))
                         or artifact.get("run_id") != run_id
                         or artifact.get("module_id") != node.get("module_id")
+                        or (
+                            node.get("module_id") == "CP-DR"
+                            and not cpdr_artifact_is_valid(self.store, run, node, artifact, self.bundle)
+                        )
                         for node in run["nodes"]
                     ):
                         fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "Planned nodes are incomplete or missing artifacts."})
@@ -186,13 +256,29 @@ class WorkflowRuntime:
                     for future, node in ((future, futures[future]) for future in futures):
                         try:
                             artifact_data = future.result()
+                            completion_active_time = artifact_data.pop("_completion_active_time", None)
                             if lease_fence.lost.is_set():
                                 return
                             completion_research = None
                             if node["module_id"] == "CP-DR":
                                 completion_research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
                                 completion_research["phase"] = "complete"
-                            artifact = fenced_call(self.store.complete_node_fenced, node["id"], artifact_data, completion_research)
+                            artifact_validator = None
+                            if node["module_id"] == "CP-DR":
+                                def artifact_validator(candidate: dict[str, Any]) -> bool:
+                                    return cpdr_artifact_is_valid(self.store, run, node, candidate, self.bundle)
+                            completion_started = time.monotonic()
+                            try:
+                                artifact = fenced_call(
+                                    self.store.complete_node_fenced,
+                                    node["id"],
+                                    artifact_data,
+                                    completion_research,
+                                    artifact_validator,
+                                )
+                            finally:
+                                if completion_active_time is not None:
+                                    completion_active_time(max(0.0, time.monotonic() - completion_started))
                         except JobFencedError:
                             return
                         except _PlanningPause as outcome:
@@ -277,9 +363,31 @@ class WorkflowRuntime:
             research = copy.deepcopy(run.get("research"))
             if not research:
                 raise WorkflowError("RESEARCH_BRIEF_REQUIRED")
+
+            def charge_reuse_time(elapsed: float) -> None:
+                if fenced_call is None or lease_check is None:
+                    return
+                lease_check()
+                latest = self.store.get_run(run["id"])
+                latest_research = copy.deepcopy((latest or {}).get("research") or research)
+                used = latest_research["budget_used"]
+                used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
+                fenced_call(self.store.update_run_fenced, research=latest_research)
+                if used["active_minutes"] >= latest_research["budget_limits"]["active_minutes"]:
+                    raise AgentError("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
             existing = self.store.artifact_for_fingerprint(run["id"], node["module_id"], input_fingerprint)
-            if existing and research.get("phase") in {"approved", "researching", "complete"} and cpdr_artifact_is_valid(self.store, run, node, existing):
-                return existing
+            existing_valid = False
+            if existing and research.get("phase") in {"approved", "researching", "complete"}:
+                validation_started = time.monotonic()
+                try:
+                    existing_valid = cpdr_artifact_is_valid(self.store, run, node, existing, self.bundle)
+                finally:
+                    charge_reuse_time(max(0.0, time.monotonic() - validation_started))
+            if existing_valid:
+                recovered = copy.deepcopy(existing)
+                recovered["_completion_active_time"] = charge_reuse_time
+                return recovered
             if research.get("phase") == "planning":
                 planning_started = time.monotonic()
                 proposed_plan, proposed_plan_hash = self.bundle.plan_research(research["brief"], source_set["id"], source_set["version"], upstream_artifacts)
@@ -434,8 +542,15 @@ class WorkflowRuntime:
             used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
             active_checkpoint = time.monotonic()
             persist_research()
-            if used["active_minutes"] > limits["active_minutes"]:
+            if used["active_minutes"] >= limits["active_minutes"]:
                 fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+        def run_host_operation(operation: Any) -> Any:
+            started = time.monotonic()
+            try:
+                return operation()
+            finally:
+                add_active_time(max(0.0, time.monotonic() - started))
 
         def charge_active_checkpoint() -> None:
             nonlocal active_checkpoint
@@ -468,7 +583,19 @@ class WorkflowRuntime:
         }
 
         def record(kind: str, **details: Any) -> None:
-            charge_active_checkpoint()
+            allowed: dict[str, Any] = {}
+            for key, value in details.items():
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    allowed[key] = value[:200] if isinstance(value, str) else value
+                elif isinstance(value, list) and len(value) <= 50 and all(isinstance(item, str) and len(item) <= 160 for item in value):
+                    allowed[key] = list(value)
+            if kind == "terminal":
+                if research["attempts"]:
+                    research["attempts"][-1].update(allowed)
+                else:
+                    research["attempts"].append({**base_attempt, "kind": "terminal", **allowed})
+                persist_research()
+                return
             check_budget()
             if kind == "provider_retry":
                 if used["provider_retries"] + 1 > limits["provider_retries"]:
@@ -478,16 +605,6 @@ class WorkflowRuntime:
                 if used["repairs"] + 1 > limits["repairs"]:
                     fail("AGENT_BUDGET_EXCEEDED", "repair budget exhausted")
                 used["repairs"] += 1
-            allowed: dict[str, Any] = {}
-            for key, value in details.items():
-                if isinstance(value, (str, int, float, bool)) or value is None:
-                    allowed[key] = value[:200] if isinstance(value, str) else value
-                elif isinstance(value, list) and len(value) <= 50 and all(isinstance(item, str) and len(item) <= 160 for item in value):
-                    allowed[key] = list(value)
-            if kind == "terminal" and research["attempts"]:
-                research["attempts"][-1].update(allowed)
-                persist_research()
-                return
             if len(research["attempts"]) >= 50:
                 fail("AGENT_BUDGET_EXCEEDED", "attempt metadata budget exhausted")
             research["attempts"].append({**base_attempt, "kind": kind[:40], **allowed})
@@ -535,11 +652,19 @@ class WorkflowRuntime:
                     or any(character not in "0123456789abcdef" for character in source_digest)
                 ):
                     fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
+                filename = source.get("filename", source_id)
+                media_type = source.get("media_type", "application/octet-stream")
+                if (
+                    not _manifest_text_is_bounded(source_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                    or not _manifest_text_is_bounded(filename, MAX_CPDR_MANIFEST_FILENAME_CHARS)
+                    or not _manifest_text_is_bounded(media_type, MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS)
+                ):
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
                 manifest_source = {
                     "source_id": source_id,
                     "digest": source_digest,
-                    "filename": source.get("filename", source_id),
-                    "media_type": source.get("media_type", "application/octet-stream"),
+                    "filename": filename,
+                    "media_type": media_type,
                     "blocks": [],
                 }
                 encoded_empty_source = json.dumps(manifest_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -548,11 +673,24 @@ class WorkflowRuntime:
                     manifest_blocks += 1
                     if manifest_blocks > MAX_CPDR_MANIFEST_BLOCKS:
                         fail("AGENT_BUDGET_EXCEEDED", "source manifest block ceiling exceeded")
+                    if not isinstance(block, dict):
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest block is invalid")
+                    block_id = block.get("block_id")
+                    locator = block.get("locator")
+                    extractor_version = block.get("extractor_version")
+                    confidence = block.get("confidence")
+                    if (
+                        not _manifest_text_is_bounded(block_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                        or not _manifest_locator_is_bounded(locator)
+                        or not _manifest_text_is_bounded(extractor_version, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                        or not _manifest_text_is_bounded(confidence, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                    ):
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
                     manifest_block = {
-                        "block_id": block.get("block_id"),
-                        "locator": block.get("locator"),
-                        "extractor_version": block.get("extractor_version"),
-                        "confidence": block.get("confidence"),
+                        "block_id": block_id,
+                        "locator": locator,
+                        "extractor_version": extractor_version,
+                        "confidence": confidence,
                     }
                     encoded_block = json.dumps(manifest_block, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
                     source_bytes += len(encoded_block.encode("utf-8")) + (1 if manifest_source["blocks"] else 0)
@@ -699,37 +837,33 @@ class WorkflowRuntime:
             semaphore=self._cpdr_provider_slots,
             remaining_time=remaining_active_time,
         )
-        confidence = self.bundle.cpdr_confidence(confidence_inputs(payload, returned_evidence))
-        filename, markdown = render_cpdr_markdown(payload, confidence, run["created_at"][:10], upstream_artifacts)
-        validation = self.bundle.validate_cpdr_handoff(markdown, filename, run["id"], research["brief"]["as_of_date"])
+        confidence = run_host_operation(lambda: self.bundle.cpdr_confidence(confidence_inputs(payload, returned_evidence)))
+        filename, markdown = run_host_operation(
+            lambda: render_cpdr_markdown(payload, confidence, run["created_at"][:10], upstream_artifacts)
+        )
+        validation = run_host_operation(
+            lambda: self.bundle.validate_cpdr_handoff(markdown, filename, run["id"], research["brief"]["as_of_date"])
+        )
         if validation.identity_mismatches:
             fail("AGENT_AUTHORITY_MISMATCH", "canonical handoff identity mismatch")
         if validation.errors or validation.exit_code != 0:
             fail("AGENT_OUTPUT_INVALID", "canonical handoff validation failed")
-        charge_active_checkpoint()
         typed_payload = payload.model_dump(mode="json")
-        envelope = {
-            "schema_version": "caos.cpdr.artifact.v1",
-            "module_id": "CP-DR",
-            "transport": typed_payload,
-            "host_confidence": copy.deepcopy(confidence),
-            "canonical_output": {
-                "filename": filename,
-                "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
-            },
-            "methodology": {
-                "build_id": self.bundle.build_id,
-                "approved_plan_hash": approved_hash,
-            },
-            "source_set": {
-                "id": source_set["id"],
-                "version": source_set["version"],
-                "digest": digest(source_set),
-            },
-            "upstream_artifacts": expected_upstream,
-        }
+        envelope = run_host_operation(
+            lambda: _build_cpdr_envelope(
+                typed_payload,
+                confidence,
+                filename,
+                markdown,
+                self.bundle.build_id,
+                approved_hash,
+                source_set,
+                expected_upstream,
+            )
+        )
         record("handoff", output_digest=digest(envelope), filename=filename, confidence_score=confidence["confidence_score"])
         charge_active_checkpoint()
+        research["phase"] = "complete"
         return {
             "id": self.store._id("art"),
             "case_id": run["case_id"],
@@ -742,6 +876,7 @@ class WorkflowRuntime:
             "digest": digest(envelope),
             "input_fingerprint": input_fingerprint,
             "created_at": run["created_at"],
+            "_completion_active_time": add_active_time,
         }
 
     def approve_research_plan(self, run_id: str, actor: str, plan_hash: str) -> dict[str, Any]:
@@ -789,7 +924,7 @@ class WorkflowRuntime:
             full_run = self.store.get_run(run_id)
             assert full_run is not None
             try:
-                payload = build_snapshot_payload(self.store, full_run)
+                payload = build_snapshot_payload(self.store, full_run, self.bundle)
             except ValueError as exc:
                 raise WorkflowError(str(exc)) from exc
             snapshot = {

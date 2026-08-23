@@ -30,9 +30,27 @@ def _host_coverage_status(
         return "contradicted"
     if claim.workstream_id in gapped_workstreams:
         return "gap"
-    if pairs and (claim.claim_type == "source_characterisation" or "primary_authority" in authorities or len(origins) >= 2):
+    source_characterisation_is_sufficient = claim.claim_type == "source_characterisation" and not claim.material
+    if pairs and (source_characterisation_is_sufficient or "primary_authority" in authorities or len(origins) >= 2):
         return "adequate"
     return "gap"
+
+
+def _host_claim_provenance(
+    claim: MaterialClaim,
+    host_status: str,
+    returned_evidence: dict[tuple[str, str], dict[str, str]],
+) -> tuple[str, int]:
+    if host_status == "contradicted":
+        return "Conflicting", 25
+    if host_status == "gap":
+        return "Insufficient Information", 0
+    evidence = [returned_evidence[(ref.source_id, ref.block_id)] for ref in claim.evidence_refs]
+    if any(item["authority_class"] == "primary_authority" for item in evidence):
+        return "Directly Sourced", 100
+    if len({item["origin_family"] for item in evidence}) >= 2:
+        return "Weak Lineage", 70
+    return "Weak Lineage", 50
 
 
 class _StrictModel(BaseModel):
@@ -286,6 +304,23 @@ def validate_cpdr_payload(
         if claim.coverage_status != host_status:
             raise CPDRValidationError(f"provider coverage must equal host coverage for {claim.claim_id}: {host_status}")
 
+    canonical_evidence = []
+    for row in payload.evidence:
+        returned = returned_evidence[(row.source_id, row.block_id)]
+        canonical_evidence.append(
+            row.model_copy(
+                update={
+                    "independence_family": returned["origin_family"],
+                    "lineage": "Directly Sourced" if returned["authority_class"] == "primary_authority" else "Weak Lineage",
+                }
+            )
+        )
+    canonical_claims = []
+    for claim in payload.material_claims:
+        lineage, confidence = _host_claim_provenance(claim, host_statuses[claim.claim_id], returned_evidence)
+        canonical_claims.append(claim.model_copy(update={"lineage": lineage, "confidence": confidence}))
+    payload = payload.model_copy(update={"evidence": canonical_evidence, "material_claims": canonical_claims})
+
     material = [claim for claim in payload.material_claims if claim.material]
     if not material:
         raise CPDRValidationError("at least one material claim is required")
@@ -348,7 +383,7 @@ def confidence_inputs(payload: CPDRPayload, returned_evidence: dict[tuple[str, s
         elif host_status == "gap":
             lineage["Insufficient Information"] += 1
             findings["MATERIAL"] += 1
-        elif claim.claim_type == "source_characterisation" or any(
+        elif any(
             returned_evidence[(ref.source_id, ref.block_id)]["authority_class"] == "primary_authority"
             for ref in claim.evidence_refs
         ):
