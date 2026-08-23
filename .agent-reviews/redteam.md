@@ -3786,3 +3786,22 @@ Decision: return the third corrective pass for fresh independent review after
 the focused and full real-PostgreSQL gates. The pilot remains disabled by
 default; live-provider testing, external documents, web, LITE, sector/theme,
 other providers, and horizontal worker scale-out remain unauthorized.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 fourth-review corrective pass
+
+Decision under review: close the atomic-success, normalized-state, and provider
+terminal-boundary findings from the fourth independent review without weakening
+the earlier recovery, artifact, provenance, budget, or fencing controls.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-088 | Atomicity reviewer | Persisting `succeeded` before the final budget ledger and success event lets a later write failure leave an acceptable successful snapshot without its charged work or lifecycle event. | Critical | Resolved and verified | All fallible validation and a fixed five-second finalization reservation persist while the run is non-successful. One fenced store operation then commits terminal status, the reserved research ledger, `run.succeeded`, and PostgreSQL normalized state together; memory and PostgreSQL rollback status and event on forced persistence failure, and `accept_run` remains `RUN_NOT_READY`. |
+| RT-2026-08-23-089 | Hard-budget reviewer | A token reserve that is smaller than realistic terminal persistence time can still undercharge a successful run, especially near the 180-second ceiling. | High | Resolved with bounded operational ceiling | The host reserves five seconds before finalization, above the reviewed two-second adversarial write. Equality at 180 seconds fails before success; a fake-clock probe proves a two-second atomic finalization remains within the reservation. A ponytail comment requires increasing the fixed allowance if measured p99 exceeds four seconds; unused reserve is deliberately overcharged. |
+| RT-2026-08-23-090 | PostgreSQL-authority reviewer | Synchronizing the normalized `runs` row only during claim leaves later fenced completion, error/plan mutation, final success, or snapshot acceptance divergent from authoritative `caos_state`. | High | Resolved and verified | The shared persistence transaction upserts status, bounded error, plan, accepted-snapshot identity, and immutable required fields from the exact merged state being committed. A two-store PostgreSQL probe compares every field after takeover, recovery/completion changes, atomic finalization, and acceptance; forced terminal persistence rolls both authorities back together. |
+| RT-2026-08-23-091 | Provider-telemetry reviewer | Reconciliation, generation/retry recording, evidence handling, or final validation can throw after a real SDK interaction and escape without a stable terminal attempt, while broad conversion could hide lease loss. | High | Resolved and verified | One outer fail-closed boundary encloses the complete interaction loop. Ordinary failures become sanitized `AGENT_OUTPUT_INVALID`, `AgentError` retains its stable code, terminal recording is best-effort and one-shot, and `JobFencedError` is re-raised silently. Ten ordinary/typed operation cases plus an explicit fencing probe persist no exception, prompt, response, evidence, or key text. |
+
+Decision: return the fourth corrective pass for fresh independent review after
+the focused and full real-PostgreSQL gates. The finalization allowance is an
+explicit measured single-worker ceiling, not authorization for horizontal
+workers. The pilot remains disabled by default and still excludes live-provider
+testing, external documents, web, LITE, sector/theme, and other providers.

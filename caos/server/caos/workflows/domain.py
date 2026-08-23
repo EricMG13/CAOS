@@ -31,6 +31,8 @@ MAX_CPDR_MANIFEST_LOCATOR_CHARS = 500
 MAX_CPDR_MANIFEST_LOCATOR_ITEMS = 100
 MAX_CPDR_MANIFEST_LOCATOR_DEPTH = 8
 MAX_CPDR_MANIFEST_LOCATOR_NODES = 500
+# ponytail: 5s bounds the reviewed 2s adversarial finalization; increase only after measured p99 breaches 4s.
+CPDR_FINALIZATION_ALLOWANCE_SECONDS = 5.0
 
 
 def _manifest_locator_is_bounded(value: Any, *, depth: int = 0, remaining: list[int] | None = None) -> bool:
@@ -221,12 +223,22 @@ class WorkflowRuntime:
             fenced_call(self.store.update_run_fenced, research=research)
             return research, used["active_minutes"] >= limit
 
-        def fail_final_cpdr_budget(node: dict[str, Any], research: dict[str, Any]) -> None:
+        def reserve_cpdr_finalization() -> tuple[dict[str, Any], bool]:
+            current = self.store.get_run(run_id) or {}
+            research = copy.deepcopy(current.get("research") or {})
+            used = research.get("budget_used") or {}
+            limit = (research.get("budget_limits") or {}).get("active_minutes", 3)
+            used["active_minutes"] = used.get("active_minutes", 0) + CPDR_FINALIZATION_ALLOWANCE_SECONDS / 60
+            research["budget_used"] = used
+            fenced_call(self.store.update_run_fenced, research=research)
+            return research, used["active_minutes"] >= limit
+
+        def fail_final_cpdr(node: dict[str, Any], research: dict[str, Any], code: str) -> None:
             research["phase"] = "failed"
             if research.get("attempts"):
-                research["attempts"][-1]["terminal_code"] = "AGENT_BUDGET_EXCEEDED"
+                research["attempts"][-1]["terminal_code"] = code
             error = {
-                "code": "AGENT_BUDGET_EXCEEDED",
+                "code": code,
                 "module_id": "CP-DR",
                 "message": "CP-DR agent execution failed.",
             }
@@ -241,12 +253,12 @@ class WorkflowRuntime:
             fenced_call(
                 self.store.emit_fenced,
                 "node.failed",
-                {"node_id": node["id"], "module_id": "CP-DR", "code": "AGENT_BUDGET_EXCEEDED"},
+                {"node_id": node["id"], "module_id": "CP-DR", "code": code},
             )
             fenced_call(
                 self.store.emit_fenced,
                 "run.failed",
-                {"code": "AGENT_BUDGET_EXCEEDED", "module_id": "CP-DR"},
+                {"code": code, "module_id": "CP-DR"},
             )
 
         heartbeat_thread = threading.Thread(target=heartbeat, name=f"{worker}-heartbeat", daemon=True)
@@ -283,21 +295,51 @@ class WorkflowRuntime:
                             research, exceeded = charge_final_cpdr_work(time.monotonic() - validation_started)
                             run["research"] = research
                             if exceeded:
-                                fail_final_cpdr_budget(node, research)
+                                fail_final_cpdr(node, research, "AGENT_BUDGET_EXCEEDED")
                                 return
                             blocked = blocked or not valid
                     if blocked:
                         fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "Planned nodes are incomplete or missing artifacts."})
                         fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
                         return
-                    success_started = time.monotonic()
-                    fenced_call(self.store.update_run_fenced, status="succeeded", current_node_id=None)
                     if cpdr_node is not None:
-                        research, exceeded = charge_final_cpdr_work(time.monotonic() - success_started)
-                        if exceeded:
-                            fail_final_cpdr_budget(cpdr_node, research)
+                        try:
+                            research, exceeded = reserve_cpdr_finalization()
+                        except JobFencedError:
+                            raise
+                        except AgentError as exc:
+                            fail_final_cpdr(cpdr_node, copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {}), exc.code)
                             return
-                    fenced_call(self.store.emit_fenced, "run.succeeded", {"run_id": run_id})
+                        except Exception:
+                            fail_final_cpdr(
+                                cpdr_node,
+                                copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {}),
+                                "AGENT_OUTPUT_INVALID",
+                            )
+                            return
+                        if exceeded:
+                            fail_final_cpdr(cpdr_node, research, "AGENT_BUDGET_EXCEEDED")
+                            return
+                    else:
+                        research = None
+                    try:
+                        fenced_call(
+                            self.store.finalize_run_success_fenced,
+                            research,
+                            {"run_id": run_id},
+                        )
+                    except JobFencedError:
+                        raise
+                    except AgentError as exc:
+                        if cpdr_node is not None:
+                            fail_final_cpdr(cpdr_node, research or {}, exc.code)
+                            return
+                        raise
+                    except Exception:
+                        if cpdr_node is not None:
+                            fail_final_cpdr(cpdr_node, research or {}, "AGENT_OUTPUT_INVALID")
+                            return
+                        raise
                     return
                 ready = [node for node in pending if set(node["dependencies"]).issubset(completed)]
                 if not ready:

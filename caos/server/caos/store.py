@@ -291,6 +291,55 @@ class MemoryStore:
             if condition:
                 condition.notify_all()
 
+    def _assert_run_artifacts_ready_locked(self, run_id: str) -> None:
+        run = self.runs[run_id]
+        for node_id in run.get("node_ids", []):
+            node = self.nodes.get(node_id)
+            artifact = self.artifacts.get(node.get("artifact_id")) if node else None
+            if (
+                not node
+                or node.get("run_id") != run_id
+                or node.get("status") != "succeeded"
+                or not artifact
+                or artifact.get("run_id") != run_id
+                or artifact.get("module_id") != node.get("module_id")
+            ):
+                raise ValueError("RUN_NOT_READY")
+
+    def finalize_run_success_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        research: dict[str, Any] | None,
+        event_data: dict[str, Any],
+    ) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            self._assert_run_artifacts_ready_locked(run_id)
+            prior_run = copy.deepcopy(self.runs[run_id])
+            prior_events = copy.deepcopy(self.events.get(run_id, []))
+            try:
+                changes: dict[str, Any] = {"status": "succeeded", "current_node_id": None, "error": None}
+                if research is not None:
+                    changes["research"] = copy.deepcopy(research)
+                self.runs[run_id].update(changes)
+                self.events.setdefault(run_id, []).append(
+                    {
+                        "id": len(self.events[run_id]) + 1,
+                        "event": "run.succeeded",
+                        "at": now_iso(),
+                        "data": copy.deepcopy(event_data),
+                    }
+                )
+                self.persist()
+            except Exception:
+                self.runs[run_id] = prior_run
+                self.events[run_id] = prior_events
+                raise
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
     def audit_event_fenced(self, run_id: str, attempt_token: str, action: str, actor: str, **details: Any) -> None:
         with self.lock:
             self._assert_job_locked(run_id, attempt_token)
@@ -548,20 +597,8 @@ class PostgresStore(MemoryStore):
             connection.commit()
         with self.lock:
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60}
-        with self._fenced_connection(run_id, token, adopt_current=True) as connection:
+        with self._fenced_connection(run_id, token, adopt_current=True):
             self._recover_running_nodes_locked(run_id)
-            authoritative_run = self.runs[run_id]
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE runs SET status=%s, error=%s, plan=%s, accepted_snapshot_id=%s WHERE id=%s",
-                    (
-                        authoritative_run["status"],
-                        self._jsonb(authoritative_run.get("error")),
-                        self._jsonb(authoritative_run["plan"]),
-                        authoritative_run.get("accepted_snapshot_id"),
-                        run_id,
-                    ),
-                )
         return token
 
     def renew_job(self, run_id: str, attempt_token: str) -> bool:
@@ -640,6 +677,32 @@ class PostgresStore(MemoryStore):
         with self._fenced_connection(run_id, attempt_token):
             item = {"id": len(self.events.setdefault(run_id, [])) + 1, "event": event, "at": now_iso(), "data": copy.deepcopy(data)}
             self.events[run_id].append(item)
+        with self.lock:
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def finalize_run_success_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        research: dict[str, Any] | None,
+        event_data: dict[str, Any],
+    ) -> None:
+        with self._fenced_connection(run_id, attempt_token):
+            self._assert_run_artifacts_ready_locked(run_id)
+            changes: dict[str, Any] = {"status": "succeeded", "current_node_id": None, "error": None}
+            if research is not None:
+                changes["research"] = copy.deepcopy(research)
+            self.runs[run_id].update(changes)
+            self.events.setdefault(run_id, []).append(
+                {
+                    "id": len(self.events[run_id]) + 1,
+                    "event": "run.succeeded",
+                    "at": now_iso(),
+                    "data": copy.deepcopy(event_data),
+                }
+            )
         with self.lock:
             condition = self.event_conditions.get(run_id)
             if condition:
@@ -725,6 +788,35 @@ class PostgresStore(MemoryStore):
                 raise
             self._adopt_persisted(state, revision)
 
+    def _sync_normalized_runs(self, connection: Any, state: dict[str, Any]) -> None:
+        with connection.cursor() as cursor:
+            normalized_cases: set[str] = set()
+            for run in state.get("runs", {}).values():
+                case = state.get("cases", {}).get(run["case_id"])
+                if not case:
+                    raise ValueError("run references an absent case")
+                if case["id"] not in normalized_cases:
+                    cursor.execute(
+                        "INSERT INTO cases(id, name, issuer, sector, created_by, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                        (
+                            case["id"], case["name"], case["issuer"], case["sector"],
+                            case["created_by"], case["created_at"],
+                        ),
+                    )
+                    normalized_cases.add(case["id"])
+                cursor.execute(
+                    "INSERT INTO runs(id, case_id, status, plan, accepted_snapshot_id, created_by, created_at, error) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, error=EXCLUDED.error, "
+                    "plan=EXCLUDED.plan, accepted_snapshot_id=EXCLUDED.accepted_snapshot_id",
+                    (
+                        run["id"], run["case_id"], run["status"], self._jsonb(run["plan"]),
+                        run.get("accepted_snapshot_id"), run["created_by"], run["created_at"],
+                        self._jsonb(run.get("error")),
+                    ),
+                )
+
     def _persist_connection(self, connection: Any) -> tuple[dict[str, Any], int, dict[str, Any], int]:
         state = self._snapshot()
         with connection.cursor() as cursor:
@@ -735,6 +827,7 @@ class PostgresStore(MemoryStore):
                 state = _merge_state(self._base_state, state, current_state)
             next_revision = current_revision + 1
             cursor.execute("UPDATE caos_state SET revision = %s, state = %s WHERE id = true", (next_revision, self._jsonb(json.loads(json.dumps(state)))))
+        self._sync_normalized_runs(connection, state)
         return state, next_revision, current_state, current_revision
 
     def _adopt_persisted(self, state: dict[str, Any], revision: int) -> None:

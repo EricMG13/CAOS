@@ -163,136 +163,148 @@ class AnthropicGateway:
                 retry_used = True
                 retry = True
 
-        while True:
-            common: dict[str, Any] = {
-                "model": self.model,
-                "system": system,
-                "messages": messages,
-                "output_config": {"format": {"type": "json_schema", "schema": schema}},
-            }
-            if tools_enabled:
-                common.update(
-                    tools=[READ_EVIDENCE_TOOL],
-                    tool_choice={"type": "auto", "disable_parallel_tool_use": True},
-                )
-            count = provider_call("count_tokens", common)
-            try:
-                counted_inputs = getattr(count, "input_tokens")
-                if not isinstance(counted_inputs, int) or isinstance(counted_inputs, bool) or counted_inputs < 0:
-                    raise ValueError("negative input token count")
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise abort("AGENT_OUTPUT_INVALID", "malformed token-count response") from exc
-            create_kwargs = {**common, "max_tokens": max_tokens}
-            request_digest = hashlib.sha256(
-                json.dumps(create_kwargs, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
-            ).hexdigest()
-
-            def reserve_attempt(retry: bool) -> None:
-                reserve(request_digest, counted_inputs, max_tokens, retry)
-
-            response = provider_call("create", create_kwargs, reserve_attempt)
-            usage = getattr(response, "usage", None)
-            try:
-                actual_inputs = getattr(usage, "input_tokens")
-                actual_outputs = getattr(usage, "output_tokens")
-                if (
-                    not isinstance(actual_inputs, int)
-                    or isinstance(actual_inputs, bool)
-                    or not isinstance(actual_outputs, int)
-                    or isinstance(actual_outputs, bool)
-                    or actual_inputs < 0
-                    or actual_outputs < 0
-                ):
-                    raise ValueError("negative token usage")
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise abort("AGENT_OUTPUT_INVALID", "malformed provider usage") from exc
-            reconcile(request_digest, counted_inputs, max_tokens, actual_inputs, actual_outputs)
-            stop_reason = getattr(response, "stop_reason", None)
-            record(
-                "generation",
-                request_digest=request_digest,
-                request_id=getattr(response, "_request_id", None),
-                input_tokens=actual_inputs,
-                output_tokens=actual_outputs,
-                stop_reason=stop_reason,
-            )
-            content = getattr(response, "content", None)
-            if not isinstance(content, list):
-                raise abort("AGENT_OUTPUT_INVALID", "response content must be a list")
-            block_types = [_block_value(block, "type") for block in content]
-            if "refusal" in block_types:
-                raise abort("AGENT_OUTPUT_INVALID", "provider refusal")
-
-            if stop_reason == "tool_use":
-                tool_blocks = [block for block in content if _block_value(block, "type") == "tool_use"]
-                if not tools_enabled or len(tool_blocks) != 1:
-                    raise abort("AGENT_OUTPUT_INVALID", "exactly one evidence tool call is allowed")
-                tool = tool_blocks[0]
-                if _block_value(tool, "name") != "read_evidence":
-                    raise abort("AGENT_OUTPUT_INVALID", "unexpected tool")
-                arguments = _block_value(tool, "input")
-                if not isinstance(arguments, dict) or set(arguments) != {"source_id", "block_ids"}:
-                    raise abort("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
-                source_id = arguments["source_id"]
-                block_ids = arguments["block_ids"]
-                if not isinstance(source_id, str) or not isinstance(block_ids, list) or any(not isinstance(item, str) for item in block_ids):
-                    raise abort("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
-                lease_check()
-                if remaining_time is not None:
-                    remaining_time()
-                started = time.monotonic()
+        def interaction_loop() -> Any:
+            nonlocal repair_used
+            nonlocal tools_enabled
+            while True:
+                common: dict[str, Any] = {
+                    "model": self.model,
+                    "system": system,
+                    "messages": messages,
+                    "output_config": {"format": {"type": "json_schema", "schema": schema}},
+                }
+                if tools_enabled:
+                    common.update(
+                        tools=[READ_EVIDENCE_TOOL],
+                        tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+                    )
+                count = provider_call("count_tokens", common)
                 try:
-                    evidence = read_evidence(source_id, block_ids)
-                except AgentError as exc:
-                    raise abort(exc.code) from exc
-                finally:
+                    counted_inputs = getattr(count, "input_tokens")
+                    if not isinstance(counted_inputs, int) or isinstance(counted_inputs, bool) or counted_inputs < 0:
+                        raise ValueError("negative input token count")
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise abort("AGENT_OUTPUT_INVALID", "malformed token-count response") from exc
+                create_kwargs = {**common, "max_tokens": max_tokens}
+                request_digest = hashlib.sha256(
+                    json.dumps(create_kwargs, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+                ).hexdigest()
+
+                def reserve_attempt(retry: bool) -> None:
+                    reserve(request_digest, counted_inputs, max_tokens, retry)
+
+                response = provider_call("create", create_kwargs, reserve_attempt)
+                usage = getattr(response, "usage", None)
+                try:
+                    actual_inputs = getattr(usage, "input_tokens")
+                    actual_outputs = getattr(usage, "output_tokens")
+                    if (
+                        not isinstance(actual_inputs, int)
+                        or isinstance(actual_inputs, bool)
+                        or not isinstance(actual_outputs, int)
+                        or isinstance(actual_outputs, bool)
+                        or actual_inputs < 0
+                        or actual_outputs < 0
+                    ):
+                        raise ValueError("negative token usage")
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise abort("AGENT_OUTPUT_INVALID", "malformed provider usage") from exc
+                reconcile(request_digest, counted_inputs, max_tokens, actual_inputs, actual_outputs)
+                stop_reason = getattr(response, "stop_reason", None)
+                record(
+                    "generation",
+                    request_digest=request_digest,
+                    request_id=getattr(response, "_request_id", None),
+                    input_tokens=actual_inputs,
+                    output_tokens=actual_outputs,
+                    stop_reason=stop_reason,
+                )
+                content = getattr(response, "content", None)
+                if not isinstance(content, list):
+                    raise abort("AGENT_OUTPUT_INVALID", "response content must be a list")
+                block_types = [_block_value(block, "type") for block in content]
+                if "refusal" in block_types:
+                    raise abort("AGENT_OUTPUT_INVALID", "provider refusal")
+
+                if stop_reason == "tool_use":
+                    tool_blocks = [block for block in content if _block_value(block, "type") == "tool_use"]
+                    if not tools_enabled or len(tool_blocks) != 1:
+                        raise abort("AGENT_OUTPUT_INVALID", "exactly one evidence tool call is allowed")
+                    tool = tool_blocks[0]
+                    if _block_value(tool, "name") != "read_evidence":
+                        raise abort("AGENT_OUTPUT_INVALID", "unexpected tool")
+                    arguments = _block_value(tool, "input")
+                    if not isinstance(arguments, dict) or set(arguments) != {"source_id", "block_ids"}:
+                        raise abort("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
+                    source_id = arguments["source_id"]
+                    block_ids = arguments["block_ids"]
+                    if not isinstance(source_id, str) or not isinstance(block_ids, list) or any(not isinstance(item, str) for item in block_ids):
+                        raise abort("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
+                    lease_check()
+                    if remaining_time is not None:
+                        remaining_time()
+                    started = time.monotonic()
                     try:
-                        active_time(time.monotonic() - started)
+                        evidence = read_evidence(source_id, block_ids)
                     except AgentError as exc:
                         raise abort(exc.code) from exc
-                messages.append({"role": "assistant", "content": content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": _block_value(tool, "id"),
-                                "content": json.dumps(evidence, sort_keys=True),
-                            }
-                        ],
-                    }
-                )
-                continue
+                    finally:
+                        try:
+                            active_time(time.monotonic() - started)
+                        except AgentError as exc:
+                            raise abort(exc.code) from exc
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": _block_value(tool, "id"),
+                                    "content": json.dumps(evidence, sort_keys=True),
+                                }
+                            ],
+                        }
+                    )
+                    continue
 
-            if stop_reason != "end_turn":
-                raise abort("AGENT_OUTPUT_INVALID", f"unexpected stop reason: {stop_reason}")
-            if len(content) != 1 or block_types != ["text"] or not isinstance(_block_value(content[0], "text"), str):
-                raise abort("AGENT_OUTPUT_INVALID", "final response must contain one structured text block")
-            validation_started = time.monotonic()
-            try:
-                decoded = json.loads(_block_value(content[0], "text"), object_pairs_hook=_unique_object)
-                if not isinstance(decoded, dict):
-                    raise ValueError("final JSON must be an object")
-                return validate(decoded)
-            except AgentError as exc:
-                raise abort(exc.code) from exc
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
-                if repair_used:
-                    raise abort("AGENT_OUTPUT_INVALID", "local validation failed after repair") from exc
-                repair_used = True
-                tools_enabled = False
-                record("repair_reserve")
-                errors = str(exc).replace("\n", " ")[:1_500]
-                messages.append({"role": "assistant", "content": content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "VALIDATION ERRORS (untrusted status; preserve authority and existing evidence; return corrected JSON only): " + errors,
-                    }
-                )
-            finally:
+                if stop_reason != "end_turn":
+                    raise abort("AGENT_OUTPUT_INVALID", f"unexpected stop reason: {stop_reason}")
+                if len(content) != 1 or block_types != ["text"] or not isinstance(_block_value(content[0], "text"), str):
+                    raise abort("AGENT_OUTPUT_INVALID", "final response must contain one structured text block")
+                validation_started = time.monotonic()
                 try:
-                    active_time(time.monotonic() - validation_started)
+                    decoded = json.loads(_block_value(content[0], "text"), object_pairs_hook=_unique_object)
+                    if not isinstance(decoded, dict):
+                        raise ValueError("final JSON must be an object")
+                    return validate(decoded)
                 except AgentError as exc:
                     raise abort(exc.code) from exc
+                except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                    if repair_used:
+                        raise abort("AGENT_OUTPUT_INVALID", "local validation failed after repair") from exc
+                    repair_used = True
+                    tools_enabled = False
+                    record("repair_reserve")
+                    errors = str(exc).replace("\n", " ")[:1_500]
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "VALIDATION ERRORS (untrusted status; preserve authority and existing evidence; return corrected JSON only): " + errors,
+                        }
+                    )
+                finally:
+                    try:
+                        active_time(time.monotonic() - validation_started)
+                    except AgentError as exc:
+                        raise abort(exc.code) from exc
+
+        try:
+            return interaction_loop()
+        except JobFencedError:
+            raise
+        except AgentError as exc:
+            raise abort(exc.code) from exc
+        except Exception as exc:
+            raise abort("AGENT_OUTPUT_INVALID") from exc

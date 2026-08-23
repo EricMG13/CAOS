@@ -1215,7 +1215,14 @@ def test_postgres_adopts_state_only_after_commit() -> None:
     store._state_revision = 1
     store._base_state = store._snapshot()
     current = copy.deepcopy(store._base_state)
-    current["cases"]["external"] = {"id": "external"}
+    current["cases"]["external"] = {
+        "id": "external",
+        "name": "External",
+        "issuer": "External issuer",
+        "sector": "Testing",
+        "created_by": "analyst",
+        "created_at": "2026-08-23T00:00:00+00:00",
+    }
     database.row = (2, current)
 
     store.cases["local"] = {"id": "local"}
@@ -1226,7 +1233,16 @@ def test_postgres_adopts_state_only_after_commit() -> None:
     assert store._state_revision == 2
 
     database.fail_commit = False
-    store.runs["run"] = {"id": "run", "status": "queued"}
+    store.runs["run"] = {
+        "id": "run",
+        "case_id": "external",
+        "status": "queued",
+        "plan": {},
+        "accepted_snapshot_id": None,
+        "created_by": "analyst",
+        "created_at": "2026-08-23T00:00:00+00:00",
+        "error": None,
+    }
     store.persist()
     database.fail_commit = True
     with pytest.raises(RuntimeError, match="commit failed"):

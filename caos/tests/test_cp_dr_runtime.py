@@ -24,7 +24,7 @@ from caos.methodology.prompt import compile_cpdr_prompts
 from caos.store import JobFencedError, MemoryStore, PostgresStore
 from caos.workflows import domain as workflow_domain
 from caos.workflows import provider as provider_module
-from caos.workflows.domain import WorkflowRuntime, _LeaseFence
+from caos.workflows.domain import WorkflowError, WorkflowRuntime, _LeaseFence
 from caos.workflows.provider import AgentError, AnthropicGateway, ProviderUnavailable
 
 
@@ -428,10 +428,17 @@ def test_worker_lifecycle_events_are_fenced(failure: bool, expected: list[str]) 
 def test_expired_worker_cannot_emit_terminal_lifecycle_event(blocked: bool) -> None:
     class ExpiringStore(MemoryStore):
         def update_run_fenced(self, run_id: str, attempt_token: str, **changes: Any) -> None:
-            if changes.get("status") in {"succeeded", "failed"}:
+            if changes.get("status") == "failed":
                 with self.lock:
                     self.jobs[run_id]["lease_until"] = time.monotonic() - 1
             super().update_run_fenced(run_id, attempt_token, **changes)
+
+        def finalize_run_success_fenced(
+            self, run_id: str, attempt_token: str, research: dict[str, Any] | None, event_data: dict[str, Any],
+        ) -> None:
+            with self.lock:
+                self.jobs[run_id]["lease_until"] = time.monotonic() - 1
+            super().finalize_run_success_fenced(run_id, attempt_token, research, event_data)
 
     store = ExpiringStore()
     run, _ = _queued_run(store, dependencies=["missing"] if blocked else None)
@@ -558,6 +565,88 @@ def test_postgres_cross_process_takeover_adopts_authoritative_state_before_recov
             cursor.execute("SELECT status, error, plan, accepted_snapshot_id FROM runs WHERE id = %s", (run["id"],))
             normalized_after_completion = cursor.fetchone()
     assert normalized_after_completion == normalized
+
+
+def _assert_normalized_run_matches_authoritative(store: PostgresStore, run_id: str) -> None:
+    authoritative = store.get_run(run_id)
+    assert authoritative is not None
+    with store._psycopg.connect(store._dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT case_id, status, error, plan, accepted_snapshot_id, created_by, created_at "
+                "FROM runs WHERE id = %s",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+    assert row is not None
+    assert row[:6] == (
+        authoritative["case_id"],
+        authoritative["status"],
+        authoritative.get("error"),
+        authoritative["plan"],
+        authoritative.get("accepted_snapshot_id"),
+        authoritative["created_by"],
+    )
+    assert row[6].isoformat() == authoritative["created_at"]
+
+
+def test_postgres_normalized_run_tracks_takeover_completion_updates_finalization_and_acceptance() -> None:
+    first = _postgres_store()
+    run, node = _queued_run(first, dependencies=[])
+    assert node is not None
+    source_set = {
+        "id": f"set-{run['id']}", "case_id": run["case_id"], "version": 1, "source_ids": [],
+        "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00",
+    }
+    first.register_source_set(source_set)
+    initial_plan = {"nodes": [], "source_set_id": source_set["id"], "marker": "initial"}
+    first.update_run(run["id"], plan=initial_plan, status="queued", error=None)
+    replacement_process = PostgresStore(first._dsn)
+    token = first.claim_job(run["id"], "first-normalized")
+    assert token is not None
+    first.update_run_fenced(
+        run["id"], token, status="running", plan={**initial_plan, "marker": "authoritative"},
+        error={"code": "RUNNING_SENTINEL", "message": "current"},
+    )
+    first.update_node_fenced(run["id"], token, node["id"], status="running", attempt=1)
+    with first._psycopg.connect(first._dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
+        connection.commit()
+
+    replacement = replacement_process.claim_job(run["id"], "replacement-normalized")
+    assert replacement is not None
+    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
+
+    payload = {"result": "durable"}
+    artifact = {
+        **_artifact(run["id"]), "case_id": run["case_id"], "payload": payload, "digest": digest(payload),
+    }
+    replacement_process.complete_node_fenced(run["id"], replacement, node["id"], artifact, None)
+    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
+
+    final_plan = {**initial_plan, "marker": "final-authoritative"}
+    replacement_process.update_run_fenced(
+        run["id"], replacement, status="running", plan=final_plan,
+        error={"code": "FINAL_SENTINEL", "message": "bounded"},
+    )
+    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
+
+    replacement_process.finalize_run_success_fenced(
+        run["id"], replacement, None, {"run_id": run["id"]},
+    )
+    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
+
+    runtime = WorkflowRuntime(
+        replacement_process, object(),
+        Settings(environment="production", storage_dir=Path("/tmp/caos-normalized-run"), deploy_v_root=DEPLOY_V),
+    )  # type: ignore[arg-type]
+    try:
+        snapshot = runtime.accept_run(run["case_id"], run["id"], "analyst")
+    finally:
+        runtime.close()
+    assert snapshot["run_id"] == run["id"]
+    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
 
 
 def test_postgres_atomic_completion_rolls_back_artifact_node_and_research(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2121,34 +2210,195 @@ def test_cpdr_no_pending_final_validation_is_charged_before_run_success(monkeypa
         runtime.close()
 
 
-def test_cpdr_final_success_state_work_is_charged_before_success_event(monkeypatch: pytest.MonkeyPatch) -> None:
+def _ready_cpdr_finalization() -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]]:
     store, runtime, approved, source_id = _approved_cpdr_case()
     artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
     store.artifacts[artifact["id"]] = artifact
     store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
     store.runs[approved["id"]]["research"].update(phase="complete")
+    return store, runtime, approved, cpdr_node, artifact
+
+
+def _assert_run_cannot_be_accepted(runtime: WorkflowRuntime, run: dict[str, Any]) -> None:
+    with pytest.raises(WorkflowError, match="RUN_NOT_READY"):
+        runtime.accept_run(run["case_id"], run["id"], "approver")
+
+
+def test_cpdr_finalization_allowance_is_fixed_and_ponytail_bounded() -> None:
+    assert 2.0 < workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS <= 5.0
+
+
+def test_cpdr_179_seconds_cannot_enter_atomic_success_finalization() -> None:
+    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
     store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    try:
+        runtime._execute(approved["id"], "final-reserve")
+        failed = store.get_run(approved["id"])
+        assert failed is not None and failed["status"] == "failed"
+        assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
+        assert failed["research"]["budget_used"]["active_minutes"] >= 180 / 60
+        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        _assert_run_cannot_be_accepted(runtime, failed)
+    finally:
+        runtime.close()
+
+
+def test_cpdr_finalization_reservation_failure_is_sanitized_before_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
+    original_update = store.update_run_fenced
+    research_writes = 0
+
+    def fail_reservation(run_id: str, attempt_token: str, **changes: Any) -> None:
+        nonlocal research_writes
+        if set(changes) == {"research"}:
+            research_writes += 1
+            if research_writes == 2:
+                raise RuntimeError("secret-final-reservation")
+        original_update(run_id, attempt_token, **changes)
+
+    monkeypatch.setattr(store, "update_run_fenced", fail_reservation)
+    try:
+        runtime._execute(approved["id"], "reservation-failure")
+        failed = store.get_run(approved["id"])
+        assert failed is not None and failed["status"] == "failed"
+        assert failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
+        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        assert "secret-final-reservation" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
+        _assert_run_cannot_be_accepted(runtime, failed)
+    finally:
+        runtime.close()
+
+
+def test_cpdr_atomic_success_persistence_failure_rolls_back_and_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
+    original_persist = store.persist
+    fail_once = True
+
+    def fail_terminal_persist() -> None:
+        nonlocal fail_once
+        if (
+            fail_once
+            and store.runs[approved["id"]]["status"] == "succeeded"
+            and any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        ):
+            fail_once = False
+            raise RuntimeError("secret-atomic-finalization")
+        original_persist()
+
+    monkeypatch.setattr(store, "persist", fail_terminal_persist)
+    try:
+        runtime._execute(approved["id"], "atomic-failure")
+        failed = store.get_run(approved["id"])
+        assert failed is not None and failed["status"] == "failed"
+        assert failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
+        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        assert "secret-atomic-finalization" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
+        _assert_run_cannot_be_accepted(runtime, failed)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+def test_atomic_success_store_operation_rolls_back_run_and_event(
+    monkeypatch: pytest.MonkeyPatch, backend: str,
+) -> None:
+    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
+    run, node = _queued_run(store, dependencies=[])
+    assert node is not None
+    token = store.claim_job(run["id"], "atomic-worker")
+    assert token is not None
+    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
+    original_persist = store._persist_connection if isinstance(store, PostgresStore) else store.persist
+
+    if isinstance(store, PostgresStore):
+        def fail_terminal_connection(connection: Any) -> Any:
+            if store.runs[run["id"]]["status"] == "succeeded":
+                raise RuntimeError("terminal transaction failed")
+            return original_persist(connection)
+
+        monkeypatch.setattr(store, "_persist_connection", fail_terminal_connection)
+    else:
+        def fail_terminal_memory() -> None:
+            if store.runs[run["id"]]["status"] == "succeeded":
+                raise RuntimeError("terminal persistence failed")
+            original_persist()
+
+        monkeypatch.setattr(store, "persist", fail_terminal_memory)
+
+    with pytest.raises(RuntimeError, match="terminal"):
+        store.finalize_run_success_fenced(run["id"], token, None, {"run_id": run["id"]})
+
+    assert store.runs[run["id"]]["status"] != "succeeded"
+    assert not any(item["event"] == "run.succeeded" for item in store.events[run["id"]])
+    if isinstance(store, PostgresStore):
+        restored = PostgresStore(store._dsn).get_run(run["id"])
+        assert restored is not None and restored["status"] != "succeeded"
+        assert not any(item["event"] == "run.succeeded" for item in restored["events"])
+
+
+def test_cpdr_success_finalization_is_single_terminal_run_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, cpdr_node, artifact = _ready_cpdr_finalization()
+    finalized = False
+    post_final_updates: list[dict[str, Any]] = []
+    original_finalize = store.finalize_run_success_fenced
+    original_update = store.update_run_fenced
+
+    def track_finalize(*args: Any, **kwargs: Any) -> None:
+        nonlocal finalized
+        original_finalize(*args, **kwargs)
+        finalized = True
+
+    def track_update(run_id: str, attempt_token: str, **changes: Any) -> None:
+        if finalized:
+            post_final_updates.append(copy.deepcopy(changes))
+        original_update(run_id, attempt_token, **changes)
+
+    monkeypatch.setattr(store, "finalize_run_success_fenced", track_finalize)
+    monkeypatch.setattr(store, "update_run_fenced", track_update)
+    try:
+        runtime._execute(approved["id"], "atomic-success")
+        completed = store.get_run(approved["id"])
+        assert completed is not None and completed["status"] == "succeeded"
+        assert completed["research"]["budget_used"]["active_minutes"] >= (
+            workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS / 60
+        )
+        completed_node = next(item for item in completed["nodes"] if item["id"] == cpdr_node["id"])
+        assert completed_node["status"] == "succeeded" and completed_node["artifact_id"] == artifact["id"]
+        assert store.get_artifact(artifact["id"])["digest"] == artifact["digest"]  # type: ignore[index]
+        assert [item["event"] for item in completed["events"]].count("run.succeeded") == 1
+        assert post_final_updates == []
+    finally:
+        runtime.close()
+
+
+def test_cpdr_two_second_atomic_finalization_is_covered_by_fixed_reserve(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
+    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 170 / 60
 
     class Clock:
         now = 1_000.0
 
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-    original_update = store.update_run_fenced
+    original_finalize = store.finalize_run_success_fenced
+    finalization_seconds: list[float] = []
 
-    def slow_success_update(run_id: str, attempt_token: str, **changes: Any) -> None:
-        original_update(run_id, attempt_token, **changes)
-        if changes.get("status") == "succeeded":
-            Clock.now += 2.0
+    def slow_finalize(*args: Any, **kwargs: Any) -> None:
+        started = Clock.now
+        Clock.now += 2.0
+        original_finalize(*args, **kwargs)
+        finalization_seconds.append(Clock.now - started)
 
-    monkeypatch.setattr(store, "update_run_fenced", slow_success_update)
+    monkeypatch.setattr(store, "finalize_run_success_fenced", slow_finalize)
     try:
-        runtime._execute(approved["id"], "final-state")
-        failed = store.get_run(approved["id"])
-        assert failed is not None and failed["status"] == "failed"
-        assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert failed["research"]["budget_used"]["active_minutes"] >= 181 / 60
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        runtime._execute(approved["id"], "slow-atomic-success")
+        completed = store.get_run(approved["id"])
+        assert completed is not None and completed["status"] == "succeeded"
+        assert finalization_seconds == [2.0]
+        assert finalization_seconds[0] <= workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS
+        assert completed["research"]["budget_used"]["active_minutes"] >= (
+            (170 + workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS) / 60
+        )
     finally:
         runtime.close()
 
@@ -2241,6 +2491,81 @@ def test_gateway_post_count_budget_check_failure_is_terminalized() -> None:
         )
     assert captured.value.code == "AGENT_BUDGET_EXCEEDED"
     assert any(details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED" for _kind, details in events)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["reconcile", "generation_record", "provider_retry_record", "evidence_handling", "final_validation"],
+)
+@pytest.mark.parametrize("failure_kind", ["ordinary", "agent"])
+def test_gateway_all_post_interaction_failures_are_sanitized_and_terminalized(
+    operation: str, failure_kind: str,
+) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    secret = f"secret-{operation}-{failure_kind}"
+
+    def fail() -> None:
+        if failure_kind == "agent":
+            raise AgentError("AGENT_BUDGET_EXCEEDED")
+        raise RuntimeError(secret)
+
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    if operation == "provider_retry_record":
+        client = _Client([
+            anthropic.APITimeoutError(request),
+            _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
+        ])
+    elif operation == "evidence_handling":
+        client = _Client([
+            _Response(
+                "tool_use",
+                [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b1"]})],
+            ),
+        ])
+    else:
+        client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+
+    def record(kind: str, **details: Any) -> None:
+        if (operation == "generation_record" and kind == "generation") or (
+            operation == "provider_retry_record" and kind == "provider_retry"
+        ):
+            fail()
+        events.append((kind, details))
+
+    with pytest.raises(AgentError) as captured:
+        AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
+            system="authority",
+            user="brief",
+            read_evidence=(lambda *_: fail()) if operation == "evidence_handling" else (lambda *_: []),
+            validate=(lambda _value: fail()) if operation == "final_validation" else (lambda value: value),
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=(lambda *_: fail()) if operation == "reconcile" else (lambda *_: None),
+            record=record,
+            active_time=lambda _elapsed: None,
+            semaphore=threading.BoundedSemaphore(2),
+        )
+
+    expected = "AGENT_BUDGET_EXCEEDED" if failure_kind == "agent" else "AGENT_OUTPUT_INVALID"
+    assert captured.value.code == expected
+    assert any(details.get("terminal_code") == expected for _kind, details in events)
+    assert secret not in json.dumps(events)
+
+
+def test_gateway_post_interaction_fencing_remains_silent() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+
+    with pytest.raises(JobFencedError):
+        AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
+            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+            lease_check=lambda: None, reserve=lambda *_: None,
+            reconcile=lambda *_: (_ for _ in ()).throw(JobFencedError("lost after interaction")),
+            record=lambda kind, **details: events.append((kind, details)), active_time=lambda _elapsed: None,
+            semaphore=threading.BoundedSemaphore(2),
+        )
+
+    assert not any(kind == "terminal" for kind, _details in events)
 
 
 def test_gateway_discards_result_when_lease_is_lost_during_sdk_call() -> None:

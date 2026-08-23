@@ -47,13 +47,28 @@ CREATE TABLE IF NOT EXISTS source_sets (
 CREATE TABLE IF NOT EXISTS runs (
     id text PRIMARY KEY,
     case_id text NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-    status text NOT NULL CHECK (status IN ('queued', 'running', 'paused', 'succeeded', 'failed')),
+    status text NOT NULL CHECK (status IN ('planning', 'queued', 'running', 'paused', 'succeeded', 'failed')),
     plan jsonb NOT NULL,
     accepted_snapshot_id text,
     created_by text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     error jsonb
 );
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'runs'::regclass
+          AND conname = 'runs_status_check'
+          AND pg_get_constraintdef(oid) NOT LIKE '%planning%'
+    ) THEN
+        ALTER TABLE runs DROP CONSTRAINT runs_status_check;
+        ALTER TABLE runs ADD CONSTRAINT runs_status_check
+            CHECK (status IN ('planning', 'queued', 'running', 'paused', 'succeeded', 'failed'));
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS workflow_nodes (
     id text PRIMARY KEY,
