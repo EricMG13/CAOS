@@ -800,7 +800,7 @@ try {
   await caseContext.locator(".mono").first().waitFor({ state: "visible" });
   assert.ok(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    "topbar overflows horizontally at 390px",
+    "page overflows horizontally at 390px",
   );
   await page.setViewportSize({ width: 1280, height: 720 });
   await context.close();

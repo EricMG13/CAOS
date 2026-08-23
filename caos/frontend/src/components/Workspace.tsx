@@ -560,7 +560,7 @@ function RunStatus({ run, runLoading, runError, acceptRun, pendingAction, approv
 // Compile, watch and accept a route without leaving the analytical surface.
 function InlineRun({ caseId, run, runLoading, runError, startRun, acceptRun, pendingAction }: { caseId: string; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void; pendingAction: string }) {
   return <section className="panel span-12 inline-run" aria-label="Inline execution">
-    <div className="panel-header"><h2>Inline execution</h2><div className="top-actions"><RunStatusBadge run={run} /><Link className="button small" href={withQuery("/run-console", { case: caseId })}>Open Run Console</Link></div></div>
+    <div className="panel-header inline-run-header"><h2>Inline execution</h2><div className="inline-run-actions"><RunStatusBadge run={run} /><Link className="button small" href={withQuery("/run-console", { case: caseId })}>Open Run Console</Link></div></div>
     <div className="panel-body inline-run-body">
       <div className="inline-run-form"><RunForm caseId={caseId} startRun={startRun} pendingAction={pendingAction} /></div>
       <div className="inline-run-status"><RunStatus run={run} runLoading={runLoading} runError={runError} acceptRun={acceptRun} pendingAction={pendingAction} approvalSlot={<div className="callout warning" role="status" aria-live="polite"><strong>Plan approval required</strong><p>Approve the bounded research plan in Run Console before this route can continue.</p></div>} /></div>

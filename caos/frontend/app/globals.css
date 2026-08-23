@@ -280,3 +280,5 @@ dialog:not(.context-drawer) { width: min(680px, calc(100% - 32px)); max-width: 6
 @media (max-width: 520px) { .research-plan-facts { grid-template-columns: 1fr; gap: var(--space-xs); } .research-plan-facts dd + dt { margin-top: var(--space-sm); } }
 .inline-run-body { display: grid; gap: var(--space-lg); grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); align-items: start; }
 @media (max-width: 900px) { .inline-run-body { grid-template-columns: 1fr; } }
+.inline-run-header { flex-wrap: wrap; gap: var(--space-sm); padding-block: var(--space-xs); }
+.inline-run-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); min-width: 0; }
