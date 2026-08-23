@@ -156,7 +156,7 @@ def test_read_only_member_cannot_upgrade_a_run(tmp_path: Path) -> None:
         assert client.post(f"/api/runs/{run['id']}/upgrade", headers={"x-caos-role": "READER"}).status_code == 403
 
 
-def test_case_reader_authorization_blocks_privileged_writes_and_allows_case_writers(tmp_path: Path) -> None:
+def test_research_plan_approval_respects_case_writer_authorization_matrix(tmp_path: Path) -> None:
     settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
     store = MemoryStore()
     with TestClient(create_app(settings, store)) as client:
@@ -168,6 +168,7 @@ def test_case_reader_authorization_blocks_privileged_writes_and_allows_case_writ
             ("upload", f"/api/cases/{case_id}/sources", {"files": {"file": ("source.txt", b"source", "text/plain")}}),
             ("start", f"/api/cases/{case_id}/runs", {"json": {"pathway": "EARNINGS_UPDATE", "depth": "screen"}}),
             ("upgrade", f"/api/runs/{run['id']}/upgrade", {}),
+            ("approve research plan", f"/api/runs/{run['id']}/research-plan/approve", {"json": {"plan_hash": "sha256:" + "0" * 64}}),
             ("approve", f"/api/cases/{case_id}/reports/approve", {"json": {}}),
             ("accept", f"/api/runs/{run['id']}/accept", {}),
             ("mutate analysis", f"/api/cases/{case_id}/notes", {"json": {"body": "Reader write"}}),

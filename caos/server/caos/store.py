@@ -199,6 +199,27 @@ class MemoryStore:
             self.nodes[node_id].update(copy.deepcopy(changes))
             self.persist()
 
+    def pause_research_plan_fenced(self, run_id: str, attempt_token: str, node_id: str, research: dict[str, Any]) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            if self.nodes[node_id]["run_id"] != run_id:
+                raise JobFencedError("node does not belong to run")
+            prior_run = copy.deepcopy(self.runs[run_id])
+            prior_node = copy.deepcopy(self.nodes[node_id])
+            try:
+                self.nodes[node_id].update(status="pending", error=None)
+                self.runs[run_id].update(
+                    status="paused",
+                    current_node_id=None,
+                    error={"code": "PLAN_APPROVAL_REQUIRED", "message": "Approve the proposed research plan before execution."},
+                    research=copy.deepcopy(research),
+                )
+                self.persist()
+            except Exception:
+                self.runs[run_id] = prior_run
+                self.nodes[node_id] = prior_node
+                raise
+
     def claim_job(self, run_id: str, worker: str) -> str | None:
         with self.lock:
             job = self.jobs.get(run_id)
@@ -513,6 +534,18 @@ class PostgresStore(MemoryStore):
             if self.nodes[node_id]["run_id"] != run_id:
                 raise JobFencedError("node does not belong to run")
             self.nodes[node_id].update(copy.deepcopy(changes))
+
+    def pause_research_plan_fenced(self, run_id: str, attempt_token: str, node_id: str, research: dict[str, Any]) -> None:
+        with self._fenced_connection(run_id, attempt_token):
+            if self.nodes[node_id]["run_id"] != run_id:
+                raise JobFencedError("node does not belong to run")
+            self.nodes[node_id].update(status="pending", error=None)
+            self.runs[run_id].update(
+                status="paused",
+                current_node_id=None,
+                error={"code": "PLAN_APPROVAL_REQUIRED", "message": "Approve the proposed research plan before execution."},
+                research=copy.deepcopy(research),
+            )
 
     def emit_fenced(self, run_id: str, attempt_token: str, event: str, data: dict[str, Any]) -> None:
         with self._fenced_connection(run_id, attempt_token):

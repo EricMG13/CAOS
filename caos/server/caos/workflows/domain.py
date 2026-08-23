@@ -4,6 +4,7 @@ import copy
 import json
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Iterator
 
 from ..artifacts.domain import build_snapshot_payload
@@ -11,7 +12,7 @@ from ..config import Settings
 from ..contracts import Depth, digest
 from ..methodology.bundle import DeployVBundle
 from ..sources.domain import Vault, current_source_set
-from ..store import JobFencedError, MemoryStore
+from ..store import JobFencedError, MemoryStore, now_iso
 
 
 HEARTBEAT_INTERVAL_SECONDS = 20
@@ -37,6 +38,11 @@ class WorkflowError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class _PlanningPause(Exception):
+    research: dict[str, Any]
+
+
 class WorkflowRuntime:
     def __init__(self, store: MemoryStore, bundle: DeployVBundle, settings: Settings) -> None:
         self.store = store
@@ -52,10 +58,38 @@ class WorkflowRuntime:
     def close(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
-    def start_run(self, case_id: str, actor: str, pathway: str, depth: Depth, focus_questions: list[str], upgraded_from_run_id: str | None = None) -> dict[str, Any]:
+    def start_run(self, case_id: str, actor: str, pathway: str, depth: Depth, focus_questions: list[str], research_brief: dict[str, Any] | None = None, upgraded_from_run_id: str | None = None) -> dict[str, Any]:
         source_set = current_source_set(self.store, case_id)
         plan = self.bundle.compile(pathway, depth, source_set["id"] if source_set else None, focus_questions, source_set["version"] if source_set else None)
         run = self.store.create_run(case_id, actor, plan, [], upgraded_from_run_id)
+        if pathway == "DEEP_RESEARCH":
+            case = self.store.get_case(case_id)
+            if not case or research_brief is None:
+                raise WorkflowError("RESEARCH_BRIEF_REQUIRED")
+            brief = {
+                **copy.deepcopy(research_brief),
+                "scope_type": "issuer",
+                "scope_key": case_id.replace("_", "-"),
+                "subject_name": case["issuer"],
+                "source_mode": "supplied_only",
+                "research_budget": "standard",
+                "plan_approval": "required",
+            }
+            budget_limits = {"turns": 8, "evidence_reads": 12, "evidence_bytes": 1024 * 1024, "input_tokens": 100_000, "output_tokens": 8_000, "active_minutes": 3, "provider_retries": 1, "repairs": 1}
+            self.store.update_run(run["id"], research={
+                "brief": brief,
+                "phase": "planning",
+                "proposed_plan": None,
+                "proposed_plan_hash": None,
+                "approved_plan_hash": None,
+                "approved_by": None,
+                "approved_at": None,
+                "model": self.settings.anthropic_model,
+                "budget_limits": budget_limits,
+                "budget_used": {key: 0 for key in budget_limits},
+                "inflight_request_digest": None,
+                "attempts": [],
+            })
         node_records = []
         logical_ids: dict[str, str] = {}
         for plan_node in plan["nodes"]:
@@ -133,6 +167,16 @@ class WorkflowRuntime:
                             artifact = fenced_call(self.store.put_artifact_fenced, artifact_data)
                         except JobFencedError:
                             return
+                        except _PlanningPause as outcome:
+                            if lease_fence.lost.is_set():
+                                return
+                            try:
+                                fenced_call(self.store.pause_research_plan_fenced, node["id"], outcome.research)
+                                fenced_call(self.store.emit_fenced, "research.plan_ready", {"plan_hash": outcome.research["proposed_plan_hash"]})
+                                fenced_call(self.store.emit_fenced, "run.paused", {"code": "PLAN_APPROVAL_REQUIRED"})
+                            except JobFencedError:
+                                return
+                            return
                         except Exception as exc:
                             if lease_fence.lost.is_set():
                                 return
@@ -172,6 +216,17 @@ class WorkflowRuntime:
                 raise WorkflowError("UPSTREAM_ARTIFACT_MISSING")
             upstream_artifacts.append({"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]})
         input_fingerprint = digest({"plan": plan["plan_digest"], "module": node["module_id"], "source_set": source_set, "source_ids": source_ids, "upstream_artifacts": upstream_artifacts})
+        if node["module_id"] == "CP-DR":
+            research = copy.deepcopy(run.get("research"))
+            if not research:
+                raise WorkflowError("RESEARCH_BRIEF_REQUIRED")
+            if research.get("phase") == "planning":
+                proposed_plan, proposed_plan_hash = self.bundle.plan_research(research["brief"], source_set["id"], source_set["version"], upstream_artifacts)
+                research.update(phase="awaiting_approval", proposed_plan=proposed_plan, proposed_plan_hash=proposed_plan_hash)
+                raise _PlanningPause(research)
+            if research.get("phase") == "approved":
+                raise WorkflowError("CP_DR_RESEARCH_EXECUTION_UNAVAILABLE")
+            raise WorkflowError("CP_DR_RESEARCH_PHASE_INVALID")
         model_blocked = node["module_id"] in {"CP-2G", "CP-MODEL"}
         visual_kind = {
             "CP-L10": "variance_bridge",
@@ -225,6 +280,39 @@ class WorkflowRuntime:
             "created_at": run["created_at"],
         }
         return artifact
+
+    def approve_research_plan(self, run_id: str, actor: str, plan_hash: str) -> dict[str, Any]:
+        with self.store.lock:
+            run = self.store.runs.get(run_id)
+            if not run:
+                raise WorkflowError("RUN_NOT_FOUND")
+            research = run.get("research")
+            if not research or research.get("phase") != "awaiting_approval" or (run.get("error") or {}).get("code") != "PLAN_APPROVAL_REQUIRED":
+                raise WorkflowError("PLAN_APPROVAL_NOT_AVAILABLE")
+            pending_hash = research.get("proposed_plan_hash")
+            if pending_hash != f"sha256:{digest(research.get('proposed_plan'))}" or plan_hash != pending_hash:
+                raise WorkflowError("PLAN_HASH_MISMATCH")
+            current = self.store.source_sets.get(run["case_id"])
+            pinned = research["proposed_plan"]["source_set"]
+            if not current or (current["id"], current["version"]) != (pinned["id"], pinned["version"]):
+                raise WorkflowError("SOURCE_SET_CHANGED")
+            prior_run = copy.deepcopy(run)
+            audit_start = len(self.store.audit)
+            research.update(approved_plan_hash=plan_hash, approved_by=actor, approved_at=now_iso(), phase="approved")
+            run.update(status="queued", error=None)
+            self.store.audit_event("research.plan_approved", actor, case_id=run["case_id"], run_id=run_id, plan_hash=plan_hash)
+            try:
+                self.store.persist()
+            except Exception:
+                self.store.runs[run_id] = prior_run
+                del self.store.audit[audit_start:]
+                raise
+        self.store.emit(run_id, "research.plan_approved", {"plan_hash": plan_hash, "approved_by": actor})
+        if self.settings.environment != "production":
+            future = self.executor.submit(self._execute, run_id, actor)
+            with self._futures_lock:
+                self._futures[run_id] = future
+        return self.store.get_run(run_id) or copy.deepcopy(run)
 
     def accept_run(self, case_id: str, run_id: str, actor: str) -> dict[str, Any]:
         with self.store.lock:

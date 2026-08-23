@@ -28,6 +28,7 @@ from .artifacts.relative_value import compare_universe, save_universe
 from .config import Settings
 from .contracts import (
     DESTINATIONS,
+    ApproveResearchPlanRequest,
     ApproveRequest,
     AssumptionRequest,
     ConfirmDraftRequest,
@@ -233,7 +234,8 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         who = identity(request)
         require_case(store, case_id, who, write=True)
         try:
-            return runtime.start_run(case_id, who.subject, payload.pathway, payload.depth, payload.focus_questions)
+            research_brief = payload.research_brief.model_dump(mode="json") if payload.research_brief else None
+            return runtime.start_run(case_id, who.subject, payload.pathway, payload.depth, payload.focus_questions, research_brief)
         except MethodologyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -245,7 +247,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         if previous["plan"]["depth"] != Depth.SCREEN.value:
             raise HTTPException(status_code=409, detail="only Screen runs can be upgraded")
         try:
-            return runtime.start_run(previous["case_id"], who.subject, previous["plan"]["pathway"], Depth.FULL, previous["plan"].get("focus_questions", []), previous["id"])
+            return runtime.start_run(previous["case_id"], who.subject, previous["plan"]["pathway"], Depth.FULL, previous["plan"].get("focus_questions", []), upgraded_from_run_id=previous["id"])
         except MethodologyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -261,6 +263,16 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except ValueError:
             cursor = 0
         return StreamingResponse(runtime.stream_events(run_id, cursor), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/runs/{run_id}/research-plan/approve")
+    def approve_research_plan(run_id: str, payload: ApproveResearchPlanRequest, request: Request) -> dict[str, Any]:
+        who = identity(request)
+        run = get_run_or_404(run_id, who)
+        require_case(store, run["case_id"], who, write=True)
+        try:
+            return runtime.approve_research_plan(run_id, who.subject, payload.plan_hash)
+        except WorkflowError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runs/{run_id}/accept")
     def accept_run(run_id: str, request: Request) -> dict[str, Any]:

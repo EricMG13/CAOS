@@ -3664,3 +3664,22 @@ Decision: accept the implementation plan subject to its ordered exit gates. The
 authorization, lease/fencing, canonical-artifact, ZDR, 20-case shadow, and
 rollback gates are blocking; passing later aggregate tests cannot waive an
 earlier critical failure.
+
+## 2026-08-23 — Hybrid CP-DR Phase 3 planning and approval critic pass
+
+Decision under review: persist one deterministic CP-DR plan on the existing run,
+pause after CP-0, and resume the same run only after exact-hash case-writer
+approval.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-051 | Methodology-authority reviewer | Planning before CP-0 would approve a plan whose hash is not bound to required upstream evidence identity. | Critical | Resolved | CP-DR resolves every dependency artifact first; the complete plan and hash include the CP-0 artifact ID and digest, and missing CP-0 fails before planning. |
+| RT-2026-08-23-052 | Governance reviewer | Comparing only the submitted hash to a stored hash would approve a plan mutated after hashing. | Critical | Resolved | Approval recomputes the canonical SHA-256 digest of the current stored full plan, requires it to equal the pending hash, then compares the caller's exact hash. |
+| RT-2026-08-23-053 | Persistence reviewer | Separate node and run writes could expose a running CP-DR node on a paused run, or emit approval events for state that was never durable. | Critical | Resolved | One fenced store helper moves the node back to pending and the run to `awaiting_approval` in one persistence boundary; memory rolls back on failure and PostgreSQL reuses the fenced transaction. Plan-ready and paused events emit only afterward. |
+| RT-2026-08-23-054 | Rollback reviewer | Approval or planning failure could fall through to the generic CP-DR artifact and present placeholder text as completed research. | Critical | Resolved | Planning raises a typed pause outcome handled before generic failure; approved execution before Phase 4 fails with `CP_DR_RESEARCH_EXECUTION_UNAVAILABLE`, and no CP-DR artifact is persisted. |
+| RT-2026-08-23-055 | Authorization reviewer | Requiring a report-approver role would deny analysts, while checking only global role would let stored readers approve. | High | Resolved | The route uses the shared corrected case-write guard. Cross-case callers and stored readers are denied; every stored/global ANALYST, APPROVER, and ADMIN pairing is exercised. |
+| RT-2026-08-23-056 | Concurrency reviewer | A second API process could version the source set between request refresh and the state-envelope lock, causing the current single-process validation to approve stale identity. | High | Accepted existing topology ceiling | The deployed topology and current scale gate use one API process; within it, the store lock covers source comparison, run/audit mutation, and persistence. Horizontal API writers remain an existing external gate and must move source validation inside a database-locked approval primitive before scale-out. |
+
+Decision: accept Phase 3 for the current single-API-process topology. Planning
+and approval are exact-hash, source/version-bound, CP-0-bound, rollback-tested,
+and durable across PostgreSQL reloads; provider execution remains unavailable.

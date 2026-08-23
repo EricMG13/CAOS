@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from caos.config import Settings
+from caos.methodology.bundle import DeployVBundle
 from caos.store import JobFencedError, MemoryStore, PostgresStore
 from caos.workflows import domain as workflow_domain
 from caos.workflows.domain import WorkflowRuntime, _LeaseFence
@@ -464,3 +465,22 @@ def test_postgres_lease_renewal_uses_database_time_after_row_lock() -> None:
         with connection.cursor() as cursor:
             cursor.execute("SELECT lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
             assert cursor.fetchone() == (True,)
+
+
+def test_memory_research_plan_pause_and_exact_approval_smoke() -> None:
+    store = MemoryStore()
+    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), Settings(environment="production", storage_dir=Path("/tmp/caos-plan-smoke"), deploy_v_root=DEPLOY_V))
+    case = store.create_case("Plan smoke", "Issuer", "Testing", "analyst")
+    store.sources["src_plan"] = {"id": "src_plan", "case_id": case["id"], "withdrawn": False}
+    store.register_source_set({"id": "set_plan", "case_id": case["id"], "version": 1, "source_ids": ["src_plan"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
+    brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite first-lien risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
+    try:
+        run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
+        runtime._execute(run["id"], "analyst")
+        paused = store.get_run(run["id"])
+        assert paused is not None and paused["status"] == "paused"
+        assert paused["research"]["phase"] == "awaiting_approval"
+        approved = runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
+        assert approved["id"] == run["id"] and approved["research"]["phase"] == "approved"
+    finally:
+        runtime.close()

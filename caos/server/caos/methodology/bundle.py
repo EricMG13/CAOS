@@ -101,6 +101,63 @@ class DeployVBundle:
         plan["plan_digest"] = digest(plan)
         return plan
 
+    def plan_research(self, brief: dict[str, Any], source_set_id: str, source_set_version: int, upstream_artifacts: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+        topics = list(brief.get("must_answer") or [brief["research_question"]])
+        lane_count = min(3, len(topics))
+        chunk_size = (len(topics) + lane_count - 1) // lane_count
+        subject = brief.get("subject_name", "the issuer")
+        workstreams = []
+        for index in range(0, len(topics), chunk_size):
+            assigned = topics[index : index + chunk_size]
+            workstreams.append({
+                "id": f"WS-{len(workstreams) + 1}",
+                "kind": "topical",
+                "question": " / ".join(assigned),
+                "assigned_questions": assigned,
+                "perspective": "Buy-side credit analyst",
+                "hypothesis": f"The supplied evidence can resolve the defined credit question for {subject}.",
+                "evidence_needs": assigned,
+                "source_classes": ["supplied_case_sources"],
+                "disconfirming_test": "Identify supplied evidence that contradicts the working credit conclusion.",
+                "completion_test": "Answer every assigned question with source locators or record the evidence gap.",
+                "effort_cap": "Within the fixed standard research budget.",
+            })
+        workstreams.extend([
+            {
+                "id": f"WS-{len(workstreams) + 1}",
+                "kind": "synthesis",
+                "question": f"What cross-workstream credit conclusion follows for {subject}?",
+                "perspective": "Cross-workstream synthesis",
+                "hypothesis": "The workstreams support one decision-useful conclusion without exceeding the approved scope.",
+                "evidence_needs": ["Completed topical workstreams and their cited supplied evidence."],
+                "source_classes": ["supplied_case_sources"],
+                "disconfirming_test": "Reconcile contradictions and refuse a conclusion where evidence remains insufficient.",
+                "completion_test": "State the direct answer, material disagreement, gaps, and decision implications.",
+                "effort_cap": "One synthesis pass within the fixed standard research budget.",
+            },
+            {
+                "id": f"WS-{len(workstreams) + 2}",
+                "kind": "adversarial",
+                "question": f"What would make the proposed credit conclusion for {subject} wrong?",
+                "perspective": "Adversarial credit reviewer",
+                "hypothesis": "A plausible downside or contrary reading can be tested from the supplied evidence.",
+                "evidence_needs": ["Contrary facts, missing periods, perimeter conflicts, and excluded-scope checks."],
+                "source_classes": ["supplied_case_sources"],
+                "disconfirming_test": "Attempt to overturn each material conclusion with the strongest supplied counter-evidence.",
+                "completion_test": "Record surviving objections, rebuttals, and unresolved downside evidence gaps.",
+                "effort_cap": "One adversarial pass within the fixed standard research budget.",
+            },
+        ])
+        plan = {
+            "methodology_build_id": self.build_id,
+            "brief_digest": digest(brief),
+            "source_set": {"id": source_set_id, "version": source_set_version},
+            "upstream_artifacts": upstream_artifacts,
+            "scope": {"type": brief.get("scope_type"), "key": brief.get("scope_key"), "source_mode": brief.get("source_mode")},
+            "workstreams": workstreams,
+        }
+        return plan, f"sha256:{digest(plan)}"
+
     def validate_payload(self, payload: dict[str, Any], module_id: str) -> dict[str, Any]:
         required = {"module_id", "schema_version", "status", "summary", "evidence_refs", "lineage", "narrative", "authority", "confidence", "provenance"}
         missing = sorted(required - payload.keys())
