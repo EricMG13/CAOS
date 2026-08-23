@@ -9,7 +9,12 @@ const raceIssuer = `Second-${fixtureSuffix}`;
 const primaryLabel = `${primaryIssuer} / Workbench QA`;
 const raceLabel = `${raceIssuer} / Authority Race`;
 const maxDomContentLoadedMs = Number(process.env.CAOS_MAX_DCL_MS || 250);
-const maxFirstContentfulPaintMs = Number(process.env.CAOS_MAX_FCP_MS || 300);
+// Observed FCP on shared CI runners across 8 runs: 188, 200, 212, 224, 232,
+// 252, 272, 332ms. Two of those (272 and 332) are the same commit, so ~60ms
+// of the spread is runner noise alone. A 300ms budget sat inside that noise
+// band and failed on load, not on regression; 400ms clears the worst
+// observed sample while still catching anything that adds ~150ms.
+const maxFirstContentfulPaintMs = Number(process.env.CAOS_MAX_FCP_MS || 400);
 assert.ok(Number.isFinite(maxDomContentLoadedMs) && maxDomContentLoadedMs > 0, "CAOS_MAX_DCL_MS must be a positive finite number");
 assert.ok(Number.isFinite(maxFirstContentfulPaintMs) && maxFirstContentfulPaintMs > 0, "CAOS_MAX_FCP_MS must be a positive finite number");
 const identityHeaders = process.env.CAOS_EDGE_SECRET ? {
@@ -97,6 +102,17 @@ const errors = [];
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: identityHeaders });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    window.__caosUrlWrites = [];
+    for (const method of ["pushState", "replaceState"]) {
+      const original = history[method].bind(history);
+      history[method] = (...args) => {
+        const result = original(...args);
+        window.__caosUrlWrites.push(location.search);
+        return result;
+      };
+    }
+  });
   let caseRequests = 0;
   let authorityRequests = 0;
   let expectedAuthorityFailureURL = "";
@@ -242,6 +258,15 @@ try {
     return url.searchParams.get("case") === expectedCaseId && !url.searchParams.has("run");
   }, idleCase.id);
   await page.getByText("No current execution. Select a purpose and depth to create an immutable plan.", { exact: true }).waitFor();
+  // The URL settling correctly is not enough: a stale route replay can re-attach the
+  // previous issuer's run and then self-correct, which is still a wrong read.
+  const boundaryUrlWrites = await page.evaluate(([boundaryCaseId, staleRunId]) => {
+    const writes = window.__caosUrlWrites || [];
+    const switchedAt = writes.findIndex((search) => search.includes(`case=${boundaryCaseId}`));
+    return { switchedAt, reattached: switchedAt === -1 ? [] : writes.slice(switchedAt + 1).filter((search) => search.includes(`run=${staleRunId}`)) };
+  }, [idleCase.id, run.id]);
+  assert.notEqual(boundaryUrlWrites.switchedAt, -1, "the case boundary was never written to the URL, so the stale-run check did not run");
+  assert.deepEqual(boundaryUrlWrites.reattached, [], "a stale run was re-attached to the URL after the case boundary");
   assert.equal(await page.getByRole("status", { name: "Loading" }).count(), 0, "case switch left the run console permanently loading");
   assert.equal(await page.getByRole("button", { name: "Accept analytical snapshot" }).count(), 0, "stale run data survived the case boundary");
   await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
