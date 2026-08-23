@@ -3684,6 +3684,25 @@ Decision: accept Phase 3 for the current single-API-process topology. Planning
 and approval are exact-hash, source/version-bound, CP-0-bound, rollback-tested,
 and durable across PostgreSQL reloads; provider execution remains unavailable.
 
+## 2026-08-23 — Frontend hierarchy, recovery, and Report Studio split critic pass
+
+Decision under review: reshape the existing frontend around one dominant work
+region, split Report Studio into a dark editor plus light frozen proof, and make
+governance blockages actionable without weakening authority.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-057 | Publishing-integrity reviewer | A live paper preview can be mistaken for the governed frozen report or drift from the digest being approved. | Critical | Resolved in design | Keep the light pane read-only and frozen-output-only. Draft authoring remains on the dark desk; the proof shows status, digests, exports, and frozen Markdown only after the server creates the report. |
+| RT-2026-08-23-058 | Authority reviewer | Disabling Freeze from shell authority alone can become stale and accidentally replace the backend gate. | Critical | Resolved in design | Use the accepted snapshot only as a client preflight and routed explanation. The existing freeze endpoint remains authoritative; a raced `SNAPSHOT_REQUIRED` response is translated into actionable copy while the local draft remains intact. |
+| RT-2026-08-23-059 | Evidence-governance reviewer | A convenient evidence picker could expose cross-case IDs or silently omit manually supplied governed evidence. | Critical | Resolved in design | Populate choices only from the selected case's source list and accepted snapshot artifacts, validate selected IDs, and retain explicit paste-to-add for expert workflows. Never query a global evidence index. |
+| RT-2026-08-23-060 | Accessibility reviewer | Restoring hidden Analyse tools on narrow screens can create an unlabelled horizontal maze and undersized controls. | High | Resolved in design | Keep workflow and tool groups semantically separate, preserve visible active states, retain horizontal scrolling with an explicit edge/scroll affordance, and enforce 44px targets for coarse pointers while keeping compact desktop density. |
+| RT-2026-08-23-061 | QA-governance reviewer | Adding a PM/QA presentation switch without governed coverage data would create a cosmetic preference that implies capabilities the product does not have. | High | Accepted as a backend gate | Do not fabricate role-specific posture or coverage metrics. Improve the existing QA status drawer and recovery route only; a real Analyst/PM/QA view remains blocked on a governed summary contract. |
+| RT-2026-08-23-062 | Regression reviewer | `Workspace`, `renderDestination`, `ReportView`, and `CommandView` sit on high/critical GitNexus paths, so a local hierarchy edit can regress unrelated case, RV, admin, or snapshot flows. | High | Resolved by verification scope | Preserve component boundaries and API contracts, make the smallest prop additions, and require lint, build, workbench smoke, production inventory/report journey coverage where feasible, axe, and GitNexus `detect_changes` before completion. |
+
+Decision: accept the minimal split-and-guidance implementation. It changes
+presentation and preflight behavior without creating a second report model,
+weakening backend authority, or fabricating unavailable QA data.
+
 ## 2026-08-23 — Hybrid CP-DR Phase 4 bounded execution critic pass
 
 Decision under review: execute the already approved issuer-only CP-DR plan

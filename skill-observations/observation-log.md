@@ -210,3 +210,12 @@ references, refuses unresolved destination collisions, preserves disabled-skill
 state in an ignored but recoverable directory, backs up global instructions,
 and notes that newly installed Codex skills become discoverable on the next
 turn.
+
+## 2026-08-23 — impeccable — OPEN
+
+The detector's broad directory scan includes generated Next.js `out/` assets,
+then reports compiled `next/font` fallback names and bundled font sizes as
+authored design-system violations. The same scan against `app/` and `src/` was
+clean. Exclude standard generated directories by default (including `out/` and
+`.next/`), or label generated findings separately so the audit does not require
+manual source-only reruns to distinguish real issues from build artifacts.

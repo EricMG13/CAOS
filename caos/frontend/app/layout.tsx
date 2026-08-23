@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Suspense } from "react";
 import Workspace from "../src/components/Workspace";
@@ -10,6 +10,13 @@ const mono = JetBrains_Mono({ subsets: ["latin"], display: "swap", variable: "--
 export const metadata: Metadata = {
   title: "CAOS — Credit Operating System",
   description: "Evidence-forward institutional credit analysis",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0a0a0f",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

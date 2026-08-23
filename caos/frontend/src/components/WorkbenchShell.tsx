@@ -268,12 +268,12 @@ export default function WorkbenchShell({
               {cases.map((item) => <option key={item.id} value={item.id}>{item.issuer} — {item.name}</option>)}
             </select>
             <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{!selectedCase ? "Sources" : authorityPending ? "Sources loading" : authorityStatus === "error" || selectedCase.source_count == null ? "Sources unavailable" : `${selectedCase.source_count} sources`}</button>
-            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA unavailable</button>
+            <button className="button small" type="button" disabled={!selectedCase} aria-label="QA unavailable — open QA status" aria-controls="context-drawer" aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA status</button>
             <button ref={triggerRef} className="button small" type="button" aria-label="Open command palette" onClick={openPalette}>Command <span className="shortcut">⌘K</span></button>
           </div>
         </div>
-        <main className={active === "Report Studio" ? "content paper" : "content"} id="main-content">
-          <div className="page-title"><div><div className="eyebrow">{active === "Cases" ? "INTAKE / CASE CONTEXT" : `CAOS / ${active}`}</div><h1>{active}</h1></div>{error && <div className="error" role="alert" aria-live="assertive">{error}</div>}</div>
+        <main className={`content${active === "Report Studio" ? " report-content" : ""}`} id="main-content">
+          <div className="page-title"><h1>{active}</h1>{error && <div className="error" role="alert" aria-live="assertive">{error}</div>}</div>
           {children}
         </main>
       </section>
@@ -301,7 +301,7 @@ export default function WorkbenchShell({
           />
         </div>
         <div ref={resultRef} id="command-results" role="listbox">
-          {caseItems.map((item) => {
+          {caseItems.length > 0 && <div role="group" aria-labelledby="palette-cases-label"><div className="palette-group-label" id="palette-cases-label">Cases</div>{caseItems.map((item) => {
             const index = resultIndex++;
             return <button
               id={`command-result-${index}`}
@@ -313,8 +313,8 @@ export default function WorkbenchShell({
               key={item.id}
               onClick={() => { onCaseChange(item.id); closePalette(); }}
             >{item.issuer} / {item.name}<span className="muted">{item.sector}</span></button>;
-          })}
-          {workflowItems.map((workflow) => {
+          })}</div>}
+          {workflowItems.length > 0 && <div role="group" aria-labelledby="palette-workflows-label"><div className="palette-group-label" id="palette-workflows-label">Workflows</div>{workflowItems.map((workflow) => {
             const index = resultIndex++;
             const href = workflow.id === "overview" ? overviewHref : workflow.href;
             return <Link
@@ -327,8 +327,8 @@ export default function WorkbenchShell({
               href={workflowHref(href)}
               onClick={closePalette}
             >Open {workflow.label}</Link>;
-          })}
-          {toolItems.map((tool) => {
+          })}</div>}
+          {toolItems.length > 0 && <div role="group" aria-labelledby="palette-tools-label"><div className="palette-group-label" id="palette-tools-label">Tools</div>{toolItems.map((tool) => {
             const index = resultIndex++;
             return <Link
               id={`command-result-${index}`}
@@ -340,7 +340,7 @@ export default function WorkbenchShell({
               href={workflowHref(tool.href, tool.destination)}
               onClick={closePalette}
             >Open {tool.label}</Link>;
-          })}
+          })}</div>}
           {exactEvidenceKind && (() => {
             const index = resultIndex++;
             return <Link

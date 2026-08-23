@@ -419,6 +419,7 @@ try {
   releaseAcceptance();
   const acceptanceResponse = await delayedAcceptResponse;
   assert.equal(acceptanceResponse.status(), 200);
+  const secondAccepted = await acceptanceResponse.json();
   await acceptanceResponse.finished();
   await page.evaluate(() => new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -441,6 +442,46 @@ try {
   await assert.doesNotReject(() => qaTrigger.evaluate((element) => {
     if (document.activeElement !== element) throw new Error("focus did not return to the QA trigger");
   }));
+
+  await page.evaluate((caseId) => window.sessionStorage.setItem(`caos-report-draft:${caseId}`, JSON.stringify({ evidenceIds: 17 })), caseRecord.id);
+  await page.goto(`${baseURL}/report-studio/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: "Compose" }).waitFor();
+  await page.getByRole("heading", { name: "Paper proof" }).waitFor();
+  assert.equal(await page.locator(".evidence-option", { hasText: "earnings.txt" }).count(), 1, "Report Studio omitted a case source from the evidence picker");
+  assert.equal(await page.evaluate((caseId) => window.sessionStorage.getItem(`caos-report-draft:${caseId}`), caseRecord.id), null, "Report Studio retained an invalid local draft");
+
+  let reportInputPayload;
+  let freezePayload;
+  const reportInputsPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/report-inputs`;
+  const reportFreezePath = (url) => url.pathname === `/api/cases/${caseRecord.id}/reports/freeze`;
+  await page.route(reportInputsPath, async (route) => {
+    reportInputPayload = route.request().postDataJSON();
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ thesis: { version: 101 }, recommendations: { version: 202 } }) });
+  });
+  await page.route(reportFreezePath, async (route) => {
+    freezePayload = route.request().postDataJSON();
+    await route.fulfill({ status: 201, contentType: "application/json", body: "{}" });
+  });
+  await page.getByRole("textbox", { name: "Core thesis" }).fill("Defensible test thesis");
+  await page.getByRole("textbox", { name: "Primary instrument" }).fill("Northstar 1L 2029");
+  await page.getByRole("textbox", { name: "Evidence IDs" }).fill(secondAccepted.id);
+  await page.getByRole("button", { name: "Freeze report snapshot" }).click();
+  await page.getByRole("status").getByText("Frozen report pending Approver ratification.").waitFor();
+  assert.deepEqual(reportInputPayload.thesis.evidence_ids, [secondAccepted.id], "a valid case snapshot outside the visible picker was rejected client-side");
+  assert.deepEqual(freezePayload, { thesis_version: 101, recommendation_version: 202, include_model: false });
+  await page.unroute(reportInputsPath);
+  await page.unroute(reportFreezePath);
+
+  const reportSourcesPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/sources`;
+  await page.route(reportSourcesPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: "not-json" }));
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("alert").getByText(/Evidence inventory unavailable/).waitFor();
+  assert.equal(await page.getByRole("textbox", { name: "Core thesis" }).count(), 1, "evidence inventory failure blocked the report editor");
+  await page.unroute(reportSourcesPath);
+
+  await page.goto(`${baseURL}/report-studio/?case=${raceCase.id}`, { waitUntil: "networkidle" });
+  await page.getByText("Freeze unavailable", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Freeze report snapshot" }).isDisabled(), true, "Report Studio allowed freeze without an accepted snapshot");
 
   await page.goto(`${baseURL}/sources/?case=${caseRecord.id}&artifact=${artifact.id}`, { waitUntil: "networkidle" });
   const matching = page.locator(`[data-evidence-id="${source.id}"]`);
