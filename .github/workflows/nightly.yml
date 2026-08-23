@@ -13,6 +13,10 @@ jobs:
     name: Nightly — backend and frontend regression
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      ANTHROPIC_API_KEY: ""
+      GEMINI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,12 +34,10 @@ jobs:
           pip install -r caos/server/requirements-dev.txt
           npm ci --prefix caos/frontend
       - name: Backend regression
-        env:
-          ANTHROPIC_API_KEY: ""
         run: python -m pytest caos/tests -q -W always
-      - name: Focused lint and route security
+      - name: Full lint and route security
         run: |
-          ruff check --select F caos/server/caos caos/tests --exclude caos/server/caos/methodology/vendor
+          python -m ruff check --config ruff.toml caos/server caos/tests --exclude caos/server/caos/methodology/vendor
           python run_sec_audit.py
       - name: Frontend regression
         run: |

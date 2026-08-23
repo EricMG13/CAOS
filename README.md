@@ -80,13 +80,17 @@ npm run build
 
 ## Deploy
 
-Production fails closed unless you provide PostgreSQL, edge, session, OIDC, and ClamAV configuration. Start from [`caos/.env.example`](caos/.env.example), replace every placeholder, and add the provider-specific `OAUTH2_PROXY_OIDC_ISSUER_URL`.
+Production fails closed unless you provide PostgreSQL, edge, session, OIDC, and ClamAV configuration. Start from [`caos/.env.example`](caos/.env.example) and replace every placeholder, including the provider-specific `OAUTH2_PROXY_OIDC_ISSUER_URL`.
 
 Run [`caos/server/migrate.py`](caos/server/migrate.py) against the deployment database before starting the API and worker. The supported stack is defined in [`caos/deploy/docker-compose.yml`](caos/deploy/docker-compose.yml).
 
 ## Known boundary
 
-The official CP-MODEL workbook remains blocked until signed Deploy V authority resolves the CP-2B and CP-2A artifact-owner mismatch. CAOS does not label a provisional workbook as an official model output.
+The official CP-MODEL workbook remains blocked by a signed-authority mismatch: its
+contract still requires CP-2B as an upstream owner while the signed module
+catalog marks CP-2B as absorbed by CP-2A. Only a new signed Deploy V bundle (or
+signed reconciliation) can unblock that path; CAOS does not label a provisional
+workbook as an official model output.
 
 ## Product principles
 

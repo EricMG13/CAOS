@@ -33,7 +33,7 @@ jobs:
       - run: npm run build
 
   server:
-    name: Server — tests and focused lint
+    name: Server — tests and full lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -47,15 +47,17 @@ jobs:
           cache: pip
           cache-dependency-path: caos/server/requirements-dev.txt
       - run: pip install -r caos/server/requirements-dev.txt
-      - name: Focused lint
+      - name: Full lint
         run: >-
-          ruff check --select F caos/server/caos caos/tests
+          python -m ruff check --config ruff.toml caos/server caos/tests
           --exclude caos/server/caos/methodology/vendor
       - name: Route security audit
         run: python run_sec_audit.py
       - name: Backend regression suite
         env:
           ANTHROPIC_API_KEY: ""
+          GEMINI_API_KEY: ""
+          OPENROUTER_API_KEY: ""
         run: python -m pytest caos/tests -q -W always
 
   browser:
