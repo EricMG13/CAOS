@@ -3619,3 +3619,26 @@ both role journeys, all 16 loaded route combinations, all 46 controlled states,
 54 rendered axe combinations, 16 narrow-touch combinations, vault hashes,
 secret scan, and staged load/recovery gate pass. Real IdP exchange, signed model
 authority, and horizontal multi-writer scale remain the existing external gates.
+
+## 2026-08-23 — Hybrid CP-DR agent runtime critic pass
+
+Decision under review: keep the governed Deploy V DAG as the sole supervisor and
+enable one bounded, source-bound CP-DR specialist agent inside its existing node.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-032 | Methodology-authority reviewer | CP-DR contains conflicting CP-0 language; treating CP-0 as optional could break the runtime catalog and invocation envelope. | Critical | Resolved in design | The pilot follows the stricter catalog/runtime/envelope contract and requires an accepted CP-0 artifact until signed authority resolves the conflict. |
+| RT-2026-08-23-033 | Research-governance reviewer | Starting research immediately would fabricate plan approval because the analyst never saw the generated 3–5 workstreams or their disconfirming tests. | Critical | Resolved in design | CP-DR generates the plan without substantive evidence access, pauses the run with the exact plan hash, and resumes only after case-authorized analyst approval. Scope changes require a new run. |
+| RT-2026-08-23-034 | Data-governance reviewer | Confidential credit documents could leave the deployment under an unapproved retention or processing arrangement. | Critical | Resolved as activation gate | Provider activation requires an approved commercial processing arrangement and ZDR configuration. The key exists only in the worker; Phase 1 excludes Files, remote MCP, managed agents, web, shell, and code execution. |
+| RT-2026-08-23-035 | Prompt-injection reviewer | Document instructions could widen tools, change methodology authority, or induce cross-case reads. | Critical | Resolved in design | Source text remains lower-authority untrusted data. One typed read-only evidence tool validates case, pinned source set, source and block IDs, and cumulative budgets; the model cannot supply authority fields. |
+| RT-2026-08-23-036 | Analytical-contract reviewer | The host's shallow typed payload and Markdown renderer do not match the vendored CP-DR canonical schema, so schema-valid provider JSON could still become a non-canonical artifact. | Critical | Resolved as Phase 0 blocker | Reconcile the CP-DR payload, YAML envelope, ordered sections, citation rules, and vendored validators before any provider-backed artifact can be persisted or accepted. |
+| RT-2026-08-23-037 | Concurrency reviewer | The current 60-second lease can expire during a normal provider call, allowing stale events or paid work that cannot persist. | High | Resolved in design | Add fenced lease renewal and fenced lifecycle events. Loss of ownership stops tools, discards the result, and emits no stale terminal event. |
+| RT-2026-08-23-038 | Cost-abuse reviewer | SDK retries, repair loops, and repeated evidence reads could multiply spend or exhaust context without a product-visible limit. | High | Resolved in design | Disable SDK retries; allow one host retry and one validation repair inside fixed turn, tool, evidence, token, wall-time, and concurrency ceilings. Record usage for every attempt. |
+| RT-2026-08-23-039 | Persistence reviewer | Raw transcripts, source excerpts, or token streaming would bloat the revisioned state envelope and expand sensitive-data retention. | High | Resolved in design | Persist only operational metadata, digests, referenced block IDs, and final canonical output. Store no hidden reasoning or duplicate source text; keep events coarse. |
+| RT-2026-08-23-040 | Quality reviewer | A technically valid research artifact can still be generic, weakly cited, or worse than the existing path. | High | Resolved as rollout gate | A 20-case blinded evaluation requires full material-claim citation coverage, zero unsupported material claims, 19/20 completion, bounded latency, complete telemetry, and 80% of outputs at 4/5 or better and above baseline. |
+| RT-2026-08-23-041 | Rollback reviewer | Falling back to the current generic CP-DR summary after provider failure would present placeholder prose as successful research. | High | Resolved in design | Provider and validation failures are explicit. Disabling or rolling back CP-DR makes the pathway visibly unavailable; it never substitutes the generic summary. |
+| RT-2026-08-23-042 | Complexity reviewer | Adding a generic agent framework or provider abstraction before one module proves value would create more architecture than product capability. | Medium | Resolved in design | Extend the existing Anthropic gateway directly and use a static CP-DR allowlist. Every provider or module expansion requires a separate design and evaluation. |
+
+Decision: accept the bounded CP-DR hybrid design subject to its Phase 0 authority
+reconciliation, analyst plan approval, provider-data activation gate, and shadow
+evaluation thresholds. No other module or provider is approved by this pass.
