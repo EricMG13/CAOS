@@ -229,8 +229,19 @@ class MemoryStore:
                 return None
             token = self._id("attempt")
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60, "budget_reserved": 1}
+            self._recover_running_nodes_locked(run_id)
             self.persist()
             return token
+
+    def _recover_running_nodes_locked(self, run_id: str) -> None:
+        run = self.runs.get(run_id)
+        if not run:
+            return
+        for node_id in run.get("node_ids", []):
+            node = self.nodes.get(node_id)
+            if node and node.get("status") == "running":
+                node.update(status="pending", artifact_id=None, error=None)
+        run["current_node_id"] = None
 
     def renew_job(self, run_id: str, attempt_token: str) -> bool:
         with self.lock:
@@ -318,6 +329,52 @@ class MemoryStore:
             self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
             self.persist()
             return copy.deepcopy(artifact)
+
+    def artifact_for_fingerprint(self, run_id: str, module_id: str, input_fingerprint: str) -> dict[str, Any] | None:
+        with self.lock:
+            existing = next(
+                (
+                    value
+                    for value in self.artifacts.values()
+                    if value.get("run_id") == run_id
+                    and value.get("module_id") == module_id
+                    and value.get("input_fingerprint") == input_fingerprint
+                ),
+                None,
+            )
+            return copy.deepcopy(existing) if existing else None
+
+    def complete_node_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        node_id: str,
+        artifact: dict[str, Any],
+        research: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            node = self.nodes[node_id]
+            if node.get("run_id") != run_id or artifact.get("run_id") != run_id or artifact.get("module_id") != node.get("module_id"):
+                raise JobFencedError("artifact does not match the fenced node")
+            prior_artifacts = copy.deepcopy(self.artifacts)
+            prior_node = copy.deepcopy(node)
+            prior_run = copy.deepcopy(self.runs[run_id])
+            try:
+                completed = self.artifact_for_fingerprint(run_id, node["module_id"], artifact["input_fingerprint"])
+                if completed is None:
+                    self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
+                    completed = copy.deepcopy(artifact)
+                node.update(status="succeeded", artifact_id=completed["id"], error=None)
+                if research is not None:
+                    self.runs[run_id]["research"] = copy.deepcopy(research)
+                self.persist()
+                return completed
+            except Exception:
+                self.artifacts = prior_artifacts
+                self.nodes[node_id] = prior_node
+                self.runs[run_id] = prior_run
+                raise
 
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
         with self.lock:
@@ -485,6 +542,8 @@ class PostgresStore(MemoryStore):
             connection.commit()
         with self.lock:
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60}
+        with self._fenced_connection(run_id, token):
+            self._recover_running_nodes_locked(run_id)
         return token
 
     def renew_job(self, run_id: str, attempt_token: str) -> bool:
@@ -573,6 +632,27 @@ class PostgresStore(MemoryStore):
                 return copy.deepcopy(existing)
             self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
             return copy.deepcopy(artifact)
+
+    def complete_node_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        node_id: str,
+        artifact: dict[str, Any],
+        research: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        with self._fenced_connection(run_id, attempt_token):
+            node = self.nodes[node_id]
+            if node.get("run_id") != run_id or artifact.get("run_id") != run_id or artifact.get("module_id") != node.get("module_id"):
+                raise JobFencedError("artifact does not match the fenced node")
+            completed = self.artifact_for_fingerprint(run_id, node["module_id"], artifact["input_fingerprint"])
+            if completed is None:
+                self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
+                completed = copy.deepcopy(artifact)
+            node.update(status="succeeded", artifact_id=completed["id"], error=None)
+            if research is not None:
+                self.runs[run_id]["research"] = copy.deepcopy(research)
+            return completed
 
     def finish_job(self, run_id: str, attempt_token: str) -> None:
         with self._psycopg.connect(self._dsn) as connection:

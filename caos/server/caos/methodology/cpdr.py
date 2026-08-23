@@ -17,6 +17,24 @@ class CPDRValidationError(ValueError):
     pass
 
 
+def _host_coverage_status(
+    claim: MaterialClaim,
+    conflict_claims: set[str],
+    gapped_workstreams: set[str],
+    returned_evidence: dict[tuple[str, str], dict[str, str]],
+) -> str:
+    pairs = [(ref.source_id, ref.block_id) for ref in claim.evidence_refs]
+    origins = {returned_evidence[pair]["origin_family"] for pair in pairs}
+    authorities = {returned_evidence[pair]["authority_class"] for pair in pairs}
+    if claim.claim_id in conflict_claims or claim.counter_evidence_refs:
+        return "contradicted"
+    if claim.workstream_id in gapped_workstreams:
+        return "gap"
+    if pairs and (claim.claim_type == "source_characterisation" or "primary_authority" in authorities or len(origins) >= 2):
+        return "adequate"
+    return "gap"
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, str_strip_whitespace=True, strict=True)
 
@@ -121,6 +139,13 @@ class QAFinding(_StrictModel):
     finding: LongText
 
 
+class ScopeAdherenceRow(_StrictModel):
+    kind: Literal["must_answer", "exclusion"]
+    item: ShortText
+    workstream_id: Identifier | None = None
+    respected: bool
+
+
 class CPDRPayload(_StrictModel):
     module_id: Literal["CP-DR"]
     run_id: Identifier
@@ -139,10 +164,11 @@ class CPDRPayload(_StrictModel):
     source_mode: Literal["supplied_only"]
     workstream_findings: list[WorkstreamFinding] = Field(min_length=1, max_length=20)
     material_claims: list[MaterialClaim] = Field(min_length=1, max_length=200)
-    evidence: list[EvidenceRow] = Field(min_length=1, max_length=500)
+    evidence: list[EvidenceRow] = Field(default_factory=list, max_length=500)
     conflicts: list[ConflictRow] = Field(default_factory=list, max_length=100)
     gaps: list[GapRow] = Field(default_factory=list, max_length=100)
     qa_findings: list[QAFinding] = Field(default_factory=list, max_length=100)
+    scope_adherence: list[ScopeAdherenceRow] = Field(default_factory=list, max_length=20)
     direct_answer: LongText
     causal_synthesis: LongText
     implications_scenarios: list[LongText] = Field(min_length=1, max_length=30)
@@ -182,6 +208,8 @@ def validate_cpdr_payload(
     host_identity: dict[str, Any],
     approved_workstream_ids: set[str],
     returned_evidence: dict[tuple[str, str], dict[str, str]],
+    approved_plan: dict[str, Any] | None = None,
+    approved_brief: dict[str, Any] | None = None,
 ) -> CPDRPayload:
     try:
         payload = CPDRPayload.model_validate(value)
@@ -210,16 +238,25 @@ def validate_cpdr_payload(
     evidence_ids = {row.evidence_id for row in payload.evidence}
     if len(evidence_ids) != len(payload.evidence):
         raise CPDRValidationError("evidence IDs must be unique")
+    conflict_ids = {row.conflict_id for row in payload.conflicts}
+    if len(conflict_ids) != len(payload.conflicts):
+        raise CPDRValidationError("conflict IDs must be unique")
+    for conflict in payload.conflicts:
+        refs = [(ref.source_id, ref.block_id) for ref in conflict.evidence_refs]
+        if len(refs) != len(set(refs)) or len(conflict.claim_ids) != len(set(conflict.claim_ids)):
+            raise CPDRValidationError("conflict references and claim IDs must be unique")
     cited_pairs = {
         (ref.source_id, ref.block_id)
         for claim in payload.material_claims
         for ref in (*claim.evidence_refs, *claim.counter_evidence_refs)
-    }
+    } | {(ref.source_id, ref.block_id) for conflict in payload.conflicts for ref in conflict.evidence_refs}
     evidence_pairs = {(row.source_id, row.block_id) for row in payload.evidence}
     if len(evidence_pairs) != len(payload.evidence):
         raise CPDRValidationError("source/block evidence identities must be unique")
     if not cited_pairs | evidence_pairs <= returned_evidence.keys():
         raise CPDRValidationError("every citation and evidence row must reference a block returned by this run")
+    if not cited_pairs <= evidence_pairs:
+        raise CPDRValidationError("every citation must appear exactly once in the evidence registry")
     for row in payload.evidence:
         returned = returned_evidence[(row.source_id, row.block_id)]
         if (
@@ -234,21 +271,25 @@ def validate_cpdr_payload(
     finding_claims = {(row.workstream_id, claim_id) for row in payload.workstream_findings for claim_id in row.claim_ids}
     if any((claim.workstream_id, claim.claim_id) not in finding_claims for claim in payload.material_claims):
         raise CPDRValidationError("every claim must appear in its workstream finding")
-    evidence_by_pair = {(row.source_id, row.block_id): row for row in payload.evidence}
+    conflict_claims = {claim_id for row in payload.conflicts for claim_id in row.claim_ids}
+    gapped_workstreams = {row.workstream_id for row in payload.workstream_findings if row.status == "gapped"} | {
+        row.workstream_id for row in payload.gaps if row.material
+    }
+    for conflict in payload.conflicts:
+        origins = {returned_evidence[(ref.source_id, ref.block_id)]["origin_family"] for ref in conflict.evidence_refs}
+        if len(origins) < 2:
+            raise CPDRValidationError("conflict evidence must preserve distinct host origin families")
+    host_statuses: dict[str, str] = {}
     for claim in payload.material_claims:
-        if claim.coverage_status != "adequate":
-            continue
-        rows = [evidence_by_pair.get((ref.source_id, ref.block_id)) for ref in claim.evidence_refs]
-        if not rows or any(row is None for row in rows):
-            raise CPDRValidationError("adequately covered claims require host-validated evidence rows")
-        families = {row.independence_family for row in rows if row is not None}
-        if claim.lineage != "Directly Sourced" and len(families) < 2:
-            raise CPDRValidationError("adequate non-primary claims require two independent evidence families")
+        host_status = _host_coverage_status(claim, conflict_claims, gapped_workstreams, returned_evidence)
+        host_statuses[claim.claim_id] = host_status
+        if claim.coverage_status != host_status:
+            raise CPDRValidationError(f"provider coverage must equal host coverage for {claim.claim_id}: {host_status}")
 
     material = [claim for claim in payload.material_claims if claim.material]
     if not material:
         raise CPDRValidationError("at least one material claim is required")
-    adequate = sum(claim.coverage_status == "adequate" for claim in material)
+    adequate = sum(host_statuses[claim.claim_id] == "adequate" for claim in material)
     expected_coverage = round(adequate / len(material) * 100)
     if payload.coverage_score != expected_coverage:
         raise CPDRValidationError(f"coverage_score must equal host arithmetic ({expected_coverage})")
@@ -260,6 +301,28 @@ def validate_cpdr_payload(
     if any(claim_id not in claims for row in payload.conflicts for claim_id in row.claim_ids):
         raise CPDRValidationError("conflict register references an unknown claim")
 
+    plan = approved_plan or {"workstreams": []}
+    brief = approved_brief or {"must_answer": [], "exclusions": []}
+    scope_items = [*brief.get("must_answer", []), *brief.get("exclusions", [])]
+    if len(scope_items) != len(set(scope_items)):
+        raise CPDRValidationError("approved scope items must be unique")
+    assigned: dict[str, str] = {}
+    for workstream in plan.get("workstreams", []):
+        for question in workstream.get("assigned_questions", []):
+            if question in assigned:
+                raise CPDRValidationError("approved must-answer item is assigned more than once")
+            assigned[question] = workstream.get("id")
+    expected_scope = {("must_answer", item): assigned.get(item) for item in brief.get("must_answer", [])}
+    expected_scope.update({("exclusion", item): None for item in brief.get("exclusions", [])})
+    observed_scope = {(row.kind, row.item): row for row in payload.scope_adherence}
+    if (
+        len(observed_scope) != len(payload.scope_adherence)
+        or set(observed_scope) != set(expected_scope)
+        or any(not row.respected or row.workstream_id != expected_scope[key] for key, row in observed_scope.items())
+        or any(kind == "must_answer" and workstream is None for (kind, _), workstream in expected_scope.items())
+    ):
+        raise CPDRValidationError("scope adherence must exactly cover approved questions and exclusions")
+
     has_material_gap = expected_coverage < 100 or any(row.status == "gapped" for row in payload.workstream_findings) or any(gap.material for gap in payload.gaps) or any(row.status == "unresolved" for row in payload.conflicts)
     if payload.research_status == "Complete" and (has_material_gap or payload.research_stop_reason != "coverage_satisfied"):
         raise CPDRValidationError("Complete status requires full coverage and coverage_satisfied")
@@ -270,10 +333,32 @@ def validate_cpdr_payload(
     return payload
 
 
-def confidence_inputs(payload: CPDRPayload) -> dict[str, Any]:
-    lineage = Counter(claim.lineage for claim in payload.material_claims if claim.material)
-    findings = Counter(row.severity for row in payload.qa_findings)
+def confidence_inputs(payload: CPDRPayload, returned_evidence: dict[tuple[str, str], dict[str, str]]) -> dict[str, Any]:
+    conflict_claims = {claim_id for row in payload.conflicts for claim_id in row.claim_ids}
+    gapped_workstreams = {row.workstream_id for row in payload.workstream_findings if row.status == "gapped"} | {
+        row.workstream_id for row in payload.gaps if row.material
+    }
+    lineage: Counter[str] = Counter()
+    findings: Counter[str] = Counter()
     material = [claim for claim in payload.material_claims if claim.material]
+    for claim in material:
+        host_status = _host_coverage_status(claim, conflict_claims, gapped_workstreams, returned_evidence)
+        if host_status == "contradicted":
+            lineage["Conflicting"] += 1
+        elif host_status == "gap":
+            lineage["Insufficient Information"] += 1
+            findings["MATERIAL"] += 1
+        elif claim.claim_type == "source_characterisation" or any(
+            returned_evidence[(ref.source_id, ref.block_id)]["authority_class"] == "primary_authority"
+            for ref in claim.evidence_refs
+        ):
+            lineage["Directly Sourced"] += 1
+        else:
+            lineage["Weak Lineage"] += 1
+    findings["MATERIAL"] += sum(row.material for row in payload.gaps)
+    findings["MATERIAL"] += sum(row.status == "unresolved" for row in payload.conflicts)
+    if payload.research_status == "Blocked":
+        findings["CRITICAL"] += 1
     adequate = sum(claim.coverage_status == "adequate" for claim in material)
     source_gate = "pass" if material and adequate == len(material) else "partial" if adequate else "fail"
     required = (
@@ -289,7 +374,7 @@ def confidence_inputs(payload: CPDRPayload) -> dict[str, Any]:
         "fields_present": sum(bool(value) for value in required),
         "fields_total": len(required),
         "source_gate": source_gate,
-        "findings": dict(findings),
+        "findings": {key: value for key, value in findings.items() if value},
     }
 
 

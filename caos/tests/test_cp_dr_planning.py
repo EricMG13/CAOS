@@ -200,7 +200,10 @@ def test_runtime_durably_pauses_after_cp0_with_server_owned_brief_and_plan() -> 
     }
     assert research["model"] == "claude-sonnet-4-6"
     assert research["budget_limits"] == {"turns": 8, "evidence_reads": 12, "evidence_bytes": 1024 * 1024, "input_tokens": 100_000, "output_tokens": 8_000, "active_minutes": 3, "provider_retries": 1, "repairs": 1}
-    assert research["budget_used"] == {key: 0 for key in research["budget_limits"]}
+    assert {key: value for key, value in research["budget_used"].items() if key != "active_minutes"} == {
+        key: 0 for key in research["budget_limits"] if key != "active_minutes"
+    }
+    assert 0 <= research["budget_used"]["active_minutes"] < research["budget_limits"]["active_minutes"]
     assert research["inflight_request_digest"] is None
     assert research["attempts"] == []
     assert research["proposed_plan_hash"] == f"sha256:{digest(research['proposed_plan'])}"
@@ -489,7 +492,10 @@ def _approval_run(store: MemoryStore, case_id: str, actor: str = "owner") -> tup
     expected_limits = {"turns": 8, "evidence_reads": 12, "evidence_bytes": 1024 * 1024, "input_tokens": 100_000, "output_tokens": 8_000, "active_minutes": 3, "provider_retries": 1, "repairs": 1}
     assert research["brief"] == expected_brief
     assert research["budget_limits"] == expected_limits
-    assert research["budget_used"] == {key: 0 for key in research["budget_limits"]}
+    assert {key: value for key, value in research["budget_used"].items() if key != "active_minutes"} == {
+        key: 0 for key in research["budget_limits"] if key != "active_minutes"
+    }
+    assert 0 <= research["budget_used"]["active_minutes"] < research["budget_limits"]["active_minutes"]
     assert research["proposed_plan"] and re.fullmatch(r"sha256:[0-9a-f]{64}", research["proposed_plan_hash"])
     cp0 = next(node for node in paused["nodes"] if node["module_id"] == "CP-0")
     cp_dr = next(node for node in paused["nodes"] if node["module_id"] == "CP-DR")

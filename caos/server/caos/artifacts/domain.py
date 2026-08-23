@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from typing import Any
 
 from ..contracts import RecommendationMatrixRequest, ThesisRequest, digest
@@ -197,7 +198,7 @@ def promote_note(store: MemoryStore, case_id: str, note_id: str, actor: str) -> 
             "filename": f"analyst-note-{note_id}.md",
             "media_type": "text/markdown",
             "bytes": len(note["body"].encode()),
-            "sha256": digest({"note_id": note_id, "body": note["body"]}),
+            "sha256": hashlib.sha256(note["body"].encode("utf-8")).hexdigest(),
             "vault_path": None,
             "blocks": [{"block_id": "b00001", "locator": {"note_id": note_id}, "text": note["body"], "extractor_version": "analyst-note-v1", "confidence": "HIGH", "untrusted_data": True}],
             "created_by": actor,
@@ -289,8 +290,23 @@ def mark_assumptions_stale(store: MemoryStore, case_id: str, changed_source_ids:
 
 
 def build_snapshot_payload(store: MemoryStore, run: dict[str, Any]) -> dict[str, Any]:
-    artifacts = [store.get_artifact(node["artifact_id"]) for node in run["nodes"] if node.get("artifact_id")]
-    artifacts = [artifact for artifact in artifacts if artifact]
+    if run.get("status") != "succeeded" or len(run.get("nodes", [])) != len(run.get("node_ids", [])):
+        raise ValueError("RUN_NOT_READY")
+    artifacts = []
+    for node in run["nodes"]:
+        artifact = store.get_artifact(node.get("artifact_id")) if node.get("artifact_id") else None
+        if (
+            node.get("status") != "succeeded"
+            or not artifact
+            or artifact.get("run_id") != run.get("id")
+            or artifact.get("case_id") not in {None, run.get("case_id")}
+            or artifact.get("module_id") != node.get("module_id")
+            or artifact.get("digest") != digest(artifact.get("payload"))
+        ):
+            raise ValueError("RUN_NOT_READY")
+        if node.get("module_id") == "CP-DR" and not cpdr_artifact_is_valid(store, run, node, artifact):
+            raise ValueError("RUN_NOT_READY")
+        artifacts.append(artifact)
     source_set = store.source_set_by_id(run["plan"].get("source_set_id"))
     if not source_set:
         raise ValueError("SOURCE_SET_CHANGED")
@@ -302,6 +318,49 @@ def build_snapshot_payload(store: MemoryStore, run: dict[str, Any]) -> dict[str,
         "artifacts": [{"id": artifact["id"], "module_id": artifact["module_id"], "digest": artifact["digest"]} for artifact in artifacts],
         "accepted_at": now_iso(),
     }
+
+
+def cpdr_artifact_is_valid(store: MemoryStore, run: dict[str, Any], node: dict[str, Any], artifact: dict[str, Any]) -> bool:
+    envelope = artifact.get("payload")
+    expected_keys = {
+        "schema_version", "module_id", "transport", "host_confidence", "canonical_output",
+        "methodology", "source_set", "upstream_artifacts",
+    }
+    source_set = store.source_set_by_id(run["plan"].get("source_set_id"))
+    research = run.get("research") or {}
+    expected_upstream = []
+    for dependency in node.get("dependencies", []):
+        dependency_node = next((item for item in run["nodes"] if item.get("module_id") == dependency), None)
+        dependency_artifact = store.get_artifact(dependency_node.get("artifact_id")) if dependency_node else None
+        if not dependency_artifact:
+            return False
+        expected_upstream.append({"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]})
+    transport = envelope.get("transport") if isinstance(envelope, dict) else None
+    canonical_output = envelope.get("canonical_output") if isinstance(envelope, dict) else None
+    host_identity = transport if isinstance(transport, dict) else None
+    return bool(
+        isinstance(envelope, dict)
+        and set(envelope) == expected_keys
+        and envelope.get("schema_version") == "caos.cpdr.artifact.v1"
+        and envelope.get("module_id") == "CP-DR"
+        and isinstance(envelope.get("host_confidence"), dict)
+        and isinstance(canonical_output, dict)
+        and set(canonical_output) == {"filename", "markdown_sha256"}
+        and canonical_output.get("filename") == artifact.get("filename")
+        and canonical_output.get("markdown_sha256") == hashlib.sha256(artifact.get("markdown", "").encode("utf-8")).hexdigest()
+        and envelope.get("methodology") == {"build_id": run["plan"].get("build_id"), "approved_plan_hash": research.get("approved_plan_hash")}
+        and source_set
+        and envelope.get("source_set") == {"id": source_set["id"], "version": source_set["version"], "digest": digest(source_set)}
+        and envelope.get("upstream_artifacts") == expected_upstream
+        and isinstance(host_identity, dict)
+        and host_identity.get("run_id") == run.get("id")
+        and host_identity.get("case_id") == run.get("case_id")
+        and host_identity.get("source_set_id") == source_set["id"]
+        and host_identity.get("source_set_version") == source_set["version"]
+        and host_identity.get("approved_plan_hash") == research.get("approved_plan_hash")
+        and host_identity.get("upstream_digests") == [item["digest"] for item in expected_upstream]
+        and artifact.get("digest") == digest(envelope)
+    )
 
 
 def snapshot_diff(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:

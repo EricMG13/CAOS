@@ -224,6 +224,38 @@ class DeployVBundle:
             inputs["findings"],
         )
 
+    def cpdr_authority(self) -> str:
+        self.verify()
+        folder = self.root / "skills" / "cp-dr-deep-research"
+        skill = (folder / "SKILL.md").read_text(encoding="utf-8")
+        steps = (folder / "references" / "REF_CP-DR_STEPS.md").read_text(encoding="utf-8")
+
+        def section(text: str, heading: str, end_marker: str = "\n## ") -> str:
+            try:
+                start = text.index(heading)
+            except ValueError as exc:
+                raise MethodologyError(f"missing CP-DR authority section: {heading}") from exc
+            end = text.find(end_marker, start + len(heading))
+            return text[start : end if end >= 0 else len(text)].strip()
+
+        source_data_rule = next(
+            (line.strip() for line in skill.splitlines() if line.startswith("> Source, email, web, document")),
+            None,
+        )
+        if source_data_rule is None:
+            raise MethodologyError("missing CP-DR untrusted-source authority")
+        hard_rules = section(skill, "#### HARD RULES", "\n<!-- READING_ORDER:BEGIN -->")
+        selected = [
+            section(steps, "## REF_CP-DR_C_SourceAndSearchPolicy.md"),
+            section(steps, "## REF_CP-DR_D_ClaimEvidenceLedger.md"),
+            section(steps, "## REF_CP-DR_E_SynthesisAndStopRules.md"),
+            section(steps, "## REF_CP-DR_F_OutputAndQA.md"),
+            section(steps, "## REF_CP-DR_H_IssuerProfile.md"),
+        ]
+        wrapper = """CAOS HOST COMPATIBILITY WRAPPER
+CP-0 is required with matching accepted run and source-set lineage. Source mode is supplied_only and evidence is available only through read_evidence. Execute only the exact approved issuer plan and immutable brief. Return exactly one strict CPDRPayload JSON value; the host owns coverage, confidence, canonical Markdown, validation, fencing, and persistence."""
+        return "\n\n".join((wrapper, source_data_rule, hard_rules, *selected))
+
     def validate_cpdr_handoff(
         self,
         text: str,

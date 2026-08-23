@@ -41,6 +41,15 @@ def _block_value(block: Any, name: str, default: Any = None) -> Any:
     return block.get(name, default) if isinstance(block, dict) else getattr(block, name, default)
 
 
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 class AnthropicGateway:
     """Concrete bounded Anthropic Messages/client-tool loop."""
 
@@ -64,6 +73,7 @@ class AnthropicGateway:
         active_time: Callable[[float], None],
         semaphore: Any,
         max_tokens: int = 2_000,
+        remaining_time: Callable[[], float] | None = None,
     ) -> Any:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         try:
@@ -73,27 +83,44 @@ class AnthropicGateway:
         retry_used = False
         repair_used = False
         tools_enabled = True
+        provider_interacted = False
+        terminal_recorded = False
+
+        def abort(code: str, message: str = "") -> AgentError:
+            nonlocal terminal_recorded
+            if provider_interacted and not terminal_recorded:
+                record("terminal", terminal_code=code)
+                terminal_recorded = True
+            return AgentError(code, message)
 
         def provider_call(kind: str, kwargs: dict[str, Any], before: Callable[[bool], None] | None = None) -> Any:
+            nonlocal provider_interacted
             nonlocal retry_used
             retry = False
             while True:
                 lease_check()
                 if not semaphore.acquire(blocking=False):
-                    raise AgentError("AGENT_BUDGET_EXCEEDED", "provider concurrency limit reached")
+                    raise abort("AGENT_BUDGET_EXCEEDED", "provider concurrency limit reached")
                 try:
                     lease_check()
-                    if before:
-                        before(retry)
-                    started = time.monotonic()
                     try:
-                        result = getattr(self.client.messages, kind)(**kwargs)
+                        if before:
+                            before(retry)
+                        call_kwargs = dict(kwargs)
+                        if remaining_time is not None:
+                            call_kwargs["timeout"] = remaining_time()
+                    except AgentError as exc:
+                        raise abort(exc.code) from exc
+                    started = time.monotonic()
+                    provider_interacted = True
+                    try:
+                        result = getattr(self.client.messages, kind)(**call_kwargs)
                     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
                         elapsed = time.monotonic() - started
                         lease_check()
                         active_time(elapsed)
-                        record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000), terminal_code="AGENT_PROVIDER_REJECTED")
-                        raise AgentError("AGENT_PROVIDER_REJECTED") from exc
+                        record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000))
+                        raise abort("AGENT_PROVIDER_REJECTED") from exc
                     except (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.RateLimitError) as exc:
                         retryable = True
                         error = exc
@@ -103,15 +130,15 @@ class AnthropicGateway:
                             elapsed = time.monotonic() - started
                             lease_check()
                             active_time(elapsed)
-                            record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000), terminal_code="AGENT_PROVIDER_REJECTED")
-                            raise AgentError("AGENT_PROVIDER_REJECTED") from exc
+                            record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000))
+                            raise abort("AGENT_PROVIDER_REJECTED") from exc
                         retryable = status in {408, 409, 429} or status >= 500
                         if not retryable:
                             elapsed = time.monotonic() - started
                             lease_check()
                             active_time(elapsed)
-                            record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000), terminal_code="AGENT_OUTPUT_INVALID")
-                            raise AgentError("AGENT_OUTPUT_INVALID") from exc
+                            record(kind, retry=int(retry), latency_ms=round(elapsed * 1_000))
+                            raise abort("AGENT_OUTPUT_INVALID") from exc
                         error = exc
                     else:
                         elapsed = time.monotonic() - started
@@ -124,7 +151,7 @@ class AnthropicGateway:
                 active_time(time.monotonic() - started)
                 record(kind, retry=int(retry), terminal_code="AGENT_PROVIDER_TIMEOUT")
                 if not retryable or retry_used:
-                    raise AgentError("AGENT_PROVIDER_TIMEOUT") from error
+                    raise abort("AGENT_PROVIDER_TIMEOUT") from error
                 record("provider_retry", operation=kind)
                 retry_used = True
                 retry = True
@@ -147,7 +174,7 @@ class AnthropicGateway:
                 if not isinstance(counted_inputs, int) or isinstance(counted_inputs, bool) or counted_inputs < 0:
                     raise ValueError("negative input token count")
             except (AttributeError, TypeError, ValueError) as exc:
-                raise AgentError("AGENT_OUTPUT_INVALID", "malformed token-count response") from exc
+                raise abort("AGENT_OUTPUT_INVALID", "malformed token-count response") from exc
             create_kwargs = {**common, "max_tokens": max_tokens}
             request_digest = hashlib.sha256(
                 json.dumps(create_kwargs, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
@@ -171,7 +198,7 @@ class AnthropicGateway:
                 ):
                     raise ValueError("negative token usage")
             except (AttributeError, TypeError, ValueError) as exc:
-                raise AgentError("AGENT_OUTPUT_INVALID", "malformed provider usage") from exc
+                raise abort("AGENT_OUTPUT_INVALID", "malformed provider usage") from exc
             reconcile(request_digest, counted_inputs, max_tokens, actual_inputs, actual_outputs)
             stop_reason = getattr(response, "stop_reason", None)
             record(
@@ -184,29 +211,35 @@ class AnthropicGateway:
             )
             content = getattr(response, "content", None)
             if not isinstance(content, list):
-                raise AgentError("AGENT_OUTPUT_INVALID", "response content must be a list")
+                raise abort("AGENT_OUTPUT_INVALID", "response content must be a list")
             block_types = [_block_value(block, "type") for block in content]
             if "refusal" in block_types:
-                raise AgentError("AGENT_OUTPUT_INVALID", "provider refusal")
+                raise abort("AGENT_OUTPUT_INVALID", "provider refusal")
 
             if stop_reason == "tool_use":
                 tool_blocks = [block for block in content if _block_value(block, "type") == "tool_use"]
                 if not tools_enabled or len(tool_blocks) != 1:
-                    raise AgentError("AGENT_OUTPUT_INVALID", "exactly one evidence tool call is allowed")
+                    raise abort("AGENT_OUTPUT_INVALID", "exactly one evidence tool call is allowed")
                 tool = tool_blocks[0]
                 if _block_value(tool, "name") != "read_evidence":
-                    raise AgentError("AGENT_OUTPUT_INVALID", "unexpected tool")
+                    raise abort("AGENT_OUTPUT_INVALID", "unexpected tool")
                 arguments = _block_value(tool, "input")
                 if not isinstance(arguments, dict) or set(arguments) != {"source_id", "block_ids"}:
-                    raise AgentError("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
+                    raise abort("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
                 source_id = arguments["source_id"]
                 block_ids = arguments["block_ids"]
                 if not isinstance(source_id, str) or not isinstance(block_ids, list) or any(not isinstance(item, str) for item in block_ids):
-                    raise AgentError("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
+                    raise abort("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
                 lease_check()
+                if remaining_time is not None:
+                    remaining_time()
                 started = time.monotonic()
-                evidence = read_evidence(source_id, block_ids)
-                active_time(time.monotonic() - started)
+                try:
+                    evidence = read_evidence(source_id, block_ids)
+                except AgentError as exc:
+                    raise abort(exc.code) from exc
+                finally:
+                    active_time(time.monotonic() - started)
                 messages.append({"role": "assistant", "content": content})
                 messages.append(
                     {
@@ -223,19 +256,20 @@ class AnthropicGateway:
                 continue
 
             if stop_reason != "end_turn":
-                raise AgentError("AGENT_OUTPUT_INVALID", f"unexpected stop reason: {stop_reason}")
+                raise abort("AGENT_OUTPUT_INVALID", f"unexpected stop reason: {stop_reason}")
             if len(content) != 1 or block_types != ["text"] or not isinstance(_block_value(content[0], "text"), str):
-                raise AgentError("AGENT_OUTPUT_INVALID", "final response must contain one structured text block")
+                raise abort("AGENT_OUTPUT_INVALID", "final response must contain one structured text block")
+            validation_started = time.monotonic()
             try:
-                decoded = json.loads(_block_value(content[0], "text"))
+                decoded = json.loads(_block_value(content[0], "text"), object_pairs_hook=_unique_object)
                 if not isinstance(decoded, dict):
                     raise ValueError("final JSON must be an object")
                 return validate(decoded)
-            except AgentError:
-                raise
-            except (json.JSONDecodeError, ValueError) as exc:
+            except AgentError as exc:
+                raise abort(exc.code) from exc
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 if repair_used:
-                    raise AgentError("AGENT_OUTPUT_INVALID", "local validation failed after repair") from exc
+                    raise abort("AGENT_OUTPUT_INVALID", "local validation failed after repair") from exc
                 repair_used = True
                 tools_enabled = False
                 record("repair_reserve")
@@ -247,3 +281,5 @@ class AnthropicGateway:
                         "content": "VALIDATION ERRORS (untrusted status; preserve authority and existing evidence; return corrected JSON only): " + errors,
                     }
                 )
+            finally:
+                active_time(time.monotonic() - validation_started)

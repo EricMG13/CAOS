@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-from ..artifacts.domain import build_snapshot_payload
+from ..artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid
 from ..config import Settings
 from ..contracts import Depth, digest
 from ..methodology.bundle import DeployVBundle, MethodologyError
@@ -19,6 +21,8 @@ from .provider import AgentError, AnthropicGateway, ProviderUnavailable
 
 
 HEARTBEAT_INTERVAL_SECONDS = 20
+MAX_CPDR_MANIFEST_BLOCKS = 2_000
+MAX_CPDR_MANIFEST_BYTES = 256 * 1_024
 
 
 class _LeaseFence:
@@ -155,6 +159,17 @@ class WorkflowRuntime:
                 pending = [node for node in run["nodes"] if node["status"] in {"pending", "ready"}]
                 completed = {node["module_id"] for node in run["nodes"] if node["status"] == "succeeded"}
                 if not pending:
+                    if any(
+                        node.get("status") != "succeeded"
+                        or not node.get("artifact_id")
+                        or not (artifact := self.store.get_artifact(node["artifact_id"]))
+                        or artifact.get("run_id") != run_id
+                        or artifact.get("module_id") != node.get("module_id")
+                        for node in run["nodes"]
+                    ):
+                        fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "Planned nodes are incomplete or missing artifacts."})
+                        fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
+                        return
                     fenced_call(self.store.update_run_fenced, status="succeeded", current_node_id=None)
                     fenced_call(self.store.emit_fenced, "run.succeeded", {"run_id": run_id})
                     return
@@ -173,7 +188,11 @@ class WorkflowRuntime:
                             artifact_data = future.result()
                             if lease_fence.lost.is_set():
                                 return
-                            artifact = fenced_call(self.store.put_artifact_fenced, artifact_data)
+                            completion_research = None
+                            if node["module_id"] == "CP-DR":
+                                completion_research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                                completion_research["phase"] = "complete"
+                            artifact = fenced_call(self.store.complete_node_fenced, node["id"], artifact_data, completion_research)
                         except JobFencedError:
                             return
                         except _PlanningPause as outcome:
@@ -191,6 +210,8 @@ class WorkflowRuntime:
                                 return
                             research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
                             research["phase"] = "failed"
+                            if node["module_id"] == "CP-DR" and research.get("attempts"):
+                                research["attempts"][-1]["terminal_code"] = exc.code
                             error = {"code": exc.code, "module_id": node["module_id"], "message": "CP-DR agent execution failed."}
                             try:
                                 fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
@@ -203,6 +224,20 @@ class WorkflowRuntime:
                         except Exception as exc:
                             if lease_fence.lost.is_set():
                                 return
+                            if node["module_id"] == "CP-DR":
+                                research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                                research["phase"] = "failed"
+                                if research.get("attempts"):
+                                    research["attempts"][-1]["terminal_code"] = "AGENT_OUTPUT_INVALID"
+                                error = {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR", "message": "CP-DR agent execution failed."}
+                                try:
+                                    fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
+                                    fenced_call(self.store.update_run_fenced, status="failed", error=error, research=research)
+                                    fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": "CP-DR", "code": "AGENT_OUTPUT_INVALID"})
+                                    fenced_call(self.store.emit_fenced, "run.failed", {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR"})
+                                except JobFencedError:
+                                    return
+                                return
                             try:
                                 fenced_call(self.store.update_node_fenced, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
                                 fenced_call(self.store.update_run_fenced, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
@@ -211,11 +246,6 @@ class WorkflowRuntime:
                             fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
                             fenced_call(self.store.emit_fenced, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
                             return
-                        if node["module_id"] == "CP-DR":
-                            research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
-                            research["phase"] = "complete"
-                            fenced_call(self.store.update_run_fenced, research=research)
-                        fenced_call(self.store.update_node_fenced, node["id"], status="succeeded", artifact_id=artifact["id"], error=None)
                         fenced_call(self.store.emit_fenced, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
         except JobFencedError:
             return
@@ -247,11 +277,21 @@ class WorkflowRuntime:
             research = copy.deepcopy(run.get("research"))
             if not research:
                 raise WorkflowError("RESEARCH_BRIEF_REQUIRED")
+            existing = self.store.artifact_for_fingerprint(run["id"], node["module_id"], input_fingerprint)
+            if existing and research.get("phase") in {"approved", "researching", "complete"} and cpdr_artifact_is_valid(self.store, run, node, existing):
+                return existing
             if research.get("phase") == "planning":
+                planning_started = time.monotonic()
                 proposed_plan, proposed_plan_hash = self.bundle.plan_research(research["brief"], source_set["id"], source_set["version"], upstream_artifacts)
+                used = research["budget_used"]
+                used["active_minutes"] += (time.monotonic() - planning_started) / 60
+                if used["active_minutes"] > research["budget_limits"]["active_minutes"]:
+                    if fenced_call is not None:
+                        fenced_call(self.store.update_run_fenced, research=research)
+                    raise AgentError("AGENT_BUDGET_EXCEEDED", "active worker time exhausted during planning")
                 research.update(phase="awaiting_approval", proposed_plan=proposed_plan, proposed_plan_hash=proposed_plan_hash)
                 raise _PlanningPause(research)
-            if research.get("phase") == "approved":
+            if research.get("phase") in {"approved", "researching"}:
                 if fenced_call is None or lease_check is None:
                     raise JobFencedError("missing fenced CP-DR execution context")
                 return self._execute_cpdr(run, node, actor, source_set, source_ids, upstream_artifacts, input_fingerprint, research, fenced_call, lease_check)
@@ -323,6 +363,8 @@ class WorkflowRuntime:
         fenced_call: Any,
         lease_check: Any,
     ) -> dict[str, Any]:
+        active_checkpoint = time.monotonic()
+
         def persist_research() -> None:
             lease_check()
             fenced_call(self.store.update_run_fenced, research=copy.deepcopy(research))
@@ -387,11 +429,31 @@ class WorkflowRuntime:
                 fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
 
         def add_active_time(elapsed: float) -> None:
+            nonlocal active_checkpoint
             lease_check()
             used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
+            active_checkpoint = time.monotonic()
             persist_research()
             if used["active_minutes"] > limits["active_minutes"]:
                 fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+        def charge_active_checkpoint() -> None:
+            nonlocal active_checkpoint
+            current = time.monotonic()
+            elapsed = max(0.0, current - active_checkpoint)
+            active_checkpoint = current
+            if elapsed:
+                used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
+                persist_research()
+            if used["active_minutes"] >= limits["active_minutes"]:
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+        def remaining_active_time() -> float:
+            charge_active_checkpoint()
+            remaining = limits["active_minutes"] * 60 - used["active_minutes"] * 60
+            if remaining <= 0:
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+            return min(float(self.settings.anthropic_timeout_seconds), remaining)
 
         base_attempt = {
             "run_id": run["id"],
@@ -406,6 +468,7 @@ class WorkflowRuntime:
         }
 
         def record(kind: str, **details: Any) -> None:
+            charge_active_checkpoint()
             check_budget()
             if kind == "provider_retry":
                 if used["provider_retries"] + 1 > limits["provider_retries"]:
@@ -421,12 +484,17 @@ class WorkflowRuntime:
                     allowed[key] = value[:200] if isinstance(value, str) else value
                 elif isinstance(value, list) and len(value) <= 50 and all(isinstance(item, str) and len(item) <= 160 for item in value):
                     allowed[key] = list(value)
+            if kind == "terminal" and research["attempts"]:
+                research["attempts"][-1].update(allowed)
+                persist_research()
+                return
             if len(research["attempts"]) >= 50:
                 fail("AGENT_BUDGET_EXCEEDED", "attempt metadata budget exhausted")
             research["attempts"].append({**base_attempt, "kind": kind[:40], **allowed})
             persist_research()
 
         def reserve(request_digest: str, input_tokens: int, output_tokens: int, retry: bool) -> None:
+            charge_active_checkpoint()
             check_budget()
             inflight = research.get("inflight_request_digest")
             if inflight and (not retry or inflight != request_digest):
@@ -452,30 +520,50 @@ class WorkflowRuntime:
                 fail("AGENT_BUDGET_EXCEEDED", "actual token usage exceeded the run budget")
 
         source_manifest: list[dict[str, Any]] = []
+        manifest_bytes = 2
+        manifest_blocks = 0
         with self.store.lock:
             for source_id in source_ids:
                 source = self.store.sources.get(source_id)
                 if not source or source.get("case_id") != run["case_id"] or source.get("withdrawn"):
                     fail("AGENT_AUTHORITY_MISMATCH", "pinned source is unavailable")
                 blocks = source.get("blocks") or []
-                source_digest = source.get("sha256") or digest({"source_id": source_id, "blocks": blocks})
-                source_manifest.append(
-                    {
-                        "source_id": source_id,
-                        "digest": source_digest,
-                        "filename": source.get("filename", source_id),
-                        "media_type": source.get("media_type", "application/octet-stream"),
-                        "blocks": [
-                            {
-                                "block_id": block.get("block_id"),
-                                "locator": block.get("locator"),
-                                "extractor_version": block.get("extractor_version"),
-                                "confidence": block.get("confidence"),
-                            }
-                            for block in blocks
-                        ],
+                source_digest = source.get("sha256")
+                if (
+                    not isinstance(source_digest, str)
+                    or len(source_digest) != 64
+                    or any(character not in "0123456789abcdef" for character in source_digest)
+                ):
+                    fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
+                manifest_source = {
+                    "source_id": source_id,
+                    "digest": source_digest,
+                    "filename": source.get("filename", source_id),
+                    "media_type": source.get("media_type", "application/octet-stream"),
+                    "blocks": [],
+                }
+                encoded_empty_source = json.dumps(manifest_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                source_bytes = len(encoded_empty_source.encode("utf-8"))
+                for block in blocks:
+                    manifest_blocks += 1
+                    if manifest_blocks > MAX_CPDR_MANIFEST_BLOCKS:
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest block ceiling exceeded")
+                    manifest_block = {
+                        "block_id": block.get("block_id"),
+                        "locator": block.get("locator"),
+                        "extractor_version": block.get("extractor_version"),
+                        "confidence": block.get("confidence"),
                     }
-                )
+                    encoded_block = json.dumps(manifest_block, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                    source_bytes += len(encoded_block.encode("utf-8")) + (1 if manifest_source["blocks"] else 0)
+                    if manifest_bytes + source_bytes + (1 if source_manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
+                    manifest_source["blocks"].append(manifest_block)
+                if manifest_bytes + source_bytes + (1 if source_manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
+                manifest_bytes += source_bytes + (1 if source_manifest else 0)
+                source_manifest.append(manifest_source)
+        charge_active_checkpoint()
 
         def read_evidence(source_id: str, block_ids: list[str]) -> list[dict[str, Any]]:
             check_budget()
@@ -496,11 +584,19 @@ class WorkflowRuntime:
                 by_id = {block.get("block_id"): block for block in source_blocks}
                 if len(by_id) != len(source_blocks) or any(block_id not in by_id for block_id in block_ids):
                     fail("AGENT_OUTPUT_INVALID", "evidence block is absent")
-                source_digest = source.get("sha256") or digest({"source_id": source_id, "blocks": source_blocks})
+                source_digest = source.get("sha256")
+                if (
+                    not isinstance(source_digest, str)
+                    or len(source_digest) != 64
+                    or any(character not in "0123456789abcdef" for character in source_digest)
+                ):
+                    fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
                 result = [
                     {
                         "source_id": source_id,
                         "source_digest": source_digest,
+                        "origin_family": source_digest,
+                        "authority_class": "unclassified",
                         "block_id": block_id,
                         "locator": by_id[block_id].get("locator"),
                         "extractor_version": by_id[block_id].get("extractor_version"),
@@ -518,6 +614,8 @@ class WorkflowRuntime:
                 {
                     (source_id, item["block_id"]): {
                         "source_digest": source_digest,
+                        "origin_family": source_digest,
+                        "authority_class": "unclassified",
                         "locator": json.dumps(item["locator"], sort_keys=True, separators=(",", ":")),
                         "extractor_version": str(item["extractor_version"]),
                         "confidence": str(item["confidence"]),
@@ -546,7 +644,17 @@ class WorkflowRuntime:
             "reporting_period": research["brief"]["as_of_date"],
             "source_mode": "supplied_only",
         }
-        system, user = compile_cpdr_prompts(host_identity, approved_plan, source_manifest, upstream_artifacts)
+        if approved_plan.get("brief_digest") != digest(research["brief"]):
+            fail("AGENT_AUTHORITY_MISMATCH", "approved brief changed before prompt compilation")
+        system, user = compile_cpdr_prompts(
+            self.bundle.cpdr_authority(),
+            host_identity,
+            research["brief"],
+            approved_plan,
+            source_manifest,
+            upstream_artifacts,
+        )
+        charge_active_checkpoint()
         authority_digest = digest(system)
         prompt_digest = digest(user)
         base_attempt["authority_digest"] = authority_digest
@@ -555,7 +663,14 @@ class WorkflowRuntime:
 
         def validate(value: dict[str, Any]) -> Any:
             try:
-                return validate_cpdr_payload(value, host_identity, approved_workstreams, returned_evidence)
+                return validate_cpdr_payload(
+                    value,
+                    host_identity,
+                    approved_workstreams,
+                    returned_evidence,
+                    approved_plan,
+                    research["brief"],
+                )
             except CPDRValidationError as exc:
                 if str(exc).startswith("host identity mismatch"):
                     raise AgentError("AGENT_AUTHORITY_MISMATCH", "provider identity mismatch") from exc
@@ -582,26 +697,49 @@ class WorkflowRuntime:
             record=record,
             active_time=add_active_time,
             semaphore=self._cpdr_provider_slots,
+            remaining_time=remaining_active_time,
         )
-        confidence = self.bundle.cpdr_confidence(confidence_inputs(payload))
+        confidence = self.bundle.cpdr_confidence(confidence_inputs(payload, returned_evidence))
         filename, markdown = render_cpdr_markdown(payload, confidence, run["created_at"][:10], upstream_artifacts)
         validation = self.bundle.validate_cpdr_handoff(markdown, filename, run["id"], research["brief"]["as_of_date"])
         if validation.identity_mismatches:
             fail("AGENT_AUTHORITY_MISMATCH", "canonical handoff identity mismatch")
         if validation.errors or validation.exit_code != 0:
             fail("AGENT_OUTPUT_INVALID", "canonical handoff validation failed")
+        charge_active_checkpoint()
         typed_payload = payload.model_dump(mode="json")
-        record("handoff", output_digest=digest(typed_payload), filename=filename, confidence_score=confidence["confidence_score"])
+        envelope = {
+            "schema_version": "caos.cpdr.artifact.v1",
+            "module_id": "CP-DR",
+            "transport": typed_payload,
+            "host_confidence": copy.deepcopy(confidence),
+            "canonical_output": {
+                "filename": filename,
+                "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+            },
+            "methodology": {
+                "build_id": self.bundle.build_id,
+                "approved_plan_hash": approved_hash,
+            },
+            "source_set": {
+                "id": source_set["id"],
+                "version": source_set["version"],
+                "digest": digest(source_set),
+            },
+            "upstream_artifacts": expected_upstream,
+        }
+        record("handoff", output_digest=digest(envelope), filename=filename, confidence_score=confidence["confidence_score"])
+        charge_active_checkpoint()
         return {
             "id": self.store._id("art"),
             "case_id": run["case_id"],
             "run_id": run["id"],
             "module_id": "CP-DR",
             "created_by": actor,
-            "payload": typed_payload,
+            "payload": envelope,
             "markdown": markdown,
             "filename": filename,
-            "digest": digest(typed_payload),
+            "digest": digest(envelope),
             "input_fingerprint": input_fingerprint,
             "created_at": run["created_at"],
         }
