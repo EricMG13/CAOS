@@ -2403,6 +2403,172 @@ def test_cpdr_two_second_atomic_finalization_is_covered_by_fixed_reserve(monkeyp
         runtime.close()
 
 
+def _ready_cpdr_finalization_on(
+    store: MemoryStore,
+) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    store, runtime, approved, source_id = _approved_cpdr_case(store)
+    artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
+    store.artifacts[artifact["id"]] = artifact
+    store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
+    store.runs[approved["id"]]["research"].update(phase="complete")
+    store.persist()
+    return store, runtime, approved, cpdr_node, artifact
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+@pytest.mark.parametrize("delay_site", ["before_entry", "during_persistence"])
+def test_cpdr_174_plus_ten_second_finalization_never_commits_success(
+    monkeypatch: pytest.MonkeyPatch, backend: str, delay_site: str,
+) -> None:
+    selected_store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
+    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(selected_store)
+    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 174 / 60
+    store.persist()
+
+    class Clock:
+        now = 1_000.0
+
+    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
+    if delay_site == "before_entry":
+        original_finalize = store.finalize_run_success_fenced
+
+        def delayed_finalize(*args: Any, **kwargs: Any) -> None:
+            Clock.now += 10.0
+            original_finalize(*args, **kwargs)
+
+        monkeypatch.setattr(store, "finalize_run_success_fenced", delayed_finalize)
+    elif isinstance(store, PostgresStore):
+        original_persist_connection = store._persist_connection
+
+        def delayed_persist_connection(connection: Any) -> Any:
+            if store.runs[approved["id"]]["status"] == "succeeded":
+                Clock.now += 10.0
+            return original_persist_connection(connection)
+
+        monkeypatch.setattr(store, "_persist_connection", delayed_persist_connection)
+    else:
+        original_persist = store.persist
+
+        def delayed_persist() -> None:
+            if store.runs[approved["id"]]["status"] == "succeeded":
+                Clock.now += 10.0
+            original_persist()
+
+        monkeypatch.setattr(store, "persist", delayed_persist)
+
+    try:
+        runtime._execute(approved["id"], f"deadline-{backend}-{delay_site}")
+        failed = store.get_run(approved["id"])
+        assert failed is not None and failed["status"] == "failed"
+        assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
+        assert failed["research"]["budget_used"]["active_minutes"] >= 179 / 60
+        assert not any(item["event"] == "run.succeeded" for item in failed["events"])
+        _assert_run_cannot_be_accepted(runtime, failed)
+        if isinstance(store, PostgresStore):
+            restored = PostgresStore(store._dsn).get_run(approved["id"])
+            assert restored is not None and restored["status"] == "failed"
+            assert not any(item["event"] == "run.succeeded" for item in restored["events"])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+def test_cpdr_two_second_finalization_commits_inside_absolute_deadline(
+    monkeypatch: pytest.MonkeyPatch, backend: str,
+) -> None:
+    selected_store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
+    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(selected_store)
+    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 170 / 60
+    store.persist()
+
+    class Clock:
+        now = 1_000.0
+
+    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
+    original_finalize = store.finalize_run_success_fenced
+
+    def delayed_finalize(*args: Any, **kwargs: Any) -> None:
+        Clock.now += 2.0
+        original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(store, "finalize_run_success_fenced", delayed_finalize)
+    try:
+        runtime._execute(approved["id"], f"within-deadline-{backend}")
+        completed = store.get_run(approved["id"])
+        assert completed is not None and completed["status"] == "succeeded"
+        assert [item["event"] for item in completed["events"]].count("run.succeeded") == 1
+        if isinstance(store, PostgresStore):
+            restored = PostgresStore(store._dsn).get_run(approved["id"])
+            assert restored is not None and restored["status"] == "succeeded"
+            assert [item["event"] for item in restored["events"]].count("run.succeeded") == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+def test_expired_finalization_deadline_does_not_mask_job_fencing(backend: str) -> None:
+    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
+    run, node = _queued_run(store, dependencies=[])
+    assert node is not None
+    token = store.claim_job(run["id"], f"fenced-deadline-{backend}")
+    assert token is not None
+    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
+    if isinstance(store, PostgresStore):
+        with store._psycopg.connect(store._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s",
+                    (run["id"],),
+                )
+            connection.commit()
+    else:
+        store.jobs[run["id"]]["lease_until"] = time.monotonic() - 1
+
+    with pytest.raises(JobFencedError):
+        store.finalize_run_success_fenced(
+            run["id"], token, None, {"run_id": run["id"]}, deadline=time.monotonic() - 1,
+        )
+
+
+def test_open_postgres_event_stream_refreshes_worker_events_without_reconnect() -> None:
+    api_store = _postgres_store("cpdr-sse-api")
+    worker_store = _postgres_store("cpdr-sse-worker")
+    run, node = _queued_run(worker_store, dependencies=[])
+    assert node is not None
+    runtime = WorkflowRuntime(
+        api_store,
+        object(),
+        Settings(environment="production", storage_dir=Path("/tmp/caos-sse-refresh"), deploy_v_root=DEPLOY_V),
+    )  # type: ignore[arg-type]
+    stream = runtime.stream_events(run["id"])
+    try:
+        assert next(stream) == ": keepalive\n\n"
+        token = worker_store.claim_job(run["id"], "sse-worker")
+        assert token is not None
+        worker_store.update_run_fenced(run["id"], token, status="running")
+        worker_store.emit_fenced(run["id"], token, "run.running", {"run_id": run["id"]})
+        artifact = worker_store.complete_node_fenced(
+            run["id"], token, node["id"], _artifact(run["id"]), None,
+        )
+        worker_store.emit_fenced(
+            run["id"], token, "node.succeeded",
+            {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]},
+        )
+        worker_store.finalize_run_success_fenced(
+            run["id"], token, None, {"run_id": run["id"]},
+            deadline=time.monotonic() + workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS,
+        )
+
+        delivered = [next(stream), *list(stream)]
+        assert [item.split("\n", 2)[0] for item in delivered] == ["id: 1", "id: 2", "id: 3"]
+        assert [item.split("\n", 2)[1] for item in delivered] == [
+            "event: run.running", "event: node.succeeded", "event: run.succeeded",
+        ]
+    finally:
+        runtime.close()
+
+
 def test_gateway_fake_clock_charges_slow_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     moments = iter([0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
     monkeypatch.setattr(provider_module.time, "monotonic", lambda: next(moments))

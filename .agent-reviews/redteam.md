@@ -3805,3 +3805,21 @@ the focused and full real-PostgreSQL gates. The finalization allowance is an
 explicit measured single-worker ceiling, not authorization for horizontal
 workers. The pilot remains disabled by default and still excludes live-provider
 testing, external documents, web, LITE, sector/theme, and other providers.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 fifth-review corrective pass
+
+Decision under review: enforce the already prepaid terminal allowance as an
+actual deadline and make an already-open production event stream observe worker
+process commits, without broadening the disabled issuer-only pilot.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-092 | Hard-deadline reviewer | Prepaying five seconds without enforcing it lets a ten-second terminal operation commit success at 184 seconds while the durable ledger records only 179 seconds. The p99 assertion in RT-089 did not make that safe. | Critical | Resolved and verified | After durable reservation the runtime computes an absolute monotonic deadline. Memory checks before mutation and after persistence with rollback. PostgreSQL applies the remaining transaction-local statement timeout, re-tightens it before exact-state persistence, and checks again after persistence and before commit. Outer and inner 174+10 probes on memory and real PostgreSQL leave no success event or acceptable snapshot; two-second operations still commit atomically. |
+| RT-2026-08-23-093 | Cross-process event reviewer | HTTP middleware refreshes before constructing an SSE response, but an already-open API-process stream waits only on its local condition and never observes durable worker-process events. | High | Resolved and verified | Every polling iteration refreshes before the existing one-second local wait, refreshes again afterward, and then reads strictly after the current cursor. A real two-store PostgreSQL stream opened before the run emits durable `run.running`, `node.succeeded`, and `run.succeeded` exactly once without reconnecting, then exits after terminal delivery. |
+| RT-2026-08-23-094 | Fencing reviewer | Adding a deadline check before lease validation could convert an already-stale worker into a budget failure and violate silent `JobFencedError` semantics. | High | Resolved and verified | Both stores establish fencing precedence: memory checks the current job before the deadline, and PostgreSQL checks the authoritative lease row before rejecting an already-expired deadline. Explicit memory/PostgreSQL probes prove deadline expiry never masks fencing. |
+
+Decision: return the fifth corrective pass for a decisive fresh review. The
+five-second allowance is now a hard absolute deadline, not a latency estimate or
+p99 claim. The pilot remains disabled by default and still excludes live-provider
+testing, external documents, web, LITE, sector/theme, other providers, and
+horizontal worker scale-out.

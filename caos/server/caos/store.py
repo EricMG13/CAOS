@@ -23,6 +23,15 @@ def now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+def _remaining_finalization_seconds(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("finalization deadline exceeded")
+    return remaining
+
+
 class MemoryStore:
     """Small deterministic store for the local app and contract tests.
 
@@ -312,13 +321,17 @@ class MemoryStore:
         attempt_token: str,
         research: dict[str, Any] | None,
         event_data: dict[str, Any],
+        *,
+        deadline: float | None = None,
     ) -> None:
         with self.lock:
             self._assert_job_locked(run_id, attempt_token)
+            _remaining_finalization_seconds(deadline)
             self._assert_run_artifacts_ready_locked(run_id)
             prior_run = copy.deepcopy(self.runs[run_id])
             prior_events = copy.deepcopy(self.events.get(run_id, []))
             try:
+                _remaining_finalization_seconds(deadline)
                 changes: dict[str, Any] = {"status": "succeeded", "current_node_id": None, "error": None}
                 if research is not None:
                     changes["research"] = copy.deepcopy(research)
@@ -332,6 +345,7 @@ class MemoryStore:
                     }
                 )
                 self.persist()
+                _remaining_finalization_seconds(deadline)
             except Exception:
                 self.runs[run_id] = prior_run
                 self.events[run_id] = prior_events
@@ -618,7 +632,14 @@ class PostgresStore(MemoryStore):
         return renewed
 
     @contextmanager
-    def _fenced_connection(self, run_id: str, attempt_token: str, *, adopt_current: bool = False) -> Iterator[Any]:
+    def _fenced_connection(
+        self,
+        run_id: str,
+        attempt_token: str,
+        *,
+        adopt_current: bool = False,
+        deadline: float | None = None,
+    ) -> Iterator[Any]:
         with self.lock:
             database_state = copy.deepcopy(self._base_state)
             database_revision = self._state_revision
@@ -627,9 +648,16 @@ class PostgresStore(MemoryStore):
             try:
                 with self._psycopg.connect(self._dsn) as connection:
                     with connection.cursor() as cursor:
+                        remaining = None if deadline is None else deadline - time.monotonic()
+                        if remaining is not None and remaining > 0:
+                            cursor.execute(
+                                "SELECT set_config('statement_timeout', %s, true)",
+                                (f"{max(1, int(remaining * 1_000 + 0.999))}ms",),
+                            )
                         cursor.execute("SELECT 1 FROM jobs WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE", (run_id, attempt_token))
                         if cursor.fetchone() is None:
                             raise JobFencedError("stale workflow attempt")
+                        _remaining_finalization_seconds(deadline)
                         if adopt_current:
                             cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
                             row = cursor.fetchone()
@@ -641,13 +669,28 @@ class PostgresStore(MemoryStore):
                             self._base_state = self._snapshot()
                             if claimed_job is not None:
                                 self.jobs[run_id] = claimed_job
+                        _remaining_finalization_seconds(deadline)
                         body_entered = True
                         yield connection
+                        remaining = _remaining_finalization_seconds(deadline)
+                        if remaining is not None:
+                            cursor.execute(
+                                "SELECT set_config('statement_timeout', %s, true)",
+                                (f"{max(1, int(remaining * 1_000 + 0.999))}ms",),
+                            )
                         state, revision, database_state, database_revision = self._persist_connection(connection)
+                        _remaining_finalization_seconds(deadline)
+                    _remaining_finalization_seconds(deadline)
                     connection.commit()
-            except Exception:
+            except Exception as exc:
                 if body_entered:
                     self._adopt_persisted(database_state, database_revision)
+                if isinstance(exc, (JobFencedError, TimeoutError)):
+                    raise
+                if deadline is not None and (
+                    time.monotonic() >= deadline or getattr(exc, "sqlstate", None) == "57014"
+                ):
+                    raise TimeoutError("finalization deadline exceeded") from exc
                 raise
             self._adopt_persisted(state, revision)
 
@@ -688,8 +731,10 @@ class PostgresStore(MemoryStore):
         attempt_token: str,
         research: dict[str, Any] | None,
         event_data: dict[str, Any],
+        *,
+        deadline: float | None = None,
     ) -> None:
-        with self._fenced_connection(run_id, attempt_token):
+        with self._fenced_connection(run_id, attempt_token, deadline=deadline):
             self._assert_run_artifacts_ready_locked(run_id)
             changes: dict[str, Any] = {"status": "succeeded", "current_node_id": None, "error": None}
             if research is not None:

@@ -31,7 +31,7 @@ MAX_CPDR_MANIFEST_LOCATOR_CHARS = 500
 MAX_CPDR_MANIFEST_LOCATOR_ITEMS = 100
 MAX_CPDR_MANIFEST_LOCATOR_DEPTH = 8
 MAX_CPDR_MANIFEST_LOCATOR_NODES = 500
-# ponytail: 5s bounds the reviewed 2s adversarial finalization; increase only after measured p99 breaches 4s.
+# ponytail: prepaid 5s is an enforced absolute deadline; changing it requires deadline/rollback review.
 CPDR_FINALIZATION_ALLOWANCE_SECONDS = 5.0
 
 
@@ -303,6 +303,7 @@ class WorkflowRuntime:
                         fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
                         return
                     if cpdr_node is not None:
+                        finalization_deadline = None
                         try:
                             research, exceeded = reserve_cpdr_finalization()
                         except JobFencedError:
@@ -320,15 +321,23 @@ class WorkflowRuntime:
                         if exceeded:
                             fail_final_cpdr(cpdr_node, research, "AGENT_BUDGET_EXCEEDED")
                             return
+                        finalization_deadline = time.monotonic() + CPDR_FINALIZATION_ALLOWANCE_SECONDS
                     else:
                         research = None
+                        finalization_deadline = None
                     try:
                         fenced_call(
                             self.store.finalize_run_success_fenced,
                             research,
                             {"run_id": run_id},
+                            **({"deadline": finalization_deadline} if finalization_deadline is not None else {}),
                         )
                     except JobFencedError:
+                        raise
+                    except TimeoutError:
+                        if cpdr_node is not None:
+                            fail_final_cpdr(cpdr_node, research or {}, "AGENT_BUDGET_EXCEEDED")
+                            return
                         raise
                     except AgentError as exc:
                         if cpdr_node is not None:
@@ -1044,7 +1053,10 @@ class WorkflowRuntime:
 
     def stream_events(self, run_id: str, cursor: int = 0) -> Iterator[str]:
         while True:
-            events = self.store.wait_for_events(run_id, cursor, timeout=1.0)
+            self.store.refresh()
+            self.store.wait_for_events(run_id, cursor, timeout=1.0)
+            self.store.refresh()
+            events = self.store.events_after(run_id, cursor)
             if not events:
                 run = self.store.get_run(run_id)
                 if run and run["status"] in {"paused", "succeeded", "failed"}:
