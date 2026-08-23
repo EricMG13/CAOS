@@ -234,7 +234,7 @@ class MemoryStore:
 
     def _job_is_current_locked(self, run_id: str, attempt_token: str) -> bool:
         job = self.jobs.get(run_id)
-        return bool(job and job.get("attempt_token") == attempt_token and job["lease_until"] > time.monotonic())
+        return bool(job and job["status"] == "running" and job.get("attempt_token") == attempt_token and job["lease_until"] > time.monotonic())
 
     def _assert_job_locked(self, run_id: str, attempt_token: str) -> None:
         if not self._job_is_current_locked(run_id, attempt_token):
@@ -487,17 +487,20 @@ class PostgresStore(MemoryStore):
         with self.lock:
             database_state = copy.deepcopy(self._base_state)
             database_revision = self._state_revision
+            body_entered = False
             try:
                 with self._psycopg.connect(self._dsn) as connection:
                     with connection.cursor() as cursor:
                         cursor.execute("SELECT 1 FROM jobs WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE", (run_id, attempt_token))
                         if cursor.fetchone() is None:
                             raise JobFencedError("stale workflow attempt")
+                        body_entered = True
                         yield connection
                         state, revision, database_state, database_revision = self._persist_connection(connection)
                     connection.commit()
             except Exception:
-                self._adopt_persisted(database_state, database_revision)
+                if body_entered:
+                    self._adopt_persisted(database_state, database_revision)
                 raise
             self._adopt_persisted(state, revision)
 

@@ -94,6 +94,18 @@ def test_memory_finish_job_releases_current_lease_reservation() -> None:
 
     assert store.jobs[run_id]["status"] == "finished"
     assert store.jobs[run_id]["budget_reserved"] == 0
+    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
+    assert store.job_is_current(run_id, token) is False
+    assert store.renew_job(run_id, token) is False
+    with pytest.raises(JobFencedError):
+        store.update_run_fenced(run_id, token, status="succeeded")
+    with pytest.raises(JobFencedError):
+        store.emit_fenced(run_id, token, "run.succeeded", {"run_id": run_id})
+    with pytest.raises(JobFencedError):
+        store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
+    with pytest.raises(JobFencedError):
+        store.put_artifact_fenced(run_id, token, _artifact(run_id))
+    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
 
 
 def test_memory_takeover_fences_all_worker_writes() -> None:
@@ -369,6 +381,10 @@ def test_postgres_takeover_fences_all_worker_writes() -> None:
     store.finish_job(run_id, token)
 
     assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
+    with store._psycopg.connect(store._dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT state, budget_reserved, attempt_token FROM jobs WHERE run_id = %s", (run_id,))
+            assert cursor.fetchone() == ("claimed", 1, replacement)
 
 
 def test_postgres_finish_job_requires_current_lease() -> None:
