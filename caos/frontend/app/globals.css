@@ -11,6 +11,9 @@
   --caos-success: #22c55e;
   --caos-paper: #f4f0e8;
   --caos-ink: #17171d;
+  --caos-paper-success: #166534;
+  --caos-paper-warning: #a24310;
+  --caos-paper-critical: #b91c1c;
   color-scheme: dark;
 }
 
@@ -30,7 +33,7 @@ a { color: inherit; }
 .rail .nav-label { display: none; }
 .rail > nav + nav { border-top: 1px solid var(--caos-border); padding-top: 10px; }
 .rail > nav + nav .nav-link { padding-block: 6px; padding-left: 18px; color: var(--caos-muted); font-size: 11px; }
-.nav-link { display: flex; justify-content: space-between; padding: 8px 9px; border: 1px solid transparent; border-radius: 4px; text-decoration: none; background: transparent; color: var(--caos-text); text-align: left; cursor: pointer; transition: border-color 160ms ease-out, background-color 160ms ease-out, color 160ms ease-out; }
+.nav-link { display: flex; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid transparent; border-radius: 4px; text-decoration: none; background: transparent; color: var(--caos-text); text-align: left; cursor: pointer; transition: border-color 160ms ease-out, background-color 160ms ease-out, color 160ms ease-out; }
 .nav-link:hover, .nav-link.active, .nav-link[aria-selected="true"] { border-color: var(--caos-border); background: var(--caos-elevated); color: var(--caos-accent); }
 .nav-link .shortcut { color: var(--caos-muted); font: 10px JetBrains Mono, monospace; }
 .workspace { min-width: 0; }
@@ -105,6 +108,12 @@ th { color: var(--caos-muted); font-size: 10px; letter-spacing: .09em; text-tran
 .paper .callout { background: #e8e1d5; }
 .paper .button { background: #e8e1d5; color: var(--caos-ink); border-color: #a9a294; }
 .paper .error { color: #8a1f14; }
+.paper .status.success { color: var(--caos-paper-success); }
+.paper .status.success::before { background: var(--caos-paper-success); }
+.paper .status.warning { color: var(--caos-paper-warning); }
+.paper .status.warning::before { background: var(--caos-paper-warning); }
+.paper .status.critical { color: var(--caos-paper-critical); }
+.paper .status.critical::before { background: var(--caos-paper-critical); }
 .skip-link { position: fixed; left: 8px; top: 8px; transform: translateY(-150%); z-index: 4; background: var(--caos-elevated); padding: 8px; }
 .skip-link:focus { transform: translateY(0); }
 dialog { border: 1px solid var(--caos-border); background: var(--caos-panel); color: var(--caos-text); padding: 0; overscroll-behavior: contain; }
@@ -166,8 +175,11 @@ dialog:not(.context-drawer) { width: min(680px, calc(100% - 32px)); max-width: 6
   .panel-header { min-height: 44px; }
   .button.small { padding: 7px 9px; }
   .rv-grid { grid-template-columns: 1fr; }
+  .nav-link .shortcut { display: none; }
   .context-drawer { max-width: 100vw; }
   .evidence-chip { min-height: 24px; }
 }
 @media (prefers-reduced-motion: reduce) { .app-shell { animation-iteration-count: 1 !important; animation-play-state: paused !important; } }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+/* A duration of .01ms alone does not stop an infinite animation: it keeps
+   cycling, just faster. Iteration count and play state must be pinned too. */
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-play-state: paused !important; } }

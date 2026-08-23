@@ -5,11 +5,17 @@ RUN npm ci
 COPY caos/frontend/ ./
 RUN npm run build
 
-FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOST=0.0.0.0 PORT=8000 ENVIRONMENT=production
 WORKDIR /app
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
 COPY caos/server/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && rm -rf /usr/local/lib/python3.14/site-packages/pip \
+        /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
+        /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.14
 COPY caos/server/ ./
 COPY caos/deploy/verify_image_resources.py ./verify_image_resources.py
 COPY --from=frontend /frontend/out ./static

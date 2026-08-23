@@ -21,26 +21,40 @@ def _validate_case_refs(store: MemoryStore, case_id: str, refs: list[str], *, ar
             if not artifacts_only:
                 source = store.sources.get(ref)
                 snapshot = store.snapshots.get(ref)
-                if (source and source.get("case_id") == case_id) or (snapshot and snapshot.get("case_id") == case_id):
+                if source and source.get("case_id") == case_id:
+                    if source.get("withdrawn"):
+                        raise ValueError("EVIDENCE_SOURCE_WITHDRAWN")
+                    continue
+                if snapshot and snapshot.get("case_id") == case_id:
                     continue
             raise ValueError("EVIDENCE_CASE_MISMATCH")
 
 
 def save_thesis(store: MemoryStore, case_id: str, actor: str, request: ThesisRequest) -> dict[str, Any]:
-    _validate_case_refs(store, case_id, request.evidence_ids)
-    value = {
-        "id": store._id("thesis"),
-        "case_id": case_id,
-        "author": actor,
-        "core_thesis": request.core_thesis,
-        "drivers": request.drivers,
-        "risks": request.risks,
-        "catalysts": request.catalysts,
-        "unresolved_questions": request.unresolved_questions,
-        "evidence_ids": request.evidence_ids,
-    }
-    result = store.append_version(store.theses, case_id, request.expected_version, value)
-    store.audit_event("thesis.versioned", actor, case_id=case_id, version=result["version"])
+    with store.lock:
+        _validate_case_refs(store, case_id, request.evidence_ids)
+        value = {
+            "id": store._id("thesis"),
+            "case_id": case_id,
+            "author": actor,
+            "core_thesis": request.core_thesis,
+            "drivers": request.drivers,
+            "risks": request.risks,
+            "catalysts": request.catalysts,
+            "unresolved_questions": request.unresolved_questions,
+            "evidence_ids": request.evidence_ids,
+        }
+        audit_start = len(store.audit)
+        result = store.append_version(store.theses, case_id, request.expected_version, value, persist=False)
+        store.audit_event("thesis.versioned", actor, case_id=case_id, version=result["version"])
+        try:
+            store.persist()
+        except Exception:
+            store.theses[case_id].pop()
+            if not store.theses[case_id]:
+                store.theses.pop(case_id, None)
+            del store.audit[audit_start:]
+            raise
     return result
 
 
@@ -57,17 +71,27 @@ def save_recommendations(store: MemoryStore, case_id: str, actor: str, request: 
         "stale": False,
         "stale_reasons": [],
     }
-    result = store.append_version(store.recommendations, case_id, request.expected_version, value)
-    store.audit_event("recommendation.versioned", actor, case_id=case_id, version=result["version"])
+    with store.lock:
+        audit_start = len(store.audit)
+        result = store.append_version(store.recommendations, case_id, request.expected_version, value, persist=False)
+        store.audit_event("recommendation.versioned", actor, case_id=case_id, version=result["version"])
+        try:
+            store.persist()
+        except Exception:
+            store.recommendations[case_id].pop()
+            if not store.recommendations[case_id]:
+                store.recommendations.pop(case_id, None)
+            del store.audit[audit_start:]
+            raise
     return result
 
 
 def save_report_inputs(store: MemoryStore, case_id: str, actor: str, thesis_request: ThesisRequest, recommendation_request: RecommendationMatrixRequest, accepted_snapshot_id: str | None = None) -> dict[str, Any]:
-    _validate_case_refs(store, case_id, thesis_request.evidence_ids)
-    _validate_case_refs(store, case_id, recommendation_request.analytical_dependency_ids, artifacts_only=True)
     with store.lock:
-        theses = store.theses.setdefault(case_id, [])
-        recommendations = store.recommendations.setdefault(case_id, [])
+        _validate_case_refs(store, case_id, thesis_request.evidence_ids)
+        _validate_case_refs(store, case_id, recommendation_request.analytical_dependency_ids, artifacts_only=True)
+        theses = store.theses.get(case_id)
+        recommendations = store.recommendations.get(case_id)
         thesis_version = theses[-1]["version"] if theses else 0
         recommendation_version = recommendations[-1]["version"] if recommendations else 0
         if thesis_version != thesis_request.expected_version or recommendation_version != recommendation_request.expected_version:
@@ -98,16 +122,30 @@ def save_report_inputs(store: MemoryStore, case_id: str, actor: str, thesis_requ
             "version": recommendation_version + 1,
             "created_at": now_iso(),
         }
-        theses.append(thesis)
-        recommendations.append(recommendation)
+        audit_start = len(store.audit)
         try:
+            if theses is None:
+                store.theses[case_id] = [thesis]
+            else:
+                theses.append(thesis)
+            if recommendations is None:
+                store.recommendations[case_id] = [recommendation]
+            else:
+                recommendations.append(recommendation)
+            store.audit_event("thesis.versioned", actor, case_id=case_id, version=thesis["version"])
+            store.audit_event("recommendation.versioned", actor, case_id=case_id, version=recommendation["version"])
             store.persist()
         except Exception:
-            theses.pop()
-            recommendations.pop()
+            if theses is None:
+                store.theses.pop(case_id, None)
+            else:
+                theses.pop()
+            if recommendations is None:
+                store.recommendations.pop(case_id, None)
+            else:
+                recommendations.pop()
+            del store.audit[audit_start:]
             raise
-    store.audit_event("thesis.versioned", actor, case_id=case_id, version=thesis["version"])
-    store.audit_event("recommendation.versioned", actor, case_id=case_id, version=recommendation["version"])
     return {"thesis": copy.deepcopy(thesis), "recommendations": copy.deepcopy(recommendation)}
 
 
@@ -125,9 +163,18 @@ def recommendation_state(store: MemoryStore, case_id: str, value: dict[str, Any]
 def create_note(store: MemoryStore, case_id: str, actor: str, body: str) -> dict[str, Any]:
     note = {"id": store._id("note"), "case_id": case_id, "author": actor, "body": body, "promoted": False, "created_at": now_iso()}
     with store.lock:
-        store.notes.setdefault(case_id, []).append(note)
-    store.persist()
-    store.audit_event("note.created", actor, case_id=case_id, note_id=note["id"])
+        notes = store.notes.setdefault(case_id, [])
+        audit_start = len(store.audit)
+        notes.append(note)
+        store.audit_event("note.created", actor, case_id=case_id, note_id=note["id"])
+        try:
+            store.persist()
+        except Exception:
+            notes.pop()
+            if not notes:
+                store.notes.pop(case_id, None)
+            del store.audit[audit_start:]
+            raise
     return copy.deepcopy(note)
 
 
@@ -138,12 +185,13 @@ def promote_note(store: MemoryStore, case_id: str, note_id: str, actor: str) -> 
             raise KeyError("NOTE_NOT_FOUND")
         if note["author"] != actor:
             raise PermissionError("only note author can promote")
-        if note["promoted"]:
+        promoted_source = store.sources.get(note.get("promoted_source_id"))
+        if note["promoted"] and promoted_source and not promoted_source["withdrawn"]:
             return copy.deepcopy(note)
+        prior_note = copy.deepcopy(note)
+        prior_source_set = store.source_sets.get(case_id)
         source_id = store._id("src-note")
-        note["promoted"] = True
-        note["promoted_source_id"] = source_id
-        store.sources[source_id] = {
+        source = {
             "id": source_id,
             "case_id": case_id,
             "filename": f"analyst-note-{note_id}.md",
@@ -158,7 +206,7 @@ def promote_note(store: MemoryStore, case_id: str, note_id: str, actor: str) -> 
             "source_kind": "analyst_note",
         }
         current = store.source_sets.get(case_id)
-        active_source_ids = [existing_id for existing_id in (current["source_ids"] if current else []) if not store.sources.get(existing_id, {}).get("withdrawn")]
+        active_source_ids = [existing_id for existing_id in (current["source_ids"] if current else []) if (existing_source := store.sources.get(existing_id)) and not existing_source.get("withdrawn")]
         new_source_set = {
             "id": store._id("set"),
             "case_id": case_id,
@@ -167,44 +215,77 @@ def promote_note(store: MemoryStore, case_id: str, note_id: str, actor: str) -> 
             "created_by": actor,
             "created_at": now_iso(),
         }
-        store.register_source_set(new_source_set)
-        store.persist()
-    store.audit_event("note.promoted", actor, case_id=case_id, note_id=note_id, source_id=source_id)
+        audit_start = len(store.audit)
+        try:
+            note["promoted"] = True
+            note["promoted_source_id"] = source_id
+            store.sources[source_id] = source
+            store.register_source_set(new_source_set)
+            store.audit_event("note.promoted", actor, case_id=case_id, note_id=note_id, source_id=source_id)
+            store.persist()
+        except Exception:
+            note.clear()
+            note.update(prior_note)
+            store.sources.pop(source_id, None)
+            if prior_source_set is None:
+                store.source_sets.pop(case_id, None)
+            else:
+                store.source_sets[case_id] = prior_source_set
+            store.source_set_history.pop(new_source_set["id"], None)
+            del store.audit[audit_start:]
+            raise
     return copy.deepcopy(note)
 
 
 def create_assumption(store: MemoryStore, case_id: str, actor: str, statement: str, evidence_ids: list[str], affected_module_ids: list[str], supporting_claim: str = "", conflicting_claim: str = "") -> dict[str, Any]:
-    _validate_case_refs(store, case_id, evidence_ids)
-    assumption = {
-        "id": store._id("assumption"),
-        "case_id": case_id,
-        "author": actor,
-        "statement": statement,
-        "supporting_claim": supporting_claim,
-        "conflicting_claim": conflicting_claim,
-        "evidence_ids": evidence_ids,
-        "affected_module_ids": affected_module_ids,
-        "status": "PROVISIONAL",
-        "stale": False,
-        "created_at": now_iso(),
-    }
     with store.lock:
-        store.assumptions.setdefault(case_id, []).append(assumption)
-    store.persist()
-    store.audit_event("assumption.created", actor, case_id=case_id, assumption_id=assumption["id"])
+        _validate_case_refs(store, case_id, evidence_ids)
+        assumption = {
+            "id": store._id("assumption"),
+            "case_id": case_id,
+            "author": actor,
+            "statement": statement,
+            "supporting_claim": supporting_claim,
+            "conflicting_claim": conflicting_claim,
+            "evidence_ids": evidence_ids,
+            "affected_module_ids": affected_module_ids,
+            "status": "PROVISIONAL",
+            "stale": False,
+            "created_at": now_iso(),
+        }
+        assumptions = store.assumptions.setdefault(case_id, [])
+        audit_start = len(store.audit)
+        assumptions.append(assumption)
+        store.audit_event("assumption.created", actor, case_id=case_id, assumption_id=assumption["id"])
+        try:
+            store.persist()
+        except Exception:
+            assumptions.pop()
+            if not assumptions:
+                store.assumptions.pop(case_id, None)
+            del store.audit[audit_start:]
+            raise
     return copy.deepcopy(assumption)
 
 
-def mark_assumptions_stale(store: MemoryStore, case_id: str, changed_source_ids: set[str]) -> None:
+def mark_assumptions_stale(store: MemoryStore, case_id: str, changed_source_ids: set[str], *, persist: bool = True) -> None:
     with store.lock:
+        prior_assumptions = copy.deepcopy(store.assumptions.get(case_id)) if persist else None
         changed = False
         for assumption in store.assumptions.get(case_id, []):
             if changed_source_ids.intersection(assumption["evidence_ids"]):
                 assumption["stale"] = True
                 assumption["status"] = "STALE"
                 changed = True
-        if changed:
-            store.persist()
+        if changed and persist:
+            try:
+                store.persist()
+            except Exception:
+                if prior_assumptions is None:
+                    store.assumptions.pop(case_id, None)
+                else:
+                    store.assumptions[case_id] = prior_assumptions
+                raise
 
 
 def build_snapshot_payload(store: MemoryStore, run: dict[str, Any]) -> dict[str, Any]:

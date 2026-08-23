@@ -96,18 +96,34 @@ def validate_archive(content: bytes) -> None:
 def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
     suffix = Path(filename).suffix.lower()
     if suffix == ".json":
+        def reject_non_finite(_constant: str) -> None:
+            raise ValueError("non-finite JSON number")
+
+        def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            data = dict(pairs)
+            if len(data) != len(pairs):
+                raise ValueError("duplicate JSON key")
+            return data
+
         try:
-            data = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            data = json.loads(content.decode("utf-8"), parse_constant=reject_non_finite, object_pairs_hook=reject_duplicate_keys)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail="invalid JSON source") from exc
+        if data is None or (isinstance(data, str) and not data.strip()) or (isinstance(data, (dict, list)) and not data):
+            raise HTTPException(status_code=422, detail="source contains no extractable evidence")
         text = json.dumps(data, sort_keys=True, indent=2)
     elif suffix == ".pdf":
-        text = ""
         try:
             from pypdf import PdfReader
 
             reader = PdfReader(io.BytesIO(content))
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            page_count = len(reader.pages)
+            if not page_count:
+                raise ValueError("PDF contains no pages")
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="invalid PDF source") from exc
+        try:
+            text = "\n".join(reader.pages[index].extract_text() or "" for index in range(page_count))
         except Exception:
             text = ""
         if not text.strip():
@@ -118,18 +134,29 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
 
             workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
             lines: list[str] = []
+            has_cell_value = False
             for sheet in workbook.worksheets:
                 lines.append(f"[sheet:{sheet.title}]")
                 for row in sheet.iter_rows(values_only=True):
-                    lines.append("\t".join("" if value is None else str(value) for value in row))
+                    values = ["" if value is None else str(value) for value in row]
+                    has_cell_value = has_cell_value or any(value.strip() for value in values)
+                    lines.append("\t".join(values))
+            if not has_cell_value:
+                raise HTTPException(status_code=422, detail="source contains no extractable evidence")
             text = "\n".join(lines)
         except Exception as exc:
+            if isinstance(exc, HTTPException):
+                raise
             raise HTTPException(status_code=422, detail="invalid XLSX source") from exc
     else:
         try:
             text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            text = "Binary source stored; text extraction is unavailable for this file."
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=422, detail="text source must be UTF-8") from exc
+    if suffix in {".txt", ".md"} and not text.strip():
+        raise HTTPException(status_code=422, detail="source contains no extractable evidence")
+    if suffix == ".csv" and not text.strip(" \t\r\n,\""):
+        raise HTTPException(status_code=422, detail="source contains no extractable evidence")
     text = text[:2_000_000]
     blocks = []
     for index, line in enumerate(text.splitlines() or [text], start=1):
@@ -144,6 +171,8 @@ async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: s
     if suffix not in ALLOWED_SUFFIXES:
         raise HTTPException(status_code=415, detail="unsupported source type")
     content = await upload.read(max_bytes + 1)
+    if not content:
+        raise HTTPException(status_code=422, detail="source is empty")
     if len(content) > max_bytes:
         raise HTTPException(status_code=413, detail="source exceeds upload limit")
     scan_content(content, vault.settings)
@@ -166,6 +195,10 @@ async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: s
         "withdrawn": False,
     }
     with store.lock:
+        if any(existing["case_id"] == case_id and existing["sha256"] == sha256 and not existing.get("withdrawn") for existing in store.sources.values()):
+            raise HTTPException(status_code=409, detail="source content already active")
+        prior_source_set = store.source_sets.get(case_id)
+        audit_start = len(store.audit)
         store.sources[source_id] = source
         source_set = store.source_sets.get(case_id)
         version = (source_set["version"] + 1) if source_set else 1
@@ -179,8 +212,18 @@ async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: s
             "created_at": now_iso(),
         }
         store.register_source_set(new_source_set)
-        store.persist()
-    store.audit_event("source.ingested", actor, case_id=case_id, source_id=source_id, sha256=sha256)
+        store.audit_event("source.ingested", actor, case_id=case_id, source_id=source_id, sha256=sha256)
+        try:
+            store.persist()
+        except Exception:
+            store.sources.pop(source_id, None)
+            if prior_source_set is None:
+                store.source_sets.pop(case_id, None)
+            else:
+                store.source_sets[case_id] = prior_source_set
+            store.source_set_history.pop(new_source_set["id"], None)
+            del store.audit[audit_start:]
+            raise
     return {key: value for key, value in {**source, "source_set": store.source_sets[case_id].copy()}.items() if key != "vault_path"}
 
 

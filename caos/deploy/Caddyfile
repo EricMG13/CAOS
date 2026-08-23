@@ -1,6 +1,8 @@
 {$CAOS_DOMAIN} {
     encode gzip
-    request_body { max_size {$MAX_UPLOAD_MB:250}MiB }
+    request_body {
+        max_size {$MAX_UPLOAD_MB:250}MiB
+    }
     request_header -X-Forwarded-User
     request_header -X-Forwarded-Email
     request_header -X-Forwarded-Groups

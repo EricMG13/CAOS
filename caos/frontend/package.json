@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "a11y": "node scripts/a11y-axe.mjs",
+    "test:production-inventory": "node scripts/production-inventory.mjs",
     "test:workbench": "node scripts/workbench-smoke.mjs"
   },
   "dependencies": {

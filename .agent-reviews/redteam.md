@@ -3481,3 +3481,141 @@ Decision under review: make the existing case workspace honest under reload, nar
 | RT-2026-08-19-011 | Accessibility reviewer | A desktop-only gate prevents keyboard, zoom, and reflow access below 900px; async failures are indistinguishable from empty data. | High | Resolved | Replaced the gate with a horizontal mobile rail and stacked panels, added explicit loading/error states, and re-ran the axe suite across all nine destinations with zero violations. |
 
 Decision: accept the hardening pass subject to continued API-backed browser testing for real accepted snapshots and report approval flows. No authority or recommendation semantics were widened by the UX changes.
+
+## 2026-08-19 — CI workflow alignment critic pass
+
+Decision under review: align the repository's pull-request and scheduled QA
+workflows with the current CAOS tree so the gates execute real checks instead of
+referencing removed suites, scripts, and lockfiles.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-19-012 | Coverage reviewer | Removing stale jobs could silently reduce validation coverage. | High | Resolved | Preserve the actual frontend lint/typecheck/build, backend pytest/ruff, security audit, deploy asset, corpus, and Docker-image checks. Remove only jobs whose inputs do not exist in this repository. |
+| RT-2026-08-19-013 | Release engineer | Without a requirements lock, CI may become non-reproducible. | Medium | Accepted | The current supported dependency contract is the two checked-in requirements files; no lockfile is present. Keep dependency ranges explicit and track lock adoption as a separate release-hardening task rather than pretending the missing lock is enforced. |
+| RT-2026-08-19-014 | Security auditor | A route audit that scans deleted modules can fail loudly but still provide no assurance about live routes. | Critical | Resolved | Point the audit at `caos/server/caos/http.py`, retain the fail-closed parser behavior, and require every live route except health to use the current identity/case authorization helpers. |
+| RT-2026-08-19-015 | Operations reviewer | Docker, image scanning, and full-history secrets cannot be proven on this workstation. | Medium | Accepted | Keep those checks in CI/nightly and record local Docker-daemon absence as an execution limitation; local equivalents cover static configuration and available application checks. |
+
+Decision: accept the alignment. No product behavior or authority boundary changes;
+the change restores trustworthy execution of the repository's existing quality
+controls and makes unverified remote-only checks explicit.
+
+## 2026-08-20 — Deep-Dive focus review critic pass
+
+Decision under review: replace persistent Deep-Dive module and evidence columns
+with a narrative-first focus canvas, compact controls, and contextual drawers
+while preserving the legacy evidence-chip interaction.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-20-001 | Evidence auditor | Hiding the evidence rail could make lineage less discoverable and encourage analysts to read unsupported prose. | High | Resolved in design | Evidence chips remain inline after every material claim; a named Sources control stays in the global header; both open the source in one interaction without permanently narrowing the canvas. |
+| RT-2026-08-20-002 | Legacy-workflow reviewer | Replacing legacy `E-xx` chips with verbose page-labelled pills would weaken scanability and lose cross-highlight behaviour. | High | Resolved in design | Preserve compact stable IDs, blue/amber severity treatments, matching-ID synchronization on hover/focus, and exact-source activation. Page and section detail moves to the drawer. |
+| RT-2026-08-20-003 | QA reviewer | Moving QA off-canvas could hide a material exception behind a favourable `passed` label. | High | Resolved in design | The header always shows the textual QA state and critical count when non-zero. Warning evidence carries an amber glyph, and the QA drawer leads with exceptions before passed checks. |
+| RT-2026-08-20-004 | Accessibility reviewer | Overlay drawers can trap focus incorrectly, lose the analyst's place, or become unusable at zoom and narrow widths. | High | Resolved in design; implementation gate | Use native dialog semantics, Escape close, focus containment and trigger restoration; drawers fit the viewport without horizontal overflow. Verify with axe, keyboard tests, narrow reflow, and zoom. |
+| RT-2026-08-20-005 | Analytical-integrity reviewer | A polished chart shell could tempt the client to invent series values that are absent from the current artifact payload. | Critical | Resolved in design; implementation gate | Render only governed values carried by an accessible visual payload. Extend the server contract where necessary; never infer or fabricate chart series in the client. |
+| RT-2026-08-20-006 | Workflow reviewer | Removing persistent module navigation can make cross-module comparison slower. | Medium | Accepted with mitigation | The module selector remains fixed immediately below the global header and exposes position in the set. Prior-snapshot comparison is one secondary action; persistent columns are not justified by the review task. |
+
+Decision: accept the focus-view design subject to exact snapshot-pinned evidence
+resolution, governed visual data, drawer focus restoration, and accessibility
+verification. The design intentionally excludes portfolio, coverage, committee,
+and authoring workflows.
+
+## 2026-08-22 — Application-wide Analyst Workbench critic pass
+
+Decision under review: reorganize CAOS around an issuer-first Analyst Workbench with workflow navigation, curated conclusion-first layouts, linked visual analysis, contextual evidence and QA, and accepted-snapshot authority.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-001 | Saboteur | A stale issuer or case selection can bind a workflow to the wrong snapshot while the shell still displays the prior context. | Critical | Resolved in design; implementation gate | Every workflow request carries explicit issuer, case, and accepted-authority identifiers. Context changes cancel or ignore stale responses and clear incompatible selections before rendering. |
+| RT-2026-08-22-002 | Analytical-integrity reviewer | Tableau-style linked highlighting can imply a relationship that the governed payload does not establish. | Critical | Resolved in design; implementation gate | Linked content requires typed relationships supplied by governed payloads. The client cannot infer links from matching labels, colours, positions, or values. |
+| RT-2026-08-22-003 | Security auditor | Universal issuer, case, and evidence search can disclose unauthorized names or direct-object identifiers before the user opens a result. | Critical | Resolved in design; implementation gate | Search applies authorization before returning result labels. Palette and drawer actions use the same authorized routes as visible actions. Direct identifiers cannot broaden access. |
+| RT-2026-08-22-004 | QA reviewer | Compact QA chrome can hide a material exception behind a favourable aggregate status. | High | Resolved in design | Critical and warning states remain visible on the resting canvas. The QA drawer lists exceptions before passed checks, and status never relies on colour alone. |
+| RT-2026-08-22-005 | Workflow reviewer | Replacing eight destinations with six workflows can break bookmarks, deep links, and user muscle memory. | High | Resolved in design; implementation gate | Existing routes redirect to workflow destinations while preserving authorized issuer, case, run, artifact, and source identifiers. Migration ships in bounded phases with explicit redirect tests. |
+| RT-2026-08-22-006 | New hire | Adding shell, palette, drawers, linked state, redirects, and workflow surfaces inside the current `Workspace.tsx` monolith will make every later change harder. | High | Resolved in design; implementation gate | The implementation plan must separate the shell, workflow surfaces, and contextual inspectors by existing responsibilities. It must avoid speculative layers and preserve current contracts. |
+| RT-2026-08-22-007 | Accessibility reviewer | A desktop-first terminal can become unusable at 200% zoom, narrow widths, or with keyboard-only navigation. | High | Resolved in design; implementation gate | Each migration phase requires 1440 px, 1024 px, 200% zoom, keyboard, reduced-motion, chart-equivalent, and axe verification before consolidation. |
+| RT-2026-08-22-008 | Performance reviewer | Cross-workflow context and large analytical surfaces can trigger redundant refetches or retain sensitive cached data after an identity change. | High | Resolved in design; implementation gate | Cache only accepted authority within its issuer, case, and identity scope. Clear scoped caches on identity or authorization changes and measure performance against the current baseline. |
+
+Decision: accept the application-wide Analyst Workbench design subject to explicit authority binding, authorized search, typed linked relationships, route compatibility, bounded component responsibilities, and phased accessibility verification.
+
+## 2026-08-22 — Analyst Workbench adversarial-fix critic pass
+
+Decision under review: close the navigation, authority-race, routing, drawer, and QA gaps found in the application-wide workbench implementation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-009 | Authority reviewer | A delayed run-creation response can attach Case A's new run after the analyst has switched to Case B. | Critical | Resolved | Run creation now captures both case identity and request generation; case changes invalidate the generation, stale success/error/finally paths are ignored, and a delayed-response browser check verifies that Case B retains its own execution. |
+| RT-2026-08-22-010 | Security reviewer | Malformed initial case/run identifiers can trigger unauthorized detail requests before the authorized case list resolves, then leave the shell loading forever. | Critical | Resolved | Case and run detail effects now require membership in the authorized case list. Case-list reconciliation consumes invalid route authority, selects an authorized fallback through the normal boundary, and clears incompatible run state. |
+| RT-2026-08-22-011 | Navigation reviewer | A persistent client shell that discards route children makes the page boundary dead code; naïvely restoring children can instead hide or duplicate destination content. | High | Resolved | The root layout owns one persistent shell, known route pages validate and return an empty boundary, unknown routes render only the not-found boundary, and browser/build checks cover both paths. |
+| RT-2026-08-22-012 | Accessibility reviewer | Drawer links can navigate while leaving the modal over the destination, and evidence links can immediately reopen the same drawer from query state. | High | Resolved | Drawer navigation uses native dialog close, evidence navigation targets the source row by fragment rather than drawer-opening query state, and browser checks verify the modal is dismissed and the target is visible. |
+| RT-2026-08-22-013 | QA reviewer | Fixed smoke fixtures make repeat runs fail on uniqueness constraints, while performance measurements that only log values cannot prevent regressions. | High | Resolved | Smoke fixtures use unique per-run identifiers, the suite passes twice against one persistent server, and DCL/FCP are enforced against positive configurable budgets. |
+
+Decision: accept the fixes. Release remains gated on the repeatable workbench smoke suite, strict frontend checks, accessibility validation, and change-scope review.
+
+## 2026-08-22 — Backup pair publication critic pass
+
+Decision under review: preserve the existing `caos.dump` / `vault.tgz` operator
+interface while preventing an interrupted or concurrent backup from being
+silently restored as a mixed pair.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-014 | Durability reviewer | Two independent file moves can expose a new dump with an old vault if the process dies or another publisher interleaves. | Critical | Resolved in design | Serialize publishers with an atomic destination lock and publish a checksum manifest last. Restore verifies the standard pair against the manifest before it creates any drill target. |
+| RT-2026-08-22-015 | Compatibility reviewer | Replacing the pair with a generation directory or new pointer path would break the documented operator interface. | High | Resolved | Keep `caos.dump` and `vault.tgz` at their existing paths; add only the companion manifest. Generic manually supplied restore pairs remain supported without a manifest. |
+| RT-2026-08-22-016 | Operations reviewer | A process killed while holding a lock can prevent the next backup indefinitely. | Medium | Accepted with mitigation | The lock fails closed with an explicit operator-review error. Automatic stale-lock removal is unsafe because a live long-running dump cannot be distinguished reliably. |
+| RT-2026-08-22-017 | Security reviewer | A checksum manifest might be mistaken for tamper-proof provenance. | Medium | Accepted | The manifest detects accidental mixed publication, not malicious backup-store modification. Access control and durable remote backup integrity remain separate operational controls. |
+
+Decision: accept the lock-plus-manifest design. It keeps the public backup paths,
+serializes writers, and turns the unavoidable multi-file crash window into a
+safe restore refusal rather than silent mixed-state recovery.
+
+## 2026-08-22 — Production-scale local dataset and full-inventory critic pass
+
+Decision under review: treat the sanitized PostgreSQL/ClamAV fixture and the
+analyst plus PM/QA route inventory as the local production-readiness baseline.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-018 | Data-integrity reviewer | A dump taken while the API or worker is still writing can disagree with the source vault even when `pg_restore` succeeds. | Critical | Resolved | Stop both application processes before the final dump, then restore the frozen custom-format dump into a fresh database and verify revision and cardinalities. The fixture README records the final checksum and sanitized vault path. |
+| RT-2026-08-22-019 | Concurrency reviewer | A merged PostgreSQL revision can be installed in memory before commit, so a failed write leaves later rollback code mutating detached objects. | Critical | Resolved | The SQL step now returns pending and database-authoritative states. Ordinary and fenced callers adopt the pending state only after commit and restore the authoritative state on failure. A revision-merge/commit-failure regression covers both paths. |
+| RT-2026-08-22-020 | Scale reviewer | Calling 218 cases and 130 sources “production scale” can hide that the current state envelope, case table, and source table are not paginated or horizontally scalable. | High | Accepted with explicit ceiling | The 24-reader burst is gated at p95 under 1.5 seconds and the dense DOM is checked for alerts, stuck loading, accessibility, and overflow. The fixture README names the single-API-process topology, multi-writer CAS, and pagination thresholds as external gates; it does not claim arbitrary scale. |
+| RT-2026-08-22-021 | QA reviewer | “Every control” can be overstated if hundreds of repeated Select buttons and source summaries are merely counted. | High | Resolved by scope definition | Inventory every visible element for both identities, exercise every distinct control behavior, and treat repeated row controls as one implementation equivalence class. Record the distinction in the handoff rather than claiming every duplicate row was clicked. |
+| RT-2026-08-22-022 | Security reviewer | Synthetic identity headers can prove application RBAC while bypassing the real OIDC redirect, MFA, and oauth2-proxy exchange. | High | Accepted external gate | Verify trusted-edge rejection, role resolution, cross-case isolation, analyst 403, admin membership, and Approver ratification locally. Keep the real IdP/step-up exchange explicitly unverified and required before deployment. |
+| RT-2026-08-22-023 | Analytical-authority reviewer | A visually complete Model Builder could conceal that official CP-MODEL authority remains unavailable. | Critical | Resolved | Preserve and test the explicit blocked state. Do not seed fabricated model output into the dataset. Signed corrected Deploy V authority remains a named external gate. |
+
+Decision: accept the local baseline within its documented topology and scale.
+The dump is frozen and restore-proven, all eight product destinations pass for
+both identities, and the remaining IdP, official-model, and horizontal-writer
+gates are explicit rather than represented as locally complete.
+
+## 2026-08-22 — Production-scale completion-audit addendum
+
+Decision under review: close the local readiness goal after the second full
+inventory pass and publish the rebuilt fixture as the reusable baseline.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-024 | Analytical-authority reviewer | Pathway names and accepted statuses can all be present while the accepted snapshots contain no artifacts, making a superficially complete fixture analytically empty. | Critical | Resolved | The completion audit now requires each of the six pathways to have a succeeded accepted run whose nonempty node set is entirely succeeded and artifact-bound. All six pathways were re-executed under the fixed worker, yielding 44/44 durable node artifacts; latest and visible authority point to repaired snapshots. Older empty snapshots remain explicitly labeled regression evidence rather than being silently erased. |
+| RT-2026-08-22-025 | QA reviewer | A one-off manual inventory cannot prove repeatability, and route interception can race page teardown to produce false product failures. | High | Resolved | The inventory is a checked-in runnable harness with exact URL predicates and fixture-identity assertions. It releases delayed routes, waits for network idle, and passed twice consecutively across 16 loaded combinations, 46 controlled state probes, all four role identities, and the staged load/recovery gate. |
+| RT-2026-08-22-026 | Portability reviewer | Source records contain absolute local vault paths, so restoring the dump under another checkout root does not automatically relocate source bytes. | Medium | Accepted with explicit boundary | This is a local fixture, not a portable deployment backup. Restore at the documented checkout path or rewrite the synthetic `vault_path` prefix as a deliberate local migration and re-run the 143-reference existence/hash check. No cross-host portability claim is made. |
+| RT-2026-08-22-027 | Release reviewer | A fresh Next.js build can leave the FastAPI static directory serving stale build IDs even though source lint and build pass. | High | Resolved | The final build is synchronized into the server static directory, directory parity is exact, and a live authenticated route was checked to reference only assets present in the deployed directory before the runtime was frozen. |
+
+Decision: close the local pass. The frozen revision and every restored state
+cardinality match, all 143 vault references resolve with matching hashes, the
+secret scan is clean, and no high-impact local objection remains open.
+
+## 2026-08-23 — Production-scale rerun and narrow-reflow critic pass
+
+Decision under review: close the production-like local rerun after correcting
+responsive reachability, Report Studio reflow, and scanner lifecycle failures.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-028 | Accessibility reviewer | The narrow shell hides workflow tool links, leaving Cases and Run Console unreachable even though their routes render correctly. | High | Resolved | Add only the tool-only destinations to the existing command palette, preserve case/run query authority, and verify both links for analyst and PM/QA users at 375px. |
+| RT-2026-08-23-029 | Report reviewer | A full snapshot digest can widen the light paper proof beyond the viewport and create page-level horizontal scrolling. | High | Resolved | Reuse the existing monospace wrapping utility on the snapshot digest and retain a 375px Report Studio overflow assertion in the workbench smoke test. |
+| RT-2026-08-23-030 | Operations reviewer | The mounted ClamAV configuration omits the Unix socket required by the official image lifecycle and the Compose healthcheck; TCP scanning works briefly, then the scanner exits after its socket wait. | Critical | Resolved | Restore `LocalSocket /tmp/clamd.sock` while retaining TCP 3310, add a configuration regression, and verify Compose-equivalent `clamdscan --ping` health plus application source intake. |
+| RT-2026-08-23-031 | Performance reviewer | A single 24-reader run can breach the 1.5-second p95 gate because local host scheduling queues every endpoint uniformly, obscuring whether one API route regressed. | High | Resolved by bounded diagnosis | Keep the gate unchanged, repeat the exact stage with per-endpoint timing, and require a clean complete rerun. No endpoint dominated and no request failed; the final complete runs passed at 1,105.3ms and 1,159.5ms p95 with 49.0ms and 36.6ms recovery. |
+
+Decision: close the local rerun. The final production image, corrected scanner,
+both role journeys, all 16 loaded route combinations, all 46 controlled states,
+54 rendered axe combinations, 16 narrow-touch combinations, vault hashes,
+secret scan, and staged load/recovery gate pass. Real IdP exchange, signed model
+authority, and horizontal multi-writer scale remain the existing external gates.

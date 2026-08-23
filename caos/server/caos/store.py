@@ -119,7 +119,7 @@ class MemoryStore:
                 "case_id": case_id,
                 "created_by": actor,
                 "created_at": now_iso(),
-                "status": "queued",
+                "status": "planning",
                 "plan": copy.deepcopy(plan),
                 "node_ids": list(node_ids),
                 "current_node_id": None,
@@ -305,7 +305,7 @@ class MemoryStore:
     def versioned(self, bucket: dict[str, list[dict[str, Any]]], case_id: str) -> list[dict[str, Any]]:
         return copy.deepcopy(bucket.get(case_id, []))
 
-    def append_version(self, bucket: dict[str, list[dict[str, Any]]], case_id: str, expected_version: int, value: dict[str, Any]) -> dict[str, Any]:
+    def append_version(self, bucket: dict[str, list[dict[str, Any]]], case_id: str, expected_version: int, value: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
         with self.lock:
             versions = bucket.setdefault(case_id, [])
             current = versions[-1]["version"] if versions else 0
@@ -315,7 +315,8 @@ class MemoryStore:
             value["version"] = current + 1
             value["created_at"] = now_iso()
             versions.append(value)
-            self.persist()
+            if persist:
+                self.persist()
             return copy.deepcopy(value)
 
 
@@ -442,14 +443,21 @@ class PostgresStore(MemoryStore):
     @contextmanager
     def _fenced_connection(self, run_id: str, attempt_token: str) -> Iterator[Any]:
         with self.lock:
-            with self._psycopg.connect(self._dsn) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT 1 FROM jobs WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE", (run_id, attempt_token))
-                    if cursor.fetchone() is None:
-                        raise JobFencedError("stale workflow attempt")
-                    yield connection
-                    self._persist_connection(connection)
-                connection.commit()
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT 1 FROM jobs WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE", (run_id, attempt_token))
+                        if cursor.fetchone() is None:
+                            raise JobFencedError("stale workflow attempt")
+                        yield connection
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
 
     def update_run_fenced(self, run_id: str, attempt_token: str, **changes: Any) -> None:
         with self._fenced_connection(run_id, attempt_token):
@@ -499,11 +507,18 @@ class PostgresStore(MemoryStore):
 
     def persist(self) -> None:
         with self.lock:
-            with self._psycopg.connect(self._dsn) as connection:
-                self._persist_connection(connection)
-                connection.commit()
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    state, revision, database_state, database_revision = self._persist_connection(connection)
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
 
-    def _persist_connection(self, connection: Any) -> None:
+    def _persist_connection(self, connection: Any) -> tuple[dict[str, Any], int, dict[str, Any], int]:
         state = self._snapshot()
         with connection.cursor() as cursor:
             cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
@@ -511,11 +526,14 @@ class PostgresStore(MemoryStore):
             current_revision, current_state = row if row else (self._state_revision, state)
             if current_revision != self._state_revision:
                 state = _merge_state(self._base_state, state, current_state)
-                self._restore(state)
             next_revision = current_revision + 1
             cursor.execute("UPDATE caos_state SET revision = %s, state = %s WHERE id = true", (next_revision, self._jsonb(json.loads(json.dumps(state)))))
-            self._state_revision = next_revision
-            self._base_state = copy.deepcopy(state)
+        return state, next_revision, current_state, current_revision
+
+    def _adopt_persisted(self, state: dict[str, Any], revision: int) -> None:
+        self._restore(state)
+        self._state_revision = revision
+        self._base_state = self._snapshot()
 
     def refresh(self) -> None:
         with self.lock:
@@ -523,7 +541,7 @@ class PostgresStore(MemoryStore):
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT revision, state FROM caos_state WHERE id = true")
                     row = cursor.fetchone()
-            if row:
+            if row and row[0] != self._state_revision:
                 self._state_revision = row[0]
                 self._restore(row[1])
                 self._base_state = self._snapshot()

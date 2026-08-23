@@ -1,5 +1,6 @@
 """Same-image worker loop for queued PostgreSQL runs."""
 
+import math
 import os
 import time
 
@@ -10,6 +11,8 @@ def main() -> None:
     runtime = app.state.runtime
     store = app.state.store
     poll_seconds = float(os.getenv("WORKER_POLL_SECONDS", "1"))
+    if not math.isfinite(poll_seconds) or poll_seconds < 0.01:
+        poll_seconds = 0.01
     futures = {}
     print("CAOS worker ready: PostgreSQL jobs are claimed with leases and fenced attempts.", flush=True)
     while True:
@@ -23,8 +26,7 @@ def main() -> None:
             if future.done():
                 future.result()
                 del futures[run_id]
-        if not queued and not futures:
-            time.sleep(poll_seconds)
+        time.sleep(poll_seconds)
 
 
 if __name__ == "__main__":

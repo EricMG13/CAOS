@@ -77,8 +77,12 @@ export default function WorkbenchShell({
   const workflowItems = useMemo(() => workflows.filter((item) =>
     item.label.toLowerCase().includes(query.toLowerCase()),
   ), [query]);
+  const toolItems = useMemo(() => workflows.flatMap((workflow) => workflow.tools ?? []).filter((tool) =>
+    !workflows.some((workflow) => workflow.href === tool.href)
+      && tool.label.toLowerCase().includes(query.toLowerCase()),
+  ), [query]);
   const exactEvidenceKind = caseId ? evidenceKind(query) : null;
-  const resultCount = caseItems.length + workflowItems.length + (exactEvidenceKind ? 1 : 0);
+  const resultCount = caseItems.length + workflowItems.length + toolItems.length + (exactEvidenceKind ? 1 : 0);
 
   const openPalette = () => {
     setPaletteOpen(true);
@@ -172,23 +176,23 @@ export default function WorkbenchShell({
     drawerBody = <div className="state-block unavailable">
       <strong>No governed snapshot-level QA summary is available.</strong>
       <p>Run and artifact status are not substituted for QA. Review module exceptions in Analyse.</p>
-      <Link className="button small" href={withQuery("/run-console", { case: caseId })}>Open Run Console</Link>
+      <Link className="button small" href={withQuery("/run-console", { case: caseId })} onNavigate={closeDrawer}>Open Run Console</Link>
     </div>;
   } else if (drawer?.kind === "sources") {
     drawerBody = authorityPending ? <div className="state-block" role="status">
       <strong>Loading source authority…</strong>
       <p>Source count and accepted source-set identity are not shown until the case authority resolves.</p>
-      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
+      <Link className="button small" href={withQuery("/sources", { case: caseId })} onNavigate={closeDrawer}>Open Sources</Link>
     </div> : authorityStatus === "error" ? <div className="state-block unavailable">
       <strong>Source authority unavailable.</strong>
       <p>Current source count and accepted source-set identity could not be verified.</p>
-      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
+      <Link className="button small" href={withQuery("/sources", { case: caseId })} onNavigate={closeDrawer}>Open Sources</Link>
     </div> : <div className="state-block">
       <dl>
         <dt>Current source count</dt><dd className="mono">{selectedCase?.source_count ?? "Unavailable"}</dd>
         <dt>Accepted source set</dt><dd className="mono">{acceptedSourceSetIdentity}</dd>
       </dl>
-      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
+      <Link className="button small" href={withQuery("/sources", { case: caseId })} onNavigate={closeDrawer}>Open Sources</Link>
     </div>;
   } else if (drawer?.kind === "evidence") {
     drawerBody = <div className="state-block">
@@ -209,7 +213,7 @@ export default function WorkbenchShell({
         {!drawer.source.blocks.length && <p className="muted">No extracted source text.</p>}
         {drawer.source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Open the full source for the remaining {drawer.source.blocks.length - 20} blocks.</p>}
       </div>
-      <Link className="button small" href={withQuery("/sources", { case: caseId, source: drawer.source.id })}>Open full source</Link>
+      <Link className="button small" href={`${withQuery("/sources", { case: caseId })}#source-${drawer.source.id}`} onNavigate={closeDrawer}>Open full source</Link>
     </div>;
   }
   const evidenceHref = exactEvidenceKind === "source"
@@ -323,6 +327,19 @@ export default function WorkbenchShell({
               href={workflowHref(href)}
               onClick={closePalette}
             >Open {workflow.label}</Link>;
+          })}
+          {toolItems.map((tool) => {
+            const index = resultIndex++;
+            return <Link
+              id={`command-result-${index}`}
+              role="option"
+              aria-selected={activeResult === index}
+              className="nav-link"
+              tabIndex={-1}
+              key={tool.destination}
+              href={workflowHref(tool.href, tool.destination)}
+              onClick={closePalette}
+            >Open {tool.label}</Link>;
           })}
           {exactEvidenceKind && (() => {
             const index = resultIndex++;

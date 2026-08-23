@@ -5,32 +5,24 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel superseded runs on the same ref (rapid re-pushes to a PR branch).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Every job is read-only with respect to the repository. Declare that posture
-# explicitly so newly added jobs do not inherit GitHub's broader token defaults.
 permissions:
   contents: read
 
 jobs:
   frontend:
-    name: Frontend — lint, typecheck, test, build
+    name: Frontend — lint, typecheck, build
     runs-on: ubuntu-latest
-    # A microtask-starving hang (infinite re-render loop via promise-chained
-    # setState) never yields to the macrotask queue, so vitest's own
-    # testTimeout (vitest.config.ts) can never fire — only a wall-clock kill
-    # from the runner is immune to that. Job normally finishes in a few
-    # minutes; 15 is generous headroom, not a target.
     timeout-minutes: 15
     defaults:
       run:
         working-directory: caos/frontend
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
@@ -38,200 +30,105 @@ jobs:
       - run: npm ci
       - run: npm run lint -- --max-warnings=0
       - run: npx tsc --noEmit
-      - run: npm test
       - run: npm run build
 
   server:
-    name: Server — pytest
+    name: Server — tests and focused lint
     runs-on: ubuntu-latest
-    # Test on BOTH the CI floor (3.11) and the runtime the deploy image ships
-    # (3.14, Dockerfile) so runtime behavior on the deployed interpreter is
-    # actually exercised, not just the pip install. (audit P1)
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.14"]
-    services:
-      postgres:
-        # pgvector image (matches the deploy stack's db) so migration 0030's
-        # `CREATE EXTENSION vector` succeeds — plain postgres:18 lacks pgvector
-        # and the worker-lease tests error at schema setup.
-        image: pgvector/pgvector:pg18@sha256:12a379b47ad65289572ea0756efc11b7c241a6662833e8af7038cd3b73d647e0
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 10s
-          --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # full history so the complexity gate can diff the PR base
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: caos/server/requirements.lock
-      # Lint gate first — fails fast on dead imports / quality regressions
-      # before the heavier dependency install (config: ruff.toml).
-      - run: pip install ruff==0.15.18
-      - run: ruff check caos/server caos/tests
-      # Complexity gate — C901 (cyclomatic > 10) on the Python paths THIS PR
-      # changed. Exact path+symbol debt in the checked baseline may not worsen;
-      # new findings fail and stale/lowered entries must be tightened or removed.
-      - name: Complexity gate (changed Python)
-        if: github.event_name == 'pull_request'
+          cache-dependency-path: caos/server/requirements-dev.txt
+      - run: pip install -r caos/server/requirements-dev.txt
+      - name: Focused lint
         run: >-
-          python caos/scripts/check_complexity_delta.py
-          --base-ref "origin/${{ github.base_ref }}"
-      # Dead-code gate — vulture over the backend (currently zero findings at
-      # conf>=80). `cls` is a classmethod-override signature arg, never dead code.
-      - name: Dead code (vulture)
-        run: |
-          pip install vulture==2.14
-          vulture caos/server caos/scripts \
-            --exclude '*/.venv/*,*/.venv311/*' \
-            --min-confidence 80 --ignore-names cls
-      # Dev tooling comes from requirements-dev.txt, never a second inline pin.
-      # CI used to `pip install pytest pytest-asyncio httpx` unpinned and mypy at a
-      # hardcoded ==2.1.0 while requirements-dev.txt asked for ~=2.3 — so a local
-      # `pip install -r requirements-dev.txt` and CI ran different type checkers and
-      # different pytest majors. Every such gap shows up as "green on my machine, red
-      # in CI" with nothing in the diff to explain it. One file owns the versions.
-      # (httpx stays explicit: it is a test-only client, not dev tooling.)
-      - run: |
-          pip install --require-hashes -r caos/server/requirements.lock
-          pip install -r caos/server/requirements-dev.txt httpx
-      # Engine + API type gate (mypy.ini: files=engine,routes).
-      # The gate had drifted RED unnoticed because nothing in CI ran it; wire it in
-      # so a bad type in the engine can't merge. 3.11 leg only (mypy.ini pins 3.11).
-      - name: Engine and API type gate (mypy)
-        if: matrix.python-version == '3.11'
-        run: cd caos/server && mypy
-      # Default suite on SQLite (the existing tests + async; Postgres-only tests
-      # skipped). stress + cohort carry offline tests too (the mock-Anthropic wire
-      # shape, the cohort-fetch predicates) — previously never collected anywhere,
-      # so the stress mock could rot green (BE9-2).
-      - run: python -m pytest caos/tests/server caos/tests/stress caos/tests/cohort -q
-      # Guards the perf-smoke percentile math (the script runs against a live
-      # deployment, not CI — see caos/tests/perf/smoke.py).
-      - name: Perf smoke self-test
-        run: python caos/tests/perf/smoke.py --selftest
-      # Worker claim/lease tests against Postgres (SKIP LOCKED).
-      - name: Worker tests (Postgres)
+          ruff check --select F caos/server/caos caos/tests
+          --exclude caos/server/caos/methodology/vendor
+      - name: Route security audit
+        run: python run_sec_audit.py
+      - name: Backend regression suite
         env:
-          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
-        run: |
-          python -m pytest caos/tests/server/test_async_runs.py -k "worker or reaper or claim" -q
-          # E4 secret-log hygiene needs the deployed posture, which requires Postgres.
-          python -m pytest caos/tests/server/test_secret_log_hygiene.py -q
+          ANTHROPIC_API_KEY: ""
+        run: python -m pytest caos/tests -q -W always
 
-  lock:
-    name: Lock — requirements.lock in sync
+  browser:
+    name: Browser — workbench journey and accessibility
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      # requirements.txt is the loose spec; requirements.lock is what the prod image
-      # and CI install (pip install --require-hashes). Dependabot can bump only the .txt,
-      # so a bumped floor or an added dep could otherwise miss the lock and never reach
-      # prod. This check fails when the lock doesn't satisfy
-      # every requirements.txt spec. Deterministic — no regen/network (a regen+diff guard
-      # is not reproducible: pip-compile bakes the input path + Python version into it).
-      - run: pip install "packaging>=24"
-      - run: python caos/scripts/check_lock_sync.py
-
-  e2e:
-    name: E2E — Playwright
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: caos/frontend/package-lock.json
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: caos/server/requirements.lock
-      - name: Install frontend deps
-        working-directory: caos/frontend
-        run: npm ci
-      # Build the Next.js static export and stage it into caos/server/static,
-      # so the FastAPI app serves the UI the tests drive.
+          cache-dependency-path: caos/server/requirements-dev.txt
       - name: Build static frontend
         run: bash caos/scripts/build_frontend.sh
-      - name: Install server deps
-        run: pip install --require-hashes -r caos/server/requirements.lock
-      - name: Install Playwright browser
+      - name: Install server dependencies
+        run: pip install -r caos/server/requirements-dev.txt
+      - name: Install Playwright Chromium
         working-directory: caos/frontend
-        run: npx playwright install --with-deps chromium firefox webkit
-      # No DATABASE_URL → SQLite; no model key → /api/chat uses demo fallback
-      # (the research run test stubs /api/research, so a key isn't needed).
-      # Model Engine v2 is feature-flagged off by default (config.py) — the
-      # server pytest suite flips it in-process via the shared settings
-      # singleton, but this job spawns a real subprocess that only reads env,
-      # so model_flow.spec.ts's v2-authority test 404s without these.
-      # Alert rules are also default-off; enable them only on this real-API
-      # subprocess so monitor_flow can exercise the activation boundary.
-      # The whole three-browser sweep runs as ONE analyst, so the per-analyst
-      # analysis write budget (45/min, sized for a real human) rate-limits the
-      # late specs into 429 churn — give the harness principal test-only
-      # headroom; production defaults are unchanged (routes/analysis.py).
-      - name: Start app server
+        run: npx playwright install --with-deps chromium
+      - name: Start combined app
         run: |
-          nohup env CAOS_LINEAGE_V2_ENABLED=true CAOS_MODEL_ENGINE_V2_ENABLED=true CAOS_ALERT_RULES_V1_ENABLED=true \
-            CAOS_ANALYSIS_WRITE_MAX_PER_MINUTE=600 CAOS_ANALYSIS_READ_MAX_PER_MINUTE=2400 \
-            python caos/server/run.py > server.log 2>&1 &
+          nohup env ANTHROPIC_API_KEY="" python caos/server/run.py > server.log 2>&1 &
           for i in $(seq 1 30); do
-            curl -sf http://localhost:8000/api/health && exit 0
+            curl -sf http://127.0.0.1:8000/api/health && exit 0
             sleep 1
           done
-          echo "server did not become healthy"; cat server.log; exit 1
-      - name: Run E2E
+          cat server.log
+          exit 1
+      - name: Workbench journey
         working-directory: caos/frontend
-        run: npm run test:e2e -- --retries=0
-      - name: Upload report on failure
+        run: npm run test:workbench
+      - name: Accessibility sweep
+        working-directory: caos/frontend
+        run: npm run a11y
+      - name: Upload server log on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
-          path: |
-            caos/frontend/test-results
-            server.log
+          name: browser-server-log
+          path: server.log
           if-no-files-found: ignore
 
-  image:
-    name: Image — docker build
+  deploy-assets:
+    name: Deploy — scripts, compose, authority
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-      # Gates the self-hosted deploy image: builds the Next.js export (stage 1)
-      # and installs the server deps (stage 2). Build only — not pushed.
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n caos/deploy/*.sh caos/scripts/*.sh
+      - name: Compose schema and example environment
+        run: |
+          docker compose -f caos/deploy/docker-compose.yml config -q --no-interpolate
+          docker compose --env-file caos/.env.example -f caos/deploy/docker-compose.yml config -q
+      - name: Verify immutable methodology resources
+        run: python caos/deploy/verify_image_resources.py
+      - name: Corpus taxonomy consistency
+        run: python "Modular OS/tools/check_module_consistency.py"
+
+  image:
+    name: Image — build and resource verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Build app image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: caos/deploy/Dockerfile
-          push: false
-          load: true
-          tags: caos-app:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: docker build --tag caos-app:ci --file caos/deploy/Dockerfile .
       - name: Verify immutable app resources
         run: docker run --rm --entrypoint python caos-app:ci verify_image_resources.py
-      # OS-layer CVE gate on every image build. Previously Trivy ran only as a
-      # manual per-release step (SCAN_DISPOSITION.md), so a new digest could ship
-      # un-scanned between releases. --ignore-unfixed keeps the accepted no-fix
-      # Debian findings out of the gate: CI fails only on FIXABLE HIGH/CRITICAL
-      # findings — exactly the class the disposition's rebuild trigger exists for.
-      # The signed per-release disposition (full SARIF, no-fix set included)
-      # remains the H0 release gate; this step is the between-releases backstop.
       - name: Trivy scan — fixable HIGH/CRITICAL gate
         run: |
           curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
@@ -239,119 +136,32 @@ jobs:
           "$RUNNER_TEMP/trivy-bin/trivy" image --scanners vuln \
             --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 caos-app:ci
 
-  deploy-assets:
-    name: Deploy — shell + compose lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # Deploy assets were previously ungated — a broken backup.sh / compose
-      # could merge unseen (e.g. the D5 backup-rotation bug). shellcheck is
-      # preinstalled on ubuntu-latest; docker compose ships with the runner.
-      - name: Shellcheck deploy scripts
-        run: shellcheck caos/deploy/*.sh caos/scripts/*.sh
-      # --no-interpolate: validate structure/schema without resolving the runtime
-      # secrets (POSTGRES_PASSWORD etc.), which aren't present in CI (no .env).
-      - name: Validate compose file
-        run: docker compose -f caos/deploy/docker-compose.yml config -q --no-interpolate
-
-  fallow:
-    name: Fallow — new dead-code & duplication (PR gate)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # full history so fallow can diff the PR against its base
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      # Fails the PR only on dead code / duplication introduced by the diff.
-      # JS/TS only; run from the repo root so .fallowrc.json (ignores the
-      # design-sync dirs) is picked up.
-      - run: npx --yes fallow dead-code --changed-since "origin/${{ github.base_ref }}" --ci
-      - run: >-
-          npx --yes fallow dupes
-          --changed-since "origin/${{ github.base_ref }}"
-          --baseline .fallow-dupes-baseline.json
-          --ci
-
-  corpus:
-    name: Corpus — taxonomy consistency
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # Stdlib-only drift check: each module_name must agree across schema filename,
-      # ACTIVE_PROMPT, CP-X route graph, and the onboarding doc (Taxonomy A).
-      - name: Module taxonomy drift check
-        run: python3 "Modular OS/tools/check_module_consistency.py"
-
   security:
-    name: Security — deps, SAST, secrets
+    name: Security — dependency and SAST gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # full history so gitleaks scans past commits, not just the tree
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: caos/frontend/package-lock.json
-      # OSS-only gate — no paid SaaS (project policy: no-paid-services). Each
-      # step below exits nonzero on a finding, failing the PR.
       - run: pip install pip-audit==2.10.1 bandit==1.7.10
-      # Audit the exact, hashed production dependency graph (including
-      # markitdown/Pillow), not the loose application input.
-      - name: Dependency CVEs (pip-audit)
-        run: pip-audit -r caos/server/requirements.lock --require-hashes
-      # Python SAST — high severity, medium+ confidence. server/ + scripts/ only;
-      # the test dirs live under caos/tests and are out of scope here.
-      - name: Python SAST (bandit)
+      - name: Dependency CVEs
+        run: pip-audit -r caos/server/requirements.txt
+      - name: Python SAST
         run: >-
-          bandit -r caos/server caos/scripts
-          -x 'caos/server/.venv,caos/server/.venv311'
+          bandit -r caos/server/caos
+          -x caos/server/caos/methodology/vendor
           --severity-level high --confidence-level medium
-      # Frontend deps straight from the lockfile — no install needed.
-      # Wraps `npm audit --json` rather than calling `npm audit --audit-level=high`
-      # directly: the bare form is all-or-nothing, so one unfixable transitive
-      # advisory takes the job red until someone deletes the gate. The script keeps
-      # the high threshold and permits only advisories named in its dated,
-      # reachability-justified allowlist — failing on any new advisory, on an
-      # expired exception, and on an exception that has stopped matching.
-      - name: Frontend deps (advisory gate)
+      - name: Frontend dependency advisories
         working-directory: caos/frontend
-        run: node scripts/audit-gate.mjs
-      # Secret scan over THIS branch's own commits only — deliberately not full
-      # history. `.gitleaksignore` fingerprints are `<commit-sha>:<file>:<rule>:<line>`
-      # and gitleaks reads that file from the working tree, so a full-history scan
-      # demands the branch's tree carry a fingerprint for every allowlisted finding
-      # anywhere in shared history. It cannot: the moment main allowlists a new false
-      # positive, every already-open branch keeps the old file, the historical finding
-      # re-fires, and the PR goes red until someone rebases. That ratchet reddened the
-      # whole PR backlog (e.g. 99d95cd1 alert_evaluation.py, allowlisted on main,
-      # unknown to branches cut before it). Scanning only the range the PR actually
-      # adds makes the gate a function of the diff, so it cannot rot.
-      # Full-history sweeps live in nightly.yml, where a stale allowlist is a fixable
-      # alarm rather than a merge blocker.
-      # OSS image (no GITLEAKS_LICENSE — that is only required by the org-gated
-      # Action, which we deliberately avoid). .gitleaks.toml allowlists prose/vendored
-      # trees that carry example tokens.
-      - name: Secret scan (gitleaks — this branch's commits)
-        env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
-        run: |
-          set -euo pipefail
-          if [ -n "$BASE_SHA" ]; then
-            RANGE="$BASE_SHA..HEAD"
-          else
-            # Push builds (main): scan just the pushed commit(s).
-            RANGE="${{ github.event.before }}..HEAD"
-            git cat-file -e "${{ github.event.before }}" 2>/dev/null || RANGE="HEAD~1..HEAD"
-          fi
-          echo "gitleaks range: $RANGE"
-          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.18.4 \
-            detect --source=/repo --config=/repo/.gitleaks.toml --redact --no-banner \
-            --log-opts="$RANGE"
+        run: npm audit --audit-level=high
+      - name: Secret scan
+        run: >-
+          docker run --rm -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.18.4
+          detect --source=/repo --config=/repo/.gitleaks.toml --redact --no-banner

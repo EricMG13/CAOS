@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EvidenceChip from "./EvidenceChip";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
-import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, withQuery } from "../lib/workbench";
+import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, routeDestinations, withQuery } from "../lib/workbench";
 
 type RunRecord = { id: string; case_id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
 type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
@@ -42,10 +42,12 @@ async function request<T>(path: string, options: RequestInit = {}, signal?: Abor
   return response.json() as Promise<T>;
 }
 
-export default function Workspace({ destination }: { destination?: Destination } = {}) {
+export default function Workspace({ destination, children }: { destination?: Destination; children?: ReactNode } = {}) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const active = destination ?? destinationFromSlug(pathname.split("/").filter(Boolean)[0] || "cases");
+  const routeSlug = pathname.split("/").filter(Boolean)[0] || "cases";
+  const routeIsKnown = destination !== undefined || routeDestinations.some(([route]) => route === routeSlug);
+  const active = destination ?? destinationFromSlug(routeSlug);
   const requestedCaseId = searchParams.get("case") || "";
   const requestedRunId = searchParams.get("run") || "";
   const routeQuestion = searchParams.get("q") || "";
@@ -65,27 +67,32 @@ export default function Workspace({ destination }: { destination?: Destination }
   const [authority, setAuthority] = useState<SnapshotView | null>(null);
   const [authorityStatus, setAuthorityStatus] = useState<AuthorityStatus>("idle");
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
+  const casesRequest = useRef(0);
   const authorityRequest = useRef(0);
   const runRequest = useRef(0);
+  const startRunRequest = useRef(0);
   const caseIdRef = useRef("");
   const runIdRef = useRef("");
   const routeAuthorityRef = useRef("");
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
+  const caseIsAuthorized = selectedCase !== null;
 
-  const selectCase = useCallback((nextCaseId: string) => {
+  const selectCase = useCallback((nextCaseId: string, availableCases = cases) => {
     if (nextCaseId === caseId) return true;
     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return false;
     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
     // A case boundary owns both the active run and any in-flight run reads.
     runRequest.current += 1;
+    startRunRequest.current += 1;
     setRunLoading(false);
+    setPendingAction((current) => current === "start-run" ? "" : current);
     caseIdRef.current = nextCaseId;
     setDrawer(null);
     setAuthority(null);
     setAuthorityStatus(nextCaseId ? "loading" : "idle");
     setCaseId(nextCaseId);
-    const nextRunId = cases.find((item) => item.id === nextCaseId)?.current_execution_id || "";
+    const nextRunId = availableCases.find((item) => item.id === nextCaseId)?.current_execution_id || "";
     runIdRef.current = nextRunId;
     setRunId(nextRunId);
     setRun(null);
@@ -95,19 +102,26 @@ export default function Workspace({ destination }: { destination?: Destination }
   }, [caseId, cases]);
 
   const refreshCases = async (signal?: AbortSignal) => {
+    const requestId = ++casesRequest.current;
     setCasesLoading(true);
     try {
       const next = await request<CaseRecord[]>("/api/cases", {}, signal);
+      if (requestId !== casesRequest.current) return;
       setCases(next);
       const requestedCaseId = queryParam("case");
       const requestedRunId = queryParam("run");
-      const resolvedCaseId = next.find((item) => item.id === caseId)?.id || next.find((item) => item.id === requestedCaseId)?.id || next[0]?.id || "";
-      if (resolvedCaseId !== caseId) {
-        caseIdRef.current = resolvedCaseId;
-        setAuthorityStatus(resolvedCaseId ? "loading" : "idle");
-        setCaseId(resolvedCaseId);
+      const requestedCase = next.find((item) => item.id === requestedCaseId);
+      const currentCaseId = caseIdRef.current;
+      const resolvedCaseId = next.find((item) => item.id === currentCaseId)?.id || requestedCase?.id || next[0]?.id || "";
+      if (resolvedCaseId !== currentCaseId) {
+        if (requestedCaseId && !requestedCase) routeAuthorityRef.current = `${requestedCaseId}\u0000${requestedRunId}`;
+        if (!selectCase(resolvedCaseId, next)) return;
+        if (requestedRunId && (!requestedCaseId || requestedCase)) {
+          runIdRef.current = requestedRunId;
+          setRunId(requestedRunId);
+        }
       }
-      if (!runId && !requestedRunId) {
+      if (!runIdRef.current && !requestedRunId) {
         const resolvedCase = next.find((item) => item.id === resolvedCaseId);
         if (resolvedCase?.current_execution_id) {
           runIdRef.current = resolvedCase.current_execution_id;
@@ -115,8 +129,10 @@ export default function Workspace({ destination }: { destination?: Destination }
         }
       }
     } catch (caught) {
+      if (requestId !== casesRequest.current) return;
       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(caught instanceof Error ? caught.message : "Unable to load cases");
     } finally {
+      if (requestId !== casesRequest.current) return;
       setCasesLoading(false);
     }
   };
@@ -242,13 +258,13 @@ export default function Workspace({ destination }: { destination?: Destination }
     // The visible authority and contextual drawer must clear at the external case boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAuthority(null); setDrawer(null); setAuthorityStatus(caseId ? "loading" : "idle");
-    if (!caseId) return;
+    if (!caseId || !caseIsAuthorized) return;
     const controller = new AbortController();
     void refreshCase(caseId, controller.signal);
     return () => controller.abort();
     // `refreshCase` deliberately resolves the current external authority.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caseId]);
+  }, [caseId, caseIsAuthorized]);
 
   useEffect(() => {
     document.title = `CAOS — ${active}`;
@@ -263,13 +279,13 @@ export default function Workspace({ destination }: { destination?: Destination }
   }, [hydrated, caseId, runId]);
 
   useEffect(() => {
-    if (!runId) return;
+    if (!runId || !caseIsAuthorized) return;
     // The initial refresh is an external synchronization boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshRun(runId);
     // refreshRun only depends on the current run id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId]);
+  }, [caseIsAuthorized, runId]);
 
   useEffect(() => {
     if (!runId || !run || run.id !== runId || run.case_id !== caseId) return;
@@ -284,20 +300,23 @@ export default function Workspace({ destination }: { destination?: Destination }
 
   const createCase = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setError("");
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setPendingAction("create-case");
     try {
       const created = await request<CaseRecord>("/api/cases", { method: "POST", body: JSON.stringify({ name: form.get("name"), issuer: form.get("issuer"), sector: form.get("sector") || "Unclassified" }) });
-      setCases((previous) => [created, ...previous]); selectCase(created.id); event.currentTarget.reset();
+      casesRequest.current += 1;
+      setCases((previous) => [created, ...previous]); selectCase(created.id); formElement.reset();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to create case"); }
     finally { setPendingAction(""); }
   };
 
   const upload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!caseId) return; setError("");
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setPendingAction("upload");
-    try { await request(`/api/cases/${caseId}/sources`, { method: "POST", body: form }); await refreshCase(caseId); event.currentTarget.reset(); }
+    try { await request(`/api/cases/${caseId}/sources`, { method: "POST", body: form }); await refreshCase(caseId); formElement.reset(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to upload source"); }
     finally { setPendingAction(""); }
   };
@@ -305,12 +324,24 @@ export default function Workspace({ destination }: { destination?: Destination }
   const startRun = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!caseId) return; setError("");
     const form = new FormData(event.currentTarget);
+    const expectedCaseId = caseIdRef.current;
+    const requestId = ++startRunRequest.current;
     setPendingAction("start-run");
     try {
-      const created = await request<RunRecord>(`/api/cases/${caseId}/runs`, { method: "POST", body: JSON.stringify({ pathway: form.get("pathway"), depth: form.get("depth"), focus_questions: [] }) });
+      const created = await request<RunRecord>(`/api/cases/${expectedCaseId}/runs`, { method: "POST", body: JSON.stringify({ pathway: form.get("pathway"), depth: form.get("depth"), focus_questions: [] }) });
+      if (requestId !== startRunRequest.current || expectedCaseId !== caseIdRef.current) return;
+      if (created.case_id !== expectedCaseId) {
+        const message = "Started run does not belong to the selected case.";
+        setRunError(message);
+        setError(message);
+        return;
+      }
       setRun(created); runIdRef.current = created.id; setRunId(created.id);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to start run"); }
-    finally { setPendingAction(""); }
+    } catch (caught) {
+      if (requestId === startRunRequest.current && expectedCaseId === caseIdRef.current) setError(caught instanceof Error ? caught.message : "Unable to start run");
+    } finally {
+      if (requestId === startRunRequest.current) setPendingAction((current) => current === "start-run" ? "" : current);
+    }
   };
 
   const acceptRun = async () => {
@@ -326,7 +357,7 @@ export default function Workspace({ destination }: { destination?: Destination }
   };
 
   const renderDestination = () => {
-    if (!selectedCase && active !== "Cases") return <EmptyState text="Create or select a case in Cases before entering an analytical workspace." />;
+    if (!selectedCase && active !== "Cases" && active !== "Admin Studio") return <EmptyState text="Create or select a case in Cases before entering an analytical workspace." />;
     switch (active) {
       case "Cases": return <CasesView cases={cases} casesLoading={casesLoading} selectedCase={selectedCase} caseId={caseId} setCaseId={selectCase} createCase={createCase} upload={upload} pendingAction={pendingAction} />;
       case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} sourceId={routeSourceId} upload={upload} pendingAction={pendingAction} onOpenEvidence={(evidenceId, source) => setDrawer({ kind: "evidence", evidenceId, source })} />;
@@ -354,7 +385,7 @@ export default function Workspace({ destination }: { destination?: Destination }
       runId={runId}
       selectedCase={selectedCase}
     >
-      <div key={`${active}:${caseId}`}>{renderDestination()}</div>
+      <div key={`${active}:${caseId}`}>{routeIsKnown ? <>{renderDestination()}{children}</> : children}</div>
     </WorkbenchShell>;
 }
 
@@ -537,5 +568,5 @@ function ReportView({ caseId, role }: { caseId: string; role: string }) {
   const save = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); setMessage(""); setError(""); setPending("freeze"); try { const refs = evidenceIds.split(",").map((value) => value.trim()).filter(Boolean); const saved = await request<{ thesis: { version: number }; recommendations: { version: number } }>(`/api/cases/${caseId}/report-inputs`, { method: "POST", body: JSON.stringify({ thesis: { expected_version: thesisVersion, core_thesis: thesis, drivers: [], risks: [], catalysts: [], unresolved_questions: [], evidence_ids: refs }, recommendations: { expected_version: recommendationVersion, market_snapshot_id: "internal-market-latest", rows: [{ instrument_id: instrument, instrument, recommendation, rationale: "Analyst-owned recommendation pending committee review.", primary: true }], analytical_dependency_ids: [] } }) }); setThesisVersion(saved.thesis.version); setRecommendationVersion(saved.recommendations.version); await request(`/api/cases/${caseId}/reports/freeze`, { method: "POST", body: JSON.stringify({ thesis_version: saved.thesis.version, recommendation_version: saved.recommendations.version, include_model: false }) }); window.sessionStorage.removeItem(draftKey); setDraftDirty(false); setMessage("Frozen report pending Approver ratification."); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to freeze report"); } finally { setPending(""); } };
   const approve = async () => { if (!report?.preview_digest || !report.input_fingerprint) return; setPending("approve"); setError(""); try { await request(`/api/cases/${caseId}/reports/approve`, { method: "POST", body: JSON.stringify({ expected_status: "PENDING_APPROVAL", preview_digest: report.preview_digest, input_fingerprint: report.input_fingerprint }) }); setMessage("Report approved; exports are available."); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to approve report"); } finally { setPending(""); } };
   const busy = pending === "freeze";
-  return <div className="grid"><section className="panel span-6"><div className="panel-header"><h2>Compose</h2><span className="eyebrow">ANALYST AUTHORITY</span></div><div className="panel-body">{loading || (error && readyCaseId !== caseId) ? <LoadState loading={loading} error={error} /> : <form onSubmit={save}><div className="field"><label htmlFor="thesis">Core thesis</label><textarea id="thesis" name="core-thesis" autoComplete="off" value={thesis} onChange={(event) => { setThesis(event.target.value); markDraft(); }} required disabled={busy} placeholder="State the defensible credit view…" /></div><div className="field"><label htmlFor="instrument">Primary instrument</label><input id="instrument" name="instrument" autoComplete="off" value={instrument} onChange={(event) => { setInstrument(event.target.value); markDraft(); }} required disabled={busy} placeholder="Issuer 1L 2029…" /></div><div className="field"><label htmlFor="recommendation">Recommendation</label><select id="recommendation" name="recommendation" value={recommendation} onChange={(event) => { setRecommendation(event.target.value); markDraft(); }} disabled={busy}><option>OVERWEIGHT</option><option>MARKET WEIGHT</option><option>UNDERWEIGHT</option><option>N/A</option></select></div><div className="field"><label htmlFor="evidence-ids">Evidence IDs</label><input id="evidence-ids" name="evidence-ids" autoComplete="off" value={evidenceIds} onChange={(event) => { setEvidenceIds(event.target.value); markDraft(); }} placeholder="src_…, artifact_…" disabled={busy} /><span className="muted">Comma-separated source, artifact, or snapshot IDs.</span></div>{draftDirty && <p className="status warning" role="status">Draft not saved</p>}<button className="button primary" type="submit" disabled={busy}>{busy ? "Freezing…" : "Freeze report snapshot"}</button>{message && <p className="muted" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}</form>}</div></section><section className="panel span-6"><div className="panel-header"><h2>Paper proof</h2><span className="eyebrow">FROZEN DIGEST</span></div><div className="panel-body">{loading ? <LoadState loading /> : report ? <><span className={`status ${report.status === "APPROVED" ? "success" : "warning"}`}>{report.status}</span><p className="mono">{report.digest}</p><p className="muted">Snapshot {report.snapshot_digest}</p>{report.status === "PENDING_APPROVAL" && (role === "APPROVER" || role === "ADMIN") && <button className="button primary" type="button" onClick={approve} disabled={pending === "approve"}>{pending === "approve" ? "Approving…" : "Approve frozen report"}</button>}{report.status === "APPROVED" && <div className="top-actions"><a className="button small" href={`/api/cases/${caseId}/reports/export/md`}>Markdown</a><a className="button small" href={`/api/cases/${caseId}/reports/export/pdf`}>PDF</a><a className="button small" href={`/api/cases/${caseId}/reports/export/xlsx`}>XLSX</a></div>}<pre className="mono report-preview">{report.markdown}</pre></> : <div className="empty">No frozen report for this case.</div>}</div></section></div>;
+  return <div className="grid"><section className="panel span-6"><div className="panel-header"><h2>Compose</h2><span className="eyebrow">ANALYST AUTHORITY</span></div><div className="panel-body">{loading || (error && readyCaseId !== caseId) ? <LoadState loading={loading} error={error} /> : <form onSubmit={save}><div className="field"><label htmlFor="thesis">Core thesis</label><textarea id="thesis" name="core-thesis" autoComplete="off" value={thesis} onChange={(event) => { setThesis(event.target.value); markDraft(); }} required disabled={busy} placeholder="State the defensible credit view…" /></div><div className="field"><label htmlFor="instrument">Primary instrument</label><input id="instrument" name="instrument" autoComplete="off" value={instrument} onChange={(event) => { setInstrument(event.target.value); markDraft(); }} required disabled={busy} placeholder="Issuer 1L 2029…" /></div><div className="field"><label htmlFor="recommendation">Recommendation</label><select id="recommendation" name="recommendation" value={recommendation} onChange={(event) => { setRecommendation(event.target.value); markDraft(); }} disabled={busy}><option>OVERWEIGHT</option><option>MARKET WEIGHT</option><option>UNDERWEIGHT</option><option>N/A</option></select></div><div className="field"><label htmlFor="evidence-ids">Evidence IDs</label><input id="evidence-ids" name="evidence-ids" autoComplete="off" value={evidenceIds} onChange={(event) => { setEvidenceIds(event.target.value); markDraft(); }} placeholder="src_…, artifact_…" disabled={busy} /><span className="muted">Comma-separated source, artifact, or snapshot IDs.</span></div>{draftDirty && <p className="status warning" role="status">Draft not saved</p>}<button className="button primary" type="submit" disabled={busy}>{busy ? "Freezing…" : "Freeze report snapshot"}</button>{message && <p className="muted" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}</form>}</div></section><section className="panel span-6"><div className="panel-header"><h2>Paper proof</h2><span className="eyebrow">FROZEN DIGEST</span></div><div className="panel-body">{loading ? <LoadState loading /> : report ? <><span className={`status ${report.status === "APPROVED" ? "success" : "warning"}`}>{report.status}</span><p className="mono">{report.digest}</p><p className="muted mono">Snapshot {report.snapshot_digest}</p>{report.status === "PENDING_APPROVAL" && (role === "APPROVER" || role === "ADMIN") && <button className="button primary" type="button" onClick={approve} disabled={pending === "approve"}>{pending === "approve" ? "Approving…" : "Approve frozen report"}</button>}{report.status === "APPROVED" && <div className="top-actions"><a className="button small" href={`/api/cases/${caseId}/reports/export/md`}>Markdown</a><a className="button small" href={`/api/cases/${caseId}/reports/export/pdf`}>PDF</a><a className="button small" href={`/api/cases/${caseId}/reports/export/xlsx`}>XLSX</a></div>}<pre className="mono report-preview">{report.markdown}</pre></> : <div className="empty">No frozen report for this case.</div>}</div></section></div>;
 }

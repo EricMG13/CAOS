@@ -1,0 +1,245 @@
+# Review package: ca6b5b0..126b4ba
+
+## Commits
+126b4ba refactor(frontend): centralize workflow routing
+
+## Files changed
+ caos/frontend/app/[destination]/page.tsx   | 11 +++---
+ caos/frontend/scripts/workbench-smoke.mjs  | 12 +++++++
+ caos/frontend/src/components/Workspace.tsx | 30 ++++------------
+ caos/frontend/src/lib/workbench.ts         | 56 ++++++++++++++++++++++++++++++
+ 4 files changed, 78 insertions(+), 31 deletions(-)
+
+## Diff
+diff --git a/caos/frontend/app/[destination]/page.tsx b/caos/frontend/app/[destination]/page.tsx
+index f236af7..8aaedf1 100644
+--- a/caos/frontend/app/[destination]/page.tsx
++++ b/caos/frontend/app/[destination]/page.tsx
+@@ -1,20 +1,17 @@
+ import type { Metadata } from "next";
+ import Workspace from "../../src/components/Workspace";
+-
+-const destinations = ["cases", "sources", "run-console", "deep-dive", "rv-screener", "command-center", "model-builder", "report-studio", "admin-studio"];
++import { destinationFromSlug, routeDestinations } from "../../src/lib/workbench";
+ 
+ export function generateStaticParams() {
+-  return destinations.map((destination) => ({ destination }));
++  return routeDestinations.map(([destination]) => ({ destination }));
+ }
+ 
+ export async function generateMetadata({ params }: { params: Promise<{ destination: string }> }): Promise<Metadata> {
+   const { destination } = await params;
+-  const label = destination.split("-").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ");
+-  return { title: `CAOS — ${label === "Rv Screener" ? "RV Screener" : label === "Deep Dive" ? "Deep-Dive" : label}` };
++  return { title: `CAOS — ${destinationFromSlug(destination)}` };
+ }
+ 
+ export default async function DestinationPage({ params }: { params: Promise<{ destination: string }> }) {
+   const { destination } = await params;
+-  const label = destination.split("-").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ");
+-  return <Workspace destination={label === "Run Console" ? "Run Console" : label === "Rv Screener" ? "RV Screener" : label === "Deep Dive" ? "Deep-Dive" : label === "Command Center" ? "Command Center" : label === "Model Builder" ? "Model Builder" : label === "Report Studio" ? "Report Studio" : label} />;
++  return <Workspace destination={destinationFromSlug(destination)} />;
+ }
+diff --git a/caos/frontend/scripts/workbench-smoke.mjs b/caos/frontend/scripts/workbench-smoke.mjs
+index 4da3bd8..730d028 100644
+--- a/caos/frontend/scripts/workbench-smoke.mjs
++++ b/caos/frontend/scripts/workbench-smoke.mjs
+@@ -60,20 +60,32 @@ try {
+       domContentLoaded: navigation?.domContentLoadedEventEnd ?? null,
+       firstContentfulPaint: paint?.startTime ?? null,
+     };
+   });
+   console.log(JSON.stringify({ timing, caseRequests }));
+ 
+   const workflows = ["Overview", "Sources", "Analyse", "Compare", "Model", "Publish"];
+   for (const label of workflows) {
+     await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).waitFor();
+   }
++  for (const [route, workflow] of [
++    ["/cases/", "Overview"],
++    ["/run-console/", "Analyse"],
++    ["/report-studio/", "Publish"],
++  ]) {
++    await page.goto(`${baseURL}${route}?case=${caseRecord.id}`, { waitUntil: "networkidle" });
++    await page.getByRole("navigation", { name: "Workflows" })
++      .getByRole("link", { name: workflow, exact: true })
++      .evaluate((element) => {
++        if (element.getAttribute("aria-current") !== "page") throw new Error("workflow is not active");
++      });
++  }
+   await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
+   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
+   await page.getByRole("button", { name: /QA unavailable/ }).waitFor();
+ 
+   const paletteTrigger = page.getByRole("button", { name: /Open command palette/ });
+   await paletteTrigger.focus();
+   await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
+   const palette = page.getByRole("dialog", { name: "Command palette" });
+   await palette.getByRole("combobox", { name: "Search commands" }).fill("Northstar");
+   await palette.getByRole("option", { name: /Northstar \/ Workbench QA/ }).waitFor();
+diff --git a/caos/frontend/src/components/Workspace.tsx b/caos/frontend/src/components/Workspace.tsx
+index a4f4ff8..909cdcf 100644
+--- a/caos/frontend/src/components/Workspace.tsx
++++ b/caos/frontend/src/components/Workspace.tsx
+@@ -1,93 +1,75 @@
+ "use client";
+ 
+ import Link from "next/link";
+ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
++import { type Destination, routeDestinations, withQuery } from "../lib/workbench";
+ 
+-type Destination = "Cases" | "Sources" | "Run Console" | "Deep-Dive" | "RV Screener" | "Command Center" | "Model Builder" | "Report Studio" | "Admin Studio";
+ type CaseRecord = { id: string; name: string; issuer: string; sector: string; source_count?: number; accepted_snapshot?: Snapshot | null; pathway_fit?: { fit: string; message: string }; current_execution_id?: string | null };
+ type Snapshot = { id: string; digest: string; accepted_at: string; source_set_version?: number | null; artifacts: { id: string; module_id: string; digest: string }[] };
+ type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
+ type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
+ type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
+ type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
+ type ReportDraft = { thesis?: string; instrument?: string; recommendation?: string; evidenceIds?: string };
+ 
+-const destinations: { label: Destination; href: string; group: string }[] = [
+-  { label: "Cases", href: "/cases", group: "INTAKE" },
+-  { label: "Sources", href: "/sources", group: "INTAKE" },
+-  { label: "Run Console", href: "/run-console", group: "ANALYZE" },
+-  { label: "Deep-Dive", href: "/deep-dive", group: "ANALYZE" },
+-  { label: "RV Screener", href: "/rv-screener", group: "DECIDE" },
+-  { label: "Command Center", href: "/command-center", group: "DECIDE" },
+-  { label: "Model Builder", href: "/model-builder", group: "DECIDE" },
+-  { label: "Report Studio", href: "/report-studio", group: "PUBLISH" },
+-  { label: "Admin Studio", href: "/admin-studio", group: "ADMIN" },
+-];
+-
+ const pathways = [
+   ["FULL_CREDIT", "Full Credit"],
+   ["EARNINGS_UPDATE", "Earnings Update"],
+   ["COVENANT_REFINANCING", "Covenant & Refinancing"],
+   ["RELATIVE_VALUE", "Relative Value"],
+   ["DISTRESSED_RESTRUCTURING", "Distressed & Restructuring"],
+   ["DEEP_RESEARCH", "Deep Research"],
+ ];
+ 
+ function queryParam(key: string) {
+   if (typeof window === "undefined") return "";
+   return new URLSearchParams(window.location.search).get(key) || "";
+ }
+ 
+-function withQuery(path: string, values: Record<string, string | undefined>) {
+-  const [pathname, rawQuery] = path.split("?");
+-  const query = new URLSearchParams(rawQuery);
+-  Object.entries(values).forEach(([key, value]) => value ? query.set(key, value) : query.delete(key));
+-  const suffix = query.toString();
+-  return `${pathname}${suffix ? `?${suffix}` : ""}`;
+-}
+-
+ function formatDate(value?: string) {
+   if (!value) return "—";
+   const date = new Date(value);
+   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+ }
+ 
+ async function request<T>(path: string, options: RequestInit = {}, signal?: AbortSignal): Promise<T> {
+   const response = await fetch(path, { ...options, signal, headers: options.body instanceof FormData ? options.headers : { "Content-Type": "application/json", ...options.headers } });
+   if (!response.ok) {
+     const body = await response.json().catch(() => ({}));
+     throw new Error(body.detail || `Request failed (${response.status})`);
+   }
+   return response.json() as Promise<T>;
+ }
+ 
+-export default function Workspace({ destination }: { destination: string }) {
+-  const active = (destinations.find((item) => item.label === destination)?.label || "Cases") as Destination;
++export default function Workspace({ destination }: { destination: Destination }) {
++  const active = destination;
+   const [cases, setCases] = useState<CaseRecord[]>([]);
+   const [caseId, setCaseId] = useState("");
+   const [runId, setRunId] = useState("");
+   const [run, setRun] = useState<RunRecord | null>(null);
+   const [casesLoading, setCasesLoading] = useState(true);
+   const [runLoading, setRunLoading] = useState(false);
+   const [runError, setRunError] = useState("");
+   const [error, setError] = useState("");
+   const [askQuestion, setAskQuestion] = useState("");
+   const [pendingAction, setPendingAction] = useState("");
+   const [hydrated, setHydrated] = useState(false);
+   const [role, setRole] = useState("ANALYST");
+   const dialogRef = useRef<HTMLDialogElement>(null);
+   const [routeQuestion, setRouteQuestion] = useState("");
+   const [routeArtifactId, setRouteArtifactId] = useState("");
+ 
+   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
+-  const visibleDestinations = useMemo(() => role === "ADMIN" ? destinations : destinations.filter((item) => item.group !== "ADMIN"), [role]);
++  const visibleDestinations = useMemo(() => routeDestinations
++    .filter(([slug]) => role === "ADMIN" || slug !== "admin-studio")
++    .map(([slug, label]) => ({ label, href: `/${slug}`, group: label === "Cases" || label === "Sources" ? "INTAKE" : label === "Run Console" || label === "Deep-Dive" ? "ANALYZE" : label === "Report Studio" ? "PUBLISH" : label === "Admin Studio" ? "ADMIN" : "DECIDE" })), [role]);
+ 
+   const selectCase = (nextCaseId: string) => {
+     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
+     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
+     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
+     setCaseId(nextCaseId);
+     setRunId(cases.find((item) => item.id === nextCaseId)?.current_execution_id || "");
+     setRun(null);
+     setRunError("");
+     setError("");
+diff --git a/caos/frontend/src/lib/workbench.ts b/caos/frontend/src/lib/workbench.ts
+new file mode 100644
+index 0000000..3d8756c
+--- /dev/null
++++ b/caos/frontend/src/lib/workbench.ts
+@@ -0,0 +1,56 @@
++export const routeDestinations = [
++  ["cases", "Cases"],
++  ["sources", "Sources"],
++  ["run-console", "Run Console"],
++  ["deep-dive", "Deep-Dive"],
++  ["rv-screener", "RV Screener"],
++  ["command-center", "Command Center"],
++  ["model-builder", "Model Builder"],
++  ["report-studio", "Report Studio"],
++  ["admin-studio", "Admin Studio"],
++] as const;
++
++export type Destination = (typeof routeDestinations)[number][1];
++export type WorkflowId = "overview" | "sources" | "analyse" | "compare" | "model" | "publish";
++
++export type Workflow = {
++  id: WorkflowId;
++  label: string;
++  href: string;
++  destinations: readonly Destination[];
++  tools?: readonly { label: string; href: string; destination: Destination }[];
++};
++
++export const workflows: readonly Workflow[] = [
++  { id: "overview", label: "Overview", href: "/command-center", destinations: ["Cases", "Command Center"], tools: [{ label: "Case register", href: "/cases", destination: "Cases" }] },
++  { id: "sources", label: "Sources", href: "/sources", destinations: ["Sources"] },
++  { id: "analyse", label: "Analyse", href: "/deep-dive", destinations: ["Run Console", "Deep-Dive"], tools: [{ label: "Run", href: "/run-console", destination: "Run Console" }, { label: "Review", href: "/deep-dive", destination: "Deep-Dive" }] },
++  { id: "compare", label: "Compare", href: "/rv-screener", destinations: ["RV Screener"] },
++  { id: "model", label: "Model", href: "/model-builder", destinations: ["Model Builder"] },
++  { id: "publish", label: "Publish", href: "/report-studio", destinations: ["Report Studio"] },
++];
++
++export function destinationFromSlug(slug: string): Destination {
++  return routeDestinations.find(([route]) => route === slug)?.[1] ?? "Cases";
++}
++
++export function workflowFor(destination: Destination): Workflow {
++  return workflows.find((workflow) => workflow.destinations.includes(destination)) ?? workflows[0];
++}
++
++export function withQuery(path: string, values: Record<string, string | undefined>) {
++  const [pathname, rawQuery] = path.split("?");
++  const query = new URLSearchParams(rawQuery);
++  for (const [key, value] of Object.entries(values)) {
++    if (value) query.set(key, value);
++    else query.delete(key);
++  }
++  return `${pathname}${query.size ? `?${query}` : ""}`;
++}
++
++export function evidenceKind(value: string): "source" | "artifact" | null {
++  const id = value.trim();
++  if (/^src_[a-zA-Z0-9]+$/.test(id)) return "source";
++  if (/^art_[a-zA-Z0-9]+$/.test(id)) return "artifact";
++  return null;
++}

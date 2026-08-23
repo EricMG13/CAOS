@@ -1,0 +1,389 @@
+# Review package: 6f18695..HEAD
+
+## Commits
+ea9161d fix(frontend): react to source query navigation
+a1afc3a feat(frontend): restore linked evidence chips
+
+## Files changed
+ caos/frontend/scripts/workbench-smoke.mjs     | 55 ++++++++++++++++++++---
+ caos/frontend/src/components/EvidenceChip.tsx | 26 +++++++++++
+ caos/frontend/src/components/Workspace.tsx    | 63 +++++++++++++++++++++++----
+ 3 files changed, 130 insertions(+), 14 deletions(-)
+
+## Diff
+diff --git a/caos/frontend/scripts/workbench-smoke.mjs b/caos/frontend/scripts/workbench-smoke.mjs
+index f363a40..39d28c7 100644
+--- a/caos/frontend/scripts/workbench-smoke.mjs
++++ b/caos/frontend/scripts/workbench-smoke.mjs
+@@ -47,22 +47,31 @@ assert.equal(acceptedResponse.status(), 200);
+ const accepted = await acceptedResponse.json();
+ const artifact = accepted.artifacts.find((item) => item.module_id === "CP-0");
+ assert.ok(artifact);
+ 
+ const browser = await chromium.launch({ headless: true });
+ const errors = [];
+ try {
+   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+   const page = await context.newPage();
+   let caseRequests = 0;
++  let expectedAuthorityFailureURL = "";
++  let expectedAuthorityFailureSeen = false;
+   page.on("console", (message) => {
+-    if (message.type() === "error") errors.push(message.text());
++    if (message.type() !== "error") return;
++    if (!expectedAuthorityFailureSeen
++      && message.location().url === expectedAuthorityFailureURL
++      && message.text() === "Failed to load resource: the server responded with a status of 503 (Service Unavailable)") {
++      expectedAuthorityFailureSeen = true;
++      return;
++    }
++    errors.push(message.text());
+   });
+   page.on("pageerror", (error) => errors.push(error.message));
+   page.on("request", (requestValue) => {
+     if (new URL(requestValue.url()).pathname === "/api/cases") caseRequests += 1;
+   });
+ 
+   let releaseAuthorityDetail;
+   const authorityDetailBarrier = new Promise((resolve) => {
+     releaseAuthorityDetail = resolve;
+   });
+@@ -107,28 +116,32 @@ try {
+   });
+   console.log(JSON.stringify({ timing, caseRequests }));
+ 
+   const failedAuthorityDetail = (url) => url.pathname === `/api/cases/${failedCase.id}`;
+   const failAuthorityDetail = (route) => route.fulfill({
+     status: 503,
+     contentType: "application/json",
+     body: JSON.stringify({ detail: "authority unavailable" }),
+   });
+   await page.route(failedAuthorityDetail, failAuthorityDetail);
++  expectedAuthorityFailureURL = `${baseURL}/api/cases/${failedCase.id}`;
++  expectedAuthorityFailureSeen = false;
+   await page.getByRole("combobox", { name: "Select case" }).selectOption(failedCase.id);
+   const unavailableSourcesTrigger = page.getByRole("button", { name: "Sources unavailable" });
+   await unavailableSourcesTrigger.click();
+   await sourceDrawer.getByText("Source authority unavailable.").waitFor();
+   assert.equal(await sourceDrawer.getByText(/^0$/).count(), 0);
+   assert.equal(await sourceDrawer.getByText(/No accepted/).count(), 0);
++  assert.equal(expectedAuthorityFailureSeen, true, "controlled authority 503 did not emit the expected console error");
+   await page.keyboard.press("Escape");
+   await page.unroute(failedAuthorityDetail, failAuthorityDetail);
++  expectedAuthorityFailureURL = "";
+   await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
+   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
+ 
+   const workflows = ["Overview", "Sources", "Analyse", "Compare", "Model", "Publish"];
+   for (const label of workflows) {
+     await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).waitFor();
+   }
+   for (const [route, workflow] of [
+     ["/cases/", "Overview"],
+     ["/run-console/", "Analyse"],
+@@ -237,34 +250,66 @@ try {
+ 
+   const qaTrigger = page.getByRole("button", { name: /QA unavailable/ });
+   await qaTrigger.click();
+   await page.getByRole("dialog", { name: "QA details" }).getByText(/No governed snapshot-level QA summary/).waitFor();
+   await page.keyboard.press("Escape");
+   await assert.doesNotReject(() => qaTrigger.evaluate((element) => {
+     if (document.activeElement !== element) throw new Error("focus did not return to the QA trigger");
+   }));
+ 
+   await page.goto(`${baseURL}/sources/?case=${caseRecord.id}&artifact=${artifact.id}`, { waitUntil: "networkidle" });
+-  const chip = page.locator(`[data-evidence-id="${source.id}"]`).first();
++  const matching = page.locator(`[data-evidence-id="${source.id}"]`);
++  assert.equal(await matching.count(), 2);
++  const chip = matching.first();
+   await chip.focus();
+-  await assert.doesNotReject(() => chip.evaluate((element) => {
+-    if (!element.classList.contains("is-linked")) throw new Error("focused evidence was not linked");
+-  }));
++  await page.waitForFunction((evidenceId) => {
++    const nodes = [...document.querySelectorAll(`[data-evidence-id="${evidenceId}"]`)];
++    return nodes.length === 2 && nodes.every((node) => node.classList.contains("is-linked"));
++  }, source.id);
+   await chip.click();
+   const evidence = page.getByRole("dialog", { name: `Evidence ${source.id}` });
+   await evidence.getByText("earnings.txt").waitFor();
+   await evidence.getByText(/Source-level reference; no block locator supplied/).waitFor();
+   await evidence.getByRole("link", { name: "Open full source" }).waitFor();
+   await page.keyboard.press("Escape");
+   await assert.doesNotReject(() => chip.evaluate((element) => {
+     if (document.activeElement !== element) throw new Error("focus did not return to the evidence trigger");
+   }));
+ 
++  await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
++  const sourcePalette = page.getByRole("dialog", { name: "Command palette" });
++  await sourcePalette.getByRole("combobox", { name: "Search commands" }).fill(source.id);
++  await sourcePalette.getByRole("option", { name: "Open source ID in this case" }).click();
++  await page.waitForURL((url) => url.pathname.replace(/\/$/, "") === "/sources" && url.searchParams.get("source") === source.id);
++  await evidence.getByText("earnings.txt").waitFor();
++  await page.keyboard.press("Escape");
++  await page.evaluate(() => new Promise((resolve) => {
++    requestAnimationFrame(() => requestAnimationFrame(resolve));
++  }));
++  assert.equal(await evidence.isVisible(), false, "same-route source query reopened after the drawer was closed");
++
++  const sourceListURL = `${baseURL}/api/cases/${caseRecord.id}/sources`;
++  const failedSourceList = (url) => url.href === sourceListURL;
++  const failSourceList = (route) => route.fulfill({
++    status: 200,
++    contentType: "application/json",
++    body: "not-json",
++  });
++  await page.route(failedSourceList, failSourceList);
++  await page.goto(`${baseURL}/sources/?case=${caseRecord.id}&source=${source.id}`, { waitUntil: "networkidle" });
++  await page.getByRole("alert").getByText("Unable to load this view.").waitFor();
++  assert.equal(await page.getByText(/not in the active case source set/).count(), 0);
++  assert.equal(await evidence.count(), 0, "failed source authority opened an evidence drawer");
++  await page.unroute(failedSourceList, failSourceList);
++  await page.reload({ waitUntil: "networkidle" });
++  await evidence.getByText("earnings.txt").waitFor();
++  await page.keyboard.press("Escape");
++
+   await page.setViewportSize({ width: 720, height: 900 });
+   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+   assert.equal(overflow, false, "workbench causes page-level horizontal overflow at reflow width");
+   assert.deepEqual(errors, []);
+   await context.close();
+ } finally {
+   await browser.close();
+   await api.dispose();
+ }
+diff --git a/caos/frontend/src/components/EvidenceChip.tsx b/caos/frontend/src/components/EvidenceChip.tsx
+new file mode 100644
+index 0000000..85ce4df
+--- /dev/null
++++ b/caos/frontend/src/components/EvidenceChip.tsx
+@@ -0,0 +1,26 @@
++type Props = {
++  evidenceId: string;
++  linkedId: string;
++  onOpen: (evidenceId: string) => void;
++  onPreview: (evidenceId: string) => void;
++  onPreviewEnd: () => void;
++  warning?: boolean;
++};
++
++export default function EvidenceChip({ evidenceId, linkedId, onOpen, onPreview, onPreviewEnd, warning = false }: Props) {
++  const linked = linkedId === evidenceId;
++  return <button
++    type="button"
++    className={`evidence-chip${warning ? " warning" : ""}${linked ? " is-linked" : ""}`}
++    data-evidence-id={evidenceId}
++    aria-label={`Open evidence ${evidenceId}${warning ? ", QA concern" : ""}`}
++    onBlur={onPreviewEnd}
++    onClick={() => onOpen(evidenceId)}
++    onFocus={() => onPreview(evidenceId)}
++    onMouseEnter={() => onPreview(evidenceId)}
++    onMouseLeave={onPreviewEnd}
++  >
++    {warning && <span aria-hidden="true">▲</span>}
++    {evidenceId}
++  </button>;
++}
+diff --git a/caos/frontend/src/components/Workspace.tsx b/caos/frontend/src/components/Workspace.tsx
+index 40c71fc..d63d420 100644
+--- a/caos/frontend/src/components/Workspace.tsx
++++ b/caos/frontend/src/components/Workspace.tsx
+@@ -1,14 +1,16 @@
+ "use client";
+ 
+ import Link from "next/link";
+-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
++import { useSearchParams } from "next/navigation";
++import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
++import EvidenceChip from "./EvidenceChip";
+ import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
+ import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
+ 
+ type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
+ type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
+ type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
+ type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
+ type ReportDraft = { thesis?: string; instrument?: string; recommendation?: string; evidenceIds?: string };
+ 
+ const pathways = [
+@@ -33,40 +35,50 @@ function formatDate(value?: string) {
+ 
+ async function request<T>(path: string, options: RequestInit = {}, signal?: AbortSignal): Promise<T> {
+   const response = await fetch(path, { ...options, signal, headers: options.body instanceof FormData ? options.headers : { "Content-Type": "application/json", ...options.headers } });
+   if (!response.ok) {
+     const body = await response.json().catch(() => ({}));
+     throw new Error(body.detail || `Request failed (${response.status})`);
+   }
+   return response.json() as Promise<T>;
+ }
+ 
++function SourceQuerySync({ onChange }: { onChange: (sourceId: string) => void }) {
++  const sourceId = useSearchParams().get("source") || "";
++  useEffect(() => {
++    // URL state is external navigation state and must follow same-route Link updates.
++    onChange(sourceId);
++  }, [onChange, sourceId]);
++  return null;
++}
++
+ export default function Workspace({ destination }: { destination: Destination }) {
+   const active = destination;
+   const [cases, setCases] = useState<CaseRecord[]>([]);
+   const [caseId, setCaseId] = useState("");
+   const [runId, setRunId] = useState("");
+   const [run, setRun] = useState<RunRecord | null>(null);
+   const [casesLoading, setCasesLoading] = useState(true);
+   const [runLoading, setRunLoading] = useState(false);
+   const [runError, setRunError] = useState("");
+   const [error, setError] = useState("");
+   const [pendingAction, setPendingAction] = useState("");
+   const [hydrated, setHydrated] = useState(false);
+   const [role, setRole] = useState("ANALYST");
+   const [authority, setAuthority] = useState<SnapshotView | null>(null);
+   const [authorityStatus, setAuthorityStatus] = useState<AuthorityStatus>("idle");
+   const [drawer, setDrawer] = useState<DrawerState | null>(null);
+   const authorityRequest = useRef(0);
+   const caseIdRef = useRef("");
+   const [routeQuestion, setRouteQuestion] = useState("");
+   const [routeArtifactId, setRouteArtifactId] = useState("");
++  const [routeSourceId, setRouteSourceId] = useState("");
+ 
+   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
+ 
+   const selectCase = (nextCaseId: string) => {
+     if (nextCaseId === caseId) return;
+     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
+     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
+     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
+     caseIdRef.current = nextCaseId;
+     setDrawer(null);
+@@ -244,88 +256,121 @@ export default function Workspace({ destination }: { destination: Destination })
+     setPendingAction("accept-run");
+     try { await request(`/api/runs/${runId}/accept`, { method: "POST" }); await refreshCase(caseId); await refreshRun(); }
+     catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to accept snapshot"); }
+     finally { setPendingAction(""); }
+   };
+ 
+   const renderDestination = () => {
+     if (!selectedCase && active !== "Cases") return <EmptyState text="Create or select a case in Cases before entering an analytical workspace." />;
+     switch (active) {
+       case "Cases": return <CasesView cases={cases} casesLoading={casesLoading} selectedCase={selectedCase} caseId={caseId} setCaseId={selectCase} createCase={createCase} upload={upload} pendingAction={pendingAction} />;
+-      case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} upload={upload} pendingAction={pendingAction} />;
++      case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} sourceId={routeSourceId} upload={upload} pendingAction={pendingAction} onOpenEvidence={(evidenceId, source) => setDrawer({ kind: "evidence", evidenceId, source })} />;
+       case "Run Console": return <RunConsole caseId={caseId} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} pendingAction={pendingAction} />;
+       case "Deep-Dive": return <DeepDive selectedCase={selectedCase} question={routeQuestion} />;
+       case "RV Screener": return <RVView caseId={caseId} />;
+       case "Command Center": return <CommandView caseId={caseId} question={routeQuestion} />;
+       case "Model Builder": return <ModelView caseId={caseId} />;
+       case "Report Studio": return <ReportView caseId={caseId} role={role} />;
+       case "Admin Studio": return <AdminView />;
+     }
+   };
+ 
+-  return (
++  return <>
++    <Suspense fallback={null}><SourceQuerySync onChange={setRouteSourceId} /></Suspense>
+     <WorkbenchShell
+       active={active}
+       authority={authority}
+       authorityStatus={authorityStatus}
+       cases={cases}
+       caseId={caseId}
+       drawer={drawer}
+       error={error}
+       onCaseChange={selectCase}
+       onDrawerChange={setDrawer}
+       role={role}
+       runId={runId}
+       selectedCase={selectedCase}
+     >
+       <div key={`${active}:${caseId}`}>{renderDestination()}</div>
+     </WorkbenchShell>
+-  );
++  </>;
+ }
+ 
+ function EmptyState({ text }: { text: string }) { return <div className="panel"><div className="empty">{text}</div></div>; }
+ 
+ function LoadState({ loading, error, empty }: { loading: boolean; error?: string; empty?: string }) {
+   if (loading) return <div className="empty" role="status" aria-live="polite">Loading…</div>;
+   if (error) return <div className="empty error-state" role="alert"><strong>Unable to load this view.</strong><br /><span>{error}</span><br /><span className="muted">Retry by refreshing the destination.</span></div>;
+   return <div className="empty">{empty || "No data available."}</div>;
+ }
+ 
+ function CasesView({ cases, casesLoading, selectedCase, caseId, setCaseId, createCase, upload, pendingAction }: { cases: CaseRecord[]; casesLoading: boolean; selectedCase: CaseRecord | null; caseId: string; setCaseId: (id: string) => void; createCase: (event: FormEvent<HTMLFormElement>) => void; upload: (event: FormEvent<HTMLFormElement>) => void; pendingAction: string }) {
+   return <div className="grid">
+     <section className="panel span-4"><div className="panel-header"><h2>Create case</h2><span className="eyebrow">01 / INTAKE</span></div><div className="panel-body"><form onSubmit={createCase}><div className="field"><label htmlFor="case-name">Case name</label><input id="case-name" name="name" autoComplete="off" required placeholder="Q3 credit review…" /></div><div className="field"><label htmlFor="issuer">Issuer</label><input id="issuer" name="issuer" autoComplete="organization" required placeholder="Issuer legal name…" /></div><div className="field"><label htmlFor="sector">Sector</label><input id="sector" name="sector" autoComplete="off" placeholder="Business services…" /></div><button className="button primary" type="submit" disabled={pendingAction === "create-case"}>{pendingAction === "create-case" ? "Creating…" : "Create case"}</button></form></div></section>
+     <section className="panel span-8"><div className="panel-header"><h2>Case register</h2><span className="eyebrow">{casesLoading ? "LOADING…" : `${cases.length} visible`}</span></div><div className="panel-body table-wrap"><table><thead><tr><th scope="col">Issuer</th><th scope="col">Case</th><th scope="col">Sources</th><th scope="col">Snapshot</th><th scope="col">Actions</th></tr></thead><tbody>{cases.map((item) => <tr key={item.id}><td>{item.issuer}</td><td>{item.name}<div className="muted">{item.sector}</div></td><td className="num">{item.source_count ?? "—"}</td><td>{item.accepted_snapshot ? <span className="status success">accepted</span> : <span className="status warning">not accepted</span>}</td><td><button className="button small" type="button" aria-pressed={caseId === item.id} onClick={() => setCaseId(item.id)}>{caseId === item.id ? "Selected" : "Select"}</button></td></tr>)}</tbody></table>{!cases.length && <LoadState loading={casesLoading} empty="No cases yet. Create the first case to establish the context boundary." />}</div></section>
+     <section className="panel span-8"><div className="panel-header"><h2>Source intake</h2><span className="eyebrow">IMMUTABLE / VERSIONED</span></div><div className="panel-body">{selectedCase ? <><p className="muted">{selectedCase.issuer} / {selectedCase.name}</p><form onSubmit={upload}><div className="field"><label htmlFor="case-source">Source file</label><input id="case-source" name="file" type="file" accept=".pdf,.xlsx,.json,.txt,.md,.csv" required /></div><button className="button primary" type="submit" disabled={pendingAction === "upload"}>{pendingAction === "upload" ? "Uploading…" : "Upload and version source set"}</button></form></> : <div className="empty">Select a case first.</div>}</div></section>
+     <section className="panel span-4"><div className="panel-header"><h2>Pathway fit</h2><span className="eyebrow">NOT CP-0</span></div><div className="panel-body">{selectedCase ? <><span className={`status ${selectedCase.pathway_fit?.fit === "READY" ? "success" : "warning"}`}>{selectedCase.pathway_fit?.fit || "NEEDS_SOURCE"}</span><p>{selectedCase.pathway_fit?.message || "Upload a source to see fit."}</p></> : <div className="empty">—</div>}</div></section>
+   </div>;
+ }
+ 
+-function SourcesView({ selectedCase, artifactId, upload, pendingAction }: { selectedCase: CaseRecord | null; artifactId: string; upload: (event: FormEvent<HTMLFormElement>) => void; pendingAction: string }) {
++function SourcesView({ selectedCase, artifactId, sourceId, upload, pendingAction, onOpenEvidence }: { selectedCase: CaseRecord | null; artifactId: string; sourceId: string; upload: (event: FormEvent<HTMLFormElement>) => void; pendingAction: string; onOpenEvidence: (evidenceId: string, source: SourceRecord) => void }) {
+   const [sources, setSources] = useState<SourceRecord[]>([]);
+   const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
+   const [loading, setLoading] = useState(true);
+   const [loadError, setLoadError] = useState("");
++  const [readySourceCaseId, setReadySourceCaseId] = useState("");
+   const [artifactError, setArtifactError] = useState("");
++  const [linkedEvidenceId, setLinkedEvidenceId] = useState("");
++  const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
++  const openedSourceQuery = useRef("");
+   useEffect(() => {
+     if (!selectedCase) return;
+     let ignore = false;
+     // The fetch boundary intentionally resets its loading and error state.
+     // eslint-disable-next-line react-hooks/set-state-in-effect
+-    setLoading(true); setLoadError(""); setArtifactError(""); setArtifact(null);
+-    void request<SourceRecord[]>(`/api/cases/${selectedCase.id}/sources`).then((next) => { if (!ignore) setSources(next); }).catch((caught) => { if (!ignore) setLoadError(caught instanceof Error ? caught.message : "Unable to load source objects"); }).finally(() => { if (!ignore) setLoading(false); });
++    setLoading(true); setLoadError(""); setReadySourceCaseId(""); setArtifactError(""); setArtifact(null);
++    void request<SourceRecord[]>(`/api/cases/${selectedCase.id}/sources`).then((next) => { if (!ignore) { setSources(next); setReadySourceCaseId(selectedCase.id); } }).catch((caught) => { if (!ignore) setLoadError(caught instanceof Error ? caught.message : "Unable to load source objects"); }).finally(() => { if (!ignore) setLoading(false); });
+     if (artifactId) void request<ArtifactRecord>(`/api/cases/${selectedCase.id}/artifacts/${artifactId}`).then((next) => { if (!ignore) setArtifact(next); }).catch((caught) => { if (!ignore) setArtifactError(caught instanceof Error ? caught.message : "Unable to load evidence artifact"); });
+     return () => { ignore = true; };
+   }, [selectedCase, artifactId]);
+   const evidenceRefs = artifact?.payload?.evidence_refs || [];
++  const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
++  const activeEvidenceId = linkedEvidenceId || selectedEvidenceId;
++  const openEvidence = (evidenceId: string) => {
++    const source = sourceById.get(evidenceId);
++    if (!source) {
++      setArtifactError(`Evidence ${evidenceId} is not in the active case source set.`);
++      return;
++    }
++    setArtifactError("");
++    setSelectedEvidenceId(evidenceId);
++    onOpenEvidence(evidenceId, source);
++  };
++  useEffect(() => {
++    if (!selectedCase || !sourceId || loading || readySourceCaseId !== selectedCase.id) return;
++    const queryKey = `${selectedCase.id}:${sourceId}`;
++    if (openedSourceQuery.current === queryKey) return;
++    openedSourceQuery.current = queryKey;
++    const source = sourceById.get(sourceId);
++    if (!source) {
++      // The requested ID stays scoped to the active case source set.
++      // eslint-disable-next-line react-hooks/set-state-in-effect
++      setArtifactError(`Evidence ${sourceId} is not in the active case source set.`);
++      return;
++    }
++    // Exact source-query hydration is an external navigation boundary.
++    setSelectedEvidenceId(sourceId);
++    onOpenEvidence(sourceId, source);
++  }, [loading, onOpenEvidence, readySourceCaseId, selectedCase, sourceById, sourceId]);
+   return <div className="grid">
+-    {artifactId && <section className="panel span-12 evidence-focus"><div className="panel-header"><h2>Evidence focus</h2><span className="eyebrow">ARTIFACT {artifact?.module_id || artifactId}</span></div><div className="panel-body">{artifact ? <><p className="mono">{artifact.digest}</p><p>{artifact.payload?.summary || artifact.payload?.narrative?.takeaway || "No artifact summary available."}</p><p className="muted">{artifact.payload?.narrative?.basis || "Typed artifact lineage."}{artifact.payload?.visual?.freshness ? ` · ${artifact.payload.visual.freshness}` : ""}</p><p className="mono">Evidence refs: {evidenceRefs.length || 0}</p></> : <LoadState loading={!artifactError && loading} error={artifactError} empty="No artifact details were returned." />}</div></section>}
+-    <section className="panel span-8"><div className="panel-header"><h2>Source set</h2><span className="eyebrow">{loading ? "LOADING…" : `${sources.length} immutable objects`}</span></div><div className="panel-body table-wrap"><table><thead><tr><th scope="col">File</th><th scope="col">SHA-256</th><th scope="col">Blocks</th></tr></thead><tbody>{sources.map((source) => <tr id={`source-${source.id}`} className={evidenceRefs.includes(source.id) ? "evidence-match" : undefined} key={source.id}><td><details><summary>{source.filename}</summary><div className="source-blocks">{source.blocks.slice(0, 20).map((block) => <article className="source-block" id={`block-${source.id}-${block.block_id}`} key={block.block_id}><div className="eyebrow">{block.block_id} · {JSON.stringify(block.locator)}</div><p>{block.text || "No extracted text."}</p></article>)}{source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Use the source object for the remaining {source.blocks.length - 20} blocks.</p>}</div></details></td><td className="mono">{source.sha256.slice(0, 16)}…</td><td className="num">{source.blocks.length}</td></tr>)}</tbody></table>{!sources.length && <LoadState loading={loading} error={loadError} empty="No source objects in this case." />}{sources.length > 0 && loadError && <p className="error" role="alert">{loadError}</p>}</div></section>
++    {artifactId && <section className="panel span-12 evidence-focus"><div className="panel-header"><h2>Evidence focus</h2><span className="eyebrow">ARTIFACT {artifact?.module_id || artifactId}</span></div><div className="panel-body">{artifact ? <><p className="mono">{artifact.digest}</p><p>{artifact.payload?.summary || artifact.payload?.narrative?.takeaway || "No artifact summary available."}</p><p className="muted">{artifact.payload?.narrative?.basis || "Typed artifact lineage."}{artifact.payload?.visual?.freshness ? ` · ${artifact.payload.visual.freshness}` : ""}</p><div className="evidence-list" aria-label="Artifact evidence">{evidenceRefs.map((evidenceId) => <EvidenceChip evidenceId={evidenceId} key={evidenceId} linkedId={activeEvidenceId} onOpen={openEvidence} onPreview={setLinkedEvidenceId} onPreviewEnd={() => setLinkedEvidenceId("")} />)}</div></> : <LoadState loading={!artifactError && loading} error={artifactError} empty="No artifact details were returned." />}</div></section>}
++    <section className="panel span-8"><div className="panel-header"><h2>Source set</h2><span className="eyebrow">{loading ? "LOADING…" : `${sources.length} immutable objects`}</span></div><div className="panel-body table-wrap">{selectedEvidenceId && <div className="selection-strip" role="status"><span>Evidence {selectedEvidenceId}</span><button type="button" className="button small" onClick={() => setSelectedEvidenceId("")}>Clear</button></div>}{artifactError && !artifactId && <p className="error" role="alert">{artifactError}</p>}<table><thead><tr><th scope="col">File</th><th scope="col">SHA-256</th><th scope="col">Blocks</th></tr></thead><tbody>{sources.map((source) => <tr id={`source-${source.id}`} className={activeEvidenceId === source.id ? "evidence-match" : undefined} key={source.id}><td><div className="source-file"><details><summary>{source.filename}</summary><div className="source-blocks">{source.blocks.slice(0, 20).map((block) => <article className="source-block" id={`block-${source.id}-${block.block_id}`} key={block.block_id}><div className="eyebrow">{block.block_id} · {JSON.stringify(block.locator)}</div><p>{block.text || "No extracted text."}</p></article>)}{source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Use the source object for the remaining {source.blocks.length - 20} blocks.</p>}</div></details>{evidenceRefs.includes(source.id) && <EvidenceChip evidenceId={source.id} linkedId={activeEvidenceId} onOpen={openEvidence} onPreview={setLinkedEvidenceId} onPreviewEnd={() => setLinkedEvidenceId("")} />}</div></td><td className="mono">{source.sha256.slice(0, 16)}…</td><td className="num">{source.blocks.length}</td></tr>)}</tbody></table>{!sources.length && <LoadState loading={loading} error={loadError} empty="No source objects in this case." />}{sources.length > 0 && loadError && <p className="error" role="alert">{loadError}</p>}</div></section>
+     <section className="panel span-4"><div className="panel-header"><h2>Add source</h2><span className="eyebrow">BOUNDARY</span></div><div className="panel-body">{selectedCase ? <form onSubmit={upload}><div className="field"><label htmlFor="source-file">Source file</label><input id="source-file" name="file" type="file" accept=".pdf,.xlsx,.json,.txt,.md,.csv" required /></div><button className="button primary" type="submit" disabled={pendingAction === "upload"}>{pendingAction === "upload" ? "Uploading…" : "Ingest safely"}</button></form> : <div className="empty">Select a case.</div>}</div></section>
+   </div>;
+ }
+ 
+ function RunConsole({ caseId, run, runLoading, runError, startRun, acceptRun, pendingAction }: { caseId: string; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void; pendingAction: string }) {
+   return <div className="grid"><section className="panel span-4"><div className="panel-header"><h2>Compile route</h2><span className="eyebrow">IMMUTABLE PLAN</span></div><div className="panel-body"><form onSubmit={startRun}><div className="field"><label htmlFor="pathway">Purpose</label><select id="pathway" name="pathway" defaultValue="EARNINGS_UPDATE">{pathways.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></div><div className="field"><label htmlFor="depth">Depth</label><select id="depth" name="depth" defaultValue="screen"><option value="screen">Screen</option><option value="full">Full</option></select></div><button className="button primary" type="submit" disabled={!caseId || pendingAction === "start-run"}>{pendingAction === "start-run" ? "Compiling…" : "Compile and run"}</button></form><div className="callout" style={{ marginTop: 14 }}>CP-PARSE is prepended to every route and CP-0 consumes its digest.</div></div></section><section className="panel span-8"><div className="panel-header"><h2>Persisted DAG</h2>{run && <span className={`status ${run.status === "succeeded" ? "success" : run.status === "failed" ? "critical" : "warning"}`}>{run.status}</span>}</div><div className="panel-body">{run ? <><div className="dag">{run.nodes.map((node) => <div className={`dag-node ${node.status}`} key={node.id}><strong>{node.module_id}</strong><div className="muted">{node.status}</div></div>)}</div>{run.error && <p className="error" role="alert">{run.error.message || "Run exception"}</p>}{run.status === "succeeded" && <button className="button primary" style={{ marginTop: 15 }} disabled={pendingAction === "accept-run"} onClick={acceptRun}>{pendingAction === "accept-run" ? "Accepting…" : "Accept analytical snapshot"}</button>}{run.status === "paused" && <div className="callout warning" style={{ marginTop: 15 }}>Material exception: upload governed source material before execution.</div>}</> : <LoadState loading={runLoading} error={runError} empty="No current execution. Select a purpose and depth to create an immutable plan." />}</div></section></div>;
+ }
+ 
+ function DeepDive({ selectedCase, question }: { selectedCase: CaseRecord | null; question: string }) {
+   const [view, setView] = useState<{ accepted: Snapshot | null; latest_accepted: Snapshot | null; switch_required: boolean } | null>(null);

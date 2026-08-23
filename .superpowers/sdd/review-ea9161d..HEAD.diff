@@ -1,0 +1,778 @@
+diff --git a/.superpowers/sdd/task-6-report.md b/.superpowers/sdd/task-6-report.md
+new file mode 100644
+index 0000000..a813685
+--- /dev/null
++++ b/.superpowers/sdd/task-6-report.md
+@@ -0,0 +1,103 @@
++# Task 6 report — Workbench polish, reflow, and verification
++
++## Delivery
++
++- Commit: `e013294 style(frontend): polish analyst workbench foundation`
++- Base: `ea9161d`
++- Screenshots (uncommitted):
++  - `/Users/ericguei/Claude/Projects/CAOS/outputs/workbench-foundation-1440.png`
++  - `/Users/ericguei/Claude/Projects/CAOS/outputs/workbench-foundation-1024.png`
++
++## Implementation
++
++- Reworked the shell hierarchy around a 184px sticky workflow rail, 56px authority bar, dominant 1600px canvas, centered native palette, and fixed 440px contextual drawer.
++- Added compact linked evidence chips, selection/state treatments, and the requested non-pulsing three-bar `LoadState` skeleton while preserving explicit error and empty states.
++- Added CSS-only 1100/900/520 reflow, with table overflow remaining local to `.table-wrap`.
++- Expanded the existing axe runner to all nine routes at desktop, laptop, and reflow sizes, retaining one JSON result with viewport names.
++- Added reduced-motion and same-client case-list request assertions to the real smoke journey.
++- The new request assertion exposed a real dynamic-page remount. `Workspace` now lives in the persistent root layout and derives its active destination from `usePathname`; same-client workflow navigation retains the shell and case list without cache/storage/global state.
++
++## Verification
++
++| Check | Result |
++|---|---|
++| `npm run lint -- --max-warnings=0` | PASS |
++| `npx tsc --noEmit` | PASS |
++| `npm run build` | PASS; 12 static pages generated |
++| `PYTHONPATH=server /private/tmp/caos-task1-venv/bin/python -m pytest tests/test_clean_slate.py -q` | PASS; 28 passed, one upstream Starlette deprecation warning |
++| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run test:workbench` | PASS; same-client workflow case-list requests `0`, reduced motion PASS, no linked-focus request, clean console, no reflow overflow |
++| Final smoke timing | DCL `23.8ms`, FCP `40ms`; both below Task 1 110% limits (`64.46ms`, `74.8ms`) |
++| `CAOS_URL=http://127.0.0.1:8010 npm run a11y` | PASS; 27 route/viewport combinations, 0 violations |
++| GitNexus staged change detection | MEDIUM; six intended files, four Workspace render processes, no HIGH/CRITICAL risk |
++
++## Visual inspection
++
++- 1440×1000: workflow hierarchy, case authority, and dominant change/implication canvas are clean and unclipped; Sources/QA/Command remain compact.
++- 1024×768: accepted authority copy is abbreviated responsively, new-analysis state remains visible, and controls stay readable without horizontal overflow.
++- QA drawer: fixed right overlay does not shrink the canvas, focusable heading/copy are legible, and the contextual action remains reachable.
++- Design detector findings for established Inter/JetBrains Mono, legacy radii/paper literals, and existing callout side rules were reviewed against `DESIGN.md` and `.impeccable.md`; they are pre-existing documented vocabulary, not Task 6 drift. The new evidence chip was aligned to the documented 2px radius.
++
++## Confidence review
++
++1. Persistent shell ownership could have duplicated page shells: verified with production build plus direct-route and client-navigation smoke; root layout intentionally owns the visible shell and the existing pages retain route metadata/static generation.
++2. Responsive chrome could clip at 1024/720: adversarially checked screenshots, explicit 720px scroll-width assertion, and axe at all three viewports; no clipping or page-level overflow found.
++3. The drawer could shrink the analytical canvas or lose focus: verified fixed top-layer positioning and the existing smoke focus-return assertions.
++4. Timing/request assertions could hide a regression: no cache/storage/module global was added; the route remount was fixed at the layout boundary and measured below budget.
++
++Fixed: dynamic-page Workspace remount and laptop authority wrapping. Verified fine: authority/drawer focus, responsive overflow, reduced motion, evidence linking, performance, and all 27 a11y contexts. Still open: none in Task 6 scope.
++
++Rewrite tournament skipped: the only production logic additions are the native pathname-to-destination expression and a semantic loading branch; neither meets the skill's non-trivial rewrite threshold. The full branch tournament remains Task 7.
++
++## Reviewer follow-up — reactive URL authority
++
++- Replaced mount-only `q`/`artifact` hydration and the source-only synchronization helper with direct `useSearchParams` derivation, so persistent-shell navigation updates Sources, Deep-Dive, and Command Center immediately.
++- Added authority-gated synchronization for URL `case` and explicit non-empty `run` changes. Workflow links that omit `run` preserve the selected case's current execution.
++- Keyed authority synchronization to actual case/run query changes. This prevents internal case selection from being mistaken for stale external navigation and causing an authority refresh loop.
++- Extended the live smoke from Command Center through the command palette to an exact artifact-backed Sources view, then through Deep-Dive and Command Center question URLs. The journey proves the artifact digest and both questions render without another case-list request, and caps authority reads to catch refresh oscillation.
++
++### Follow-up verification
++
++| Check | Result |
++|---|---|
++| `npm run lint -- --max-warnings=0` | PASS |
++| `npx tsc --noEmit` | PASS |
++| `npm run build` | PASS; 12 static pages generated |
++| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run test:workbench` | PASS; artifact/q same-client navigation, zero repeated case-list requests after reset, no authority refresh loop |
++| Final smoke timing | DCL `16.3ms`, FCP `72ms` |
++| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run a11y` | PASS; 27 route/viewport combinations, 0 violations |
++| GitNexus staged change detection | HIGH at monolithic `Workspace` symbol granularity; inspected context shows no incoming callers and broad render-flow attribution from stale line bounds, while the staged diff is confined to query synchronization plus smoke/report |
++
++Confidence review found and fixed one real race: state-driven case selection briefly left the old query visible, so an unrestricted synchronization effect could reverse the selection and oscillate authority requests. Query-signature gating now distinguishes external URL changes from internal state transitions, and the live smoke includes a request ceiling for regression coverage. The direct-query design won the rewrite comparison because it eliminates three mirrored route-state stores; the remaining case/run state is intentionally retained for authority and execution lifecycle control.
++
++## Final reviewer follow-up — case-bound runs and cancelled route authority
++
++- The frontend now consumes the existing run `case_id` returned by `GET /api/runs/{id}`. A run response is rendered and subscribed to only when its case matches the active case authority; a mismatch clears the URL run selection and shows a scoped error.
++- Acceptance now checks the run id, the fetched run identity, and the run case before making the mutation request.
++- Run fetches carry both a request generation and active run/case ownership checks. An older response, error, or `finally` cleanup cannot overwrite a newer same-case run transition.
++- Event streaming keys off the validated primitive run id/case id, so background refreshes no longer reopen the stream merely because the latest response creates a new object.
++- A cancelled Report Studio draft prompt now restores the selected case/run URL and does not consume the external route signature. A later attempt receives a fresh prompt.
++
++### Final reviewer verification
++
++| Check | Result |
++|---|---|
++| `npm run lint -- --max-warnings=0` | PASS |
++| `npx tsc --noEmit` | PASS |
++| `npm run build` | PASS; 12 static pages generated |
++| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run test:workbench` | PASS; Case B successful run under Case A URL exposes no B data/action, clears the mismatched run, makes zero B accept requests; cancelled A→B draft navigation restores A and succeeds on two independent retries |
++| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run a11y` | PASS; 27 route/viewport combinations, 0 violations |
++
++Confidence review: the highest-risk cases were (1) a stale same-case run response winning after the selected run changes, (2) an event-stream reconnect per polling response, (3) cross-case acceptance after URL injection, and (4) a cancelled draft transition consuming its retry token. Request ownership guards, primitive stream dependencies, the accept boundary, and the two live browser regressions address these cases. No server change was needed because the established run-detail payload already has `case_id`.
++
++## Residual reviewer follow-up — case-bound loading handoff
++
++- `selectCase` now invalidates the run request generation and clears `runLoading` before changing case/run ownership. A delayed response from the prior case cannot leave the next no-run case on a permanent skeleton.
++- The browser smoke delays a Case A run read, switches to a Case B with no run, releases the delayed response, and verifies the empty Run Console state with neither loading skeleton nor stale acceptance action.
++
++| Check | Result |
++|---|---|
++| `npm run lint -- --max-warnings=0` | PASS |
++| `npx tsc --noEmit` | PASS |
++| `npm run build` | PASS; 12 static pages generated |
++| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run test:workbench` | PASS; delayed A→B no-run handoff, cross-case guard, and draft retry regressions |
++| Fresh `CAOS_URL=http://127.0.0.1:8010 npm run a11y` | PASS; 27 route/viewport combinations, 0 violations |
+diff --git a/caos/frontend/app/globals.css b/caos/frontend/app/globals.css
+index f0f9143..277532b 100644
+--- a/caos/frontend/app/globals.css
++++ b/caos/frontend/app/globals.css
+@@ -21,21 +21,25 @@ button, input, select, textarea { font: inherit; }
+ button, a, select, input, textarea { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+ a { color: inherit; }
+ :focus-visible { outline: 2px solid var(--caos-accent); outline-offset: 2px; }
+-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
+-.rail { border-right: 1px solid var(--caos-border); background: var(--caos-panel); padding: 18px 12px; display: flex; flex-direction: column; gap: 22px; }
++.app-shell { min-height: 100vh; display: grid; grid-template-columns: 184px minmax(0, 1fr); }
++.rail { position: sticky; top: 0; height: 100dvh; overflow-y: auto; border-right: 1px solid var(--caos-border); background: var(--caos-panel); padding: 16px 10px; display: flex; flex-direction: column; gap: 18px; }
+ .wordmark { font: 700 15px/1 JetBrains Mono, ui-monospace, monospace; letter-spacing: .12em; }
+ .wordmark small { display: block; margin-top: 6px; color: var(--caos-muted); font: 10px/1.3 Inter, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+ .nav-group { display: grid; gap: 4px; }
+ .nav-label, .eyebrow { color: var(--caos-muted); font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+-.nav-link { display: flex; justify-content: space-between; padding: 8px 9px; border: 1px solid transparent; border-radius: 4px; text-decoration: none; background: transparent; color: var(--caos-text); text-align: left; cursor: pointer; }
+-.nav-link:hover, .nav-link.active { border-color: var(--caos-border); background: var(--caos-elevated); color: var(--caos-accent); }
++.rail .nav-label { display: none; }
++.rail > nav + nav { border-top: 1px solid var(--caos-border); padding-top: 10px; }
++.rail > nav + nav .nav-link { padding-block: 6px; padding-left: 18px; color: var(--caos-muted); font-size: 11px; }
++.nav-link { display: flex; justify-content: space-between; padding: 8px 9px; border: 1px solid transparent; border-radius: 4px; text-decoration: none; background: transparent; color: var(--caos-text); text-align: left; cursor: pointer; transition: border-color 160ms ease-out, background-color 160ms ease-out, color 160ms ease-out; }
++.nav-link:hover, .nav-link.active, .nav-link[aria-selected="true"] { border-color: var(--caos-border); background: var(--caos-elevated); color: var(--caos-accent); }
+ .nav-link .shortcut { color: var(--caos-muted); font: 10px JetBrains Mono, monospace; }
+ .workspace { min-width: 0; }
+-.topbar { min-height: 58px; border-bottom: 1px solid var(--caos-border); display: flex; align-items: center; justify-content: space-between; padding: 0 22px; gap: 12px; }
+-.case-context { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
++.topbar { min-height: 56px; border-bottom: 1px solid var(--caos-border); display: flex; align-items: center; justify-content: space-between; padding: 0 18px; gap: 16px; }
++.case-context { display: flex; flex: 1; align-items: baseline; gap: 10px; min-width: 0; overflow: hidden; }
+ .case-context strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+-.top-actions { display: flex; align-items: center; gap: 8px; }
+-.content { padding: 22px; max-width: 1600px; }
++.top-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 6px; }
++.top-actions select { min-width: 180px; max-width: 260px; border: 1px solid var(--caos-border); border-radius: 4px; background: var(--caos-bg); color: var(--caos-text); padding: 6px 8px; }
++.content { width: 100%; max-width: 1600px; margin-inline: auto; padding: 22px; }
+ .page-title { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+ .page-title h1 { margin: 3px 0 0; font-size: 25px; line-height: 1.1; letter-spacing: -.02em; }
+ .grid { display: grid; gap: 14px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+@@ -45,9 +49,9 @@ a { color: inherit; }
+ .panel-header h2, .panel-header h3 { margin: 0; font-size: 11px; letter-spacing: .13em; text-transform: uppercase; }
+ .panel-body { padding: 13px; }
+ .muted { color: var(--caos-muted); }
+-.mono, .num { font-family: JetBrains Mono, ui-monospace, monospace; }
++.mono, .num { overflow-wrap: anywhere; font-family: JetBrains Mono, ui-monospace, monospace; }
+ .num { font-variant-numeric: tabular-nums; }
+-.button { border: 1px solid var(--caos-border); background: var(--caos-elevated); color: var(--caos-text); border-radius: 4px; padding: 7px 10px; cursor: pointer; }
++.button { border: 1px solid var(--caos-border); background: var(--caos-elevated); color: var(--caos-text); border-radius: 4px; padding: 7px 10px; cursor: pointer; transition: border-color 160ms ease-out, background-color 160ms ease-out; }
+ .button:hover { border-color: var(--caos-accent); }
+ .button:disabled { cursor: wait; opacity: .58; }
+ .button.primary { border-color: var(--caos-accent); background: color-mix(in srgb, var(--caos-accent) 16%, var(--caos-panel)); color: var(--caos-text); }
+@@ -76,6 +80,23 @@ th { color: var(--caos-muted); font-size: 10px; letter-spacing: .09em; text-tran
+ .bar { width: 36px; background: var(--caos-accent); min-height: 4px; }
+ .bar-label { color: var(--caos-muted); font-size: 10px; text-align: center; }
+ .desktop-gate { display: none; }
++.evidence-list { display: flex; flex-wrap: wrap; gap: 6px; }
++.evidence-chip { display: inline-flex; min-height: 22px; max-width: 100%; align-items: center; gap: 5px; border: 1px solid var(--caos-accent); border-radius: 2px; background: transparent; color: var(--caos-accent); padding: 3px 6px; overflow-wrap: anywhere; font: 10px/1.3 JetBrains Mono, ui-monospace, monospace; cursor: pointer; }
++.evidence-chip:hover { background: color-mix(in srgb, var(--caos-accent) 8%, transparent); }
++.evidence-chip.warning { border-color: var(--caos-warning); color: var(--caos-warning); }
++.evidence-chip.is-linked { outline: 2px solid var(--caos-accent); outline-offset: 1px; background: color-mix(in srgb, var(--caos-accent) 14%, var(--caos-panel)); color: var(--caos-text); }
++.selection-strip { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; border-block: 1px solid var(--caos-border); padding: 6px 0; font-family: JetBrains Mono, ui-monospace, monospace; }
++.source-file { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 240px; }
++.source-file details { min-width: 0; }
++.state-skeleton { display: grid; gap: 8px; padding: 14px 10px; }
++.state-skeleton span { display: block; height: 8px; background: var(--caos-elevated); }
++.state-skeleton span:nth-child(2) { width: 74%; }
++.state-skeleton span:nth-child(3) { width: 88%; }
++.state-block { color: var(--caos-text); line-height: 1.5; }
++.state-block.unavailable { color: var(--caos-muted); }
++.state-block dl { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 8px 14px; margin: 0 0 18px; }
++.state-block dt { color: var(--caos-muted); font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
++.state-block dd { min-width: 0; margin: 0; }
+ .paper { background: var(--caos-paper); color: var(--caos-ink); border-color: #c2bdb2; }
+ .paper .panel { background: #f8f5ef; color: var(--caos-ink); }
+ .paper .panel-header { border-color: #c2bdb2; }
+@@ -86,9 +107,17 @@ th { color: var(--caos-muted); font-size: 10px; letter-spacing: .09em; text-tran
+ .paper .error { color: #8a1f14; }
+ .skip-link { position: fixed; left: 8px; top: 8px; transform: translateY(-150%); z-index: 4; background: var(--caos-elevated); padding: 8px; }
+ .skip-link:focus { transform: translateY(0); }
+-dialog { border: 1px solid var(--caos-border); background: var(--caos-panel); color: var(--caos-text); padding: 0; max-width: 520px; width: calc(100% - 32px); overscroll-behavior: contain; }
++dialog { border: 1px solid var(--caos-border); background: var(--caos-panel); color: var(--caos-text); padding: 0; overscroll-behavior: contain; }
+ dialog::backdrop { background: rgb(0 0 0 / .64); }
+-.dialog-body { padding: 16px; }
++dialog:not(.context-drawer) { width: min(680px, calc(100% - 32px)); max-width: 680px; max-height: min(680px, calc(100dvh - 32px)); }
++.dialog-body { display: grid; gap: 12px; padding: 16px; }
++.dialog-body .panel-header { margin: -16px -16px 0; }
++#command-results { max-height: min(420px, 55dvh); overflow-y: auto; }
++#command-results .nav-link { width: 100%; }
++.context-drawer { position: fixed; inset: 0 0 0 auto; width: min(440px, 100vw); max-width: none; height: 100dvh; max-height: none; margin: 0; border-width: 0 0 0 1px; overflow: hidden; }
++.drawer-header { min-height: 56px; border-bottom: 1px solid var(--caos-border); display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; }
++.drawer-header h2 { margin: 3px 0 0; font-size: 16px; }
++.drawer-body { height: calc(100dvh - 57px); overflow-y: auto; padding: 16px; }
+ .error { color: var(--caos-critical); }
+ .empty { padding: 24px 10px; color: var(--caos-muted); text-align: center; }
+ .error-state { text-align: left; }
+@@ -106,20 +135,39 @@ dialog::backdrop { background: rgb(0 0 0 / .64); }
+ .row-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+ .change-list { margin: 12px 0 0; padding-left: 18px; }
+ .report-preview { white-space: pre-wrap; font-size: 11px; line-height: 1.5; }
++@media (max-width: 1100px) {
++  .app-shell { grid-template-columns: 156px minmax(0, 1fr); }
++  .case-context .optional { display: none; }
++  .case-context .mono { display: none; }
++  .top-actions select { min-width: 150px; }
++}
+ @media (max-width: 900px) {
+   .app-shell { display: block; }
+-  .rail { border-right: 0; border-bottom: 1px solid var(--caos-border); padding: 9px 10px; flex-direction: row; align-items: center; gap: 10px; overflow-x: auto; }
++  .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--caos-border); padding: 9px 10px; flex-direction: row; align-items: center; gap: 10px; overflow-x: auto; overflow-y: visible; }
+   .wordmark { flex: 0 0 auto; }
++  .wordmark small { display: none; }
+   .nav-group { display: flex; flex: 0 0 auto; gap: 4px; }
+-  .nav-label { display: none; }
++  .rail > nav + nav { display: none; }
+   .nav-link { white-space: nowrap; }
+   .workspace { min-width: 0; }
+-  .topbar { padding: 12px 14px; flex-wrap: wrap; }
+-  .top-actions { width: 100%; }
+-  .top-actions select { width: 100%; }
++  .topbar { align-items: stretch; flex-direction: column; padding: 10px 14px; gap: 8px; }
++  .case-context { flex-wrap: wrap; overflow: visible; }
++  .top-actions { width: 100%; flex-wrap: wrap; }
++  .top-actions select { min-width: 0; max-width: none; flex: 1; }
+   .page-title { align-items: flex-start; flex-direction: column; }
+   .content { padding: 16px 14px; }
+   .span-4, .span-6, .span-8, .span-12 { grid-column: span 12; }
++  .context-drawer { width: min(440px, 100vw); }
++}
++@media (max-width: 520px) {
++  body { font-size: 13px; }
++  .case-context .status, .case-context .muted, .case-context .mono { display: none; }
++  .top-actions select { flex-basis: 100%; }
++  .panel-header { min-height: 44px; }
++  .button.small { padding: 7px 9px; }
++  .rv-grid { grid-template-columns: 1fr; }
++  .context-drawer { max-width: 100vw; }
++  .evidence-chip { min-height: 24px; }
+ }
+-@media (max-width: 520px) { body { font-size: 13px; } .panel-header { min-height: 44px; } .button.small { padding: 7px 9px; } .rv-grid { grid-template-columns: 1fr; } }
++@media (prefers-reduced-motion: reduce) { .app-shell { animation-iteration-count: 1 !important; animation-play-state: paused !important; } }
+ @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+diff --git a/caos/frontend/app/layout.tsx b/caos/frontend/app/layout.tsx
+index 626c6c1..82aac6e 100644
+--- a/caos/frontend/app/layout.tsx
++++ b/caos/frontend/app/layout.tsx
+@@ -1,4 +1,6 @@
+ import type { Metadata } from "next";
++import { Suspense } from "react";
++import Workspace from "../src/components/Workspace";
+ import "./globals.css";
+ 
+ export const metadata: Metadata = {
+@@ -6,6 +8,6 @@ export const metadata: Metadata = {
+   description: "Evidence-forward institutional credit analysis",
+ };
+ 
+-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+-  return <html lang="en"><body>{children}</body></html>;
++export default function RootLayout() {
++  return <html lang="en"><body><Suspense fallback={null}><Workspace /></Suspense></body></html>;
+ }
+diff --git a/caos/frontend/scripts/a11y-axe.mjs b/caos/frontend/scripts/a11y-axe.mjs
+index d7a2f0d..2de30bd 100644
+--- a/caos/frontend/scripts/a11y-axe.mjs
++++ b/caos/frontend/scripts/a11y-axe.mjs
+@@ -3,18 +3,25 @@ import AxeBuilder from "@axe-core/playwright";
+ 
+ const baseUrl = process.env.CAOS_URL || "http://127.0.0.1:8000";
+ const routes = ["/cases/", "/sources/", "/run-console/", "/deep-dive/", "/rv-screener/", "/command-center/", "/model-builder/", "/report-studio/", "/admin-studio/"];
++const viewports = [
++  { name: "desktop", width: 1440, height: 1000 },
++  { name: "laptop", width: 1024, height: 768 },
++  { name: "reflow", width: 720, height: 900 },
++];
+ const browser = await chromium.launch({ headless: true });
+ const violations = [];
+ 
+ try {
+-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+-  const page = await context.newPage();
+-  for (const route of routes) {
+-    await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
+-    const result = await new AxeBuilder({ page }).analyze();
+-    for (const violation of result.violations) violations.push({ route, id: violation.id, impact: violation.impact, nodes: violation.nodes.map((node) => ({ target: node.target, html: node.html, summary: node.failureSummary })) });
++  for (const viewport of viewports) {
++    const context = await browser.newContext({ viewport });
++    const page = await context.newPage();
++    for (const route of routes) {
++      await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
++      const result = await new AxeBuilder({ page }).analyze();
++      for (const violation of result.violations) violations.push({ viewport: viewport.name, route, id: violation.id, impact: violation.impact, nodes: violation.nodes.map((node) => ({ target: node.target, html: node.html, summary: node.failureSummary })) });
++    }
++    await context.close();
+   }
+-  await context.close();
+ } finally {
+   await browser.close();
+ }
+@@ -23,5 +30,5 @@ if (violations.length) {
+   console.error(JSON.stringify({ violations }, null, 2));
+   process.exitCode = 1;
+ } else {
+-  console.log(JSON.stringify({ routes: routes.length, violations: 0 }));
++  console.log(JSON.stringify({ routes: routes.length, viewports: viewports.length, combinations: routes.length * viewports.length, violations: 0 }));
+ }
+diff --git a/caos/frontend/scripts/workbench-smoke.mjs b/caos/frontend/scripts/workbench-smoke.mjs
+index 39d28c7..649c028 100644
+--- a/caos/frontend/scripts/workbench-smoke.mjs
++++ b/caos/frontend/scripts/workbench-smoke.mjs
+@@ -13,11 +13,39 @@ const raceCaseResponse = await api.post("/api/cases", {
+ });
+ assert.equal(raceCaseResponse.status(), 201);
+ const raceCase = await raceCaseResponse.json();
++const crossCaseUpload = await api.post(`/api/cases/${raceCase.id}/sources`, {
++  multipart: {
++    file: {
++      name: "second-earnings.txt",
++      mimeType: "text/plain",
++      buffer: Buffer.from("Revenue 820\nEBITDA 140"),
++    },
++  },
++});
++assert.equal(crossCaseUpload.status(), 201);
++const crossCaseRunResponse = await api.post(`/api/cases/${raceCase.id}/runs`, {
++  data: { pathway: "EARNINGS_UPDATE", depth: "screen", focus_questions: [] },
++});
++assert.equal(crossCaseRunResponse.status(), 202);
++const crossCaseRun = await crossCaseRunResponse.json();
++let crossCaseRunState;
++for (let attempt = 0; attempt < 60; attempt += 1) {
++  const response = await api.get(`/api/runs/${crossCaseRun.id}`);
++  crossCaseRunState = await response.json();
++  if (crossCaseRunState.status === "succeeded") break;
++  await new Promise((resolve) => setTimeout(resolve, 50));
++}
++assert.equal(crossCaseRunState?.status, "succeeded");
+ const failedCaseResponse = await api.post("/api/cases", {
+   data: { name: "Authority Failure", issuer: "Unavailable", sector: "Services" },
+ });
+ assert.equal(failedCaseResponse.status(), 201);
+ const failedCase = await failedCaseResponse.json();
++const idleCaseResponse = await api.post("/api/cases", {
++  data: { name: "No Run Boundary", issuer: "Idle", sector: "Services" },
++});
++assert.equal(idleCaseResponse.status(), 201);
++const idleCase = await idleCaseResponse.json();
+ const upload = await api.post(`/api/cases/${caseRecord.id}/sources`, {
+   multipart: {
+     file: {
+@@ -54,6 +82,7 @@ try {
+   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+   const page = await context.newPage();
+   let caseRequests = 0;
++  let authorityRequests = 0;
+   let expectedAuthorityFailureURL = "";
+   let expectedAuthorityFailureSeen = false;
+   page.on("console", (message) => {
+@@ -68,7 +97,9 @@ try {
+   });
+   page.on("pageerror", (error) => errors.push(error.message));
+   page.on("request", (requestValue) => {
+-    if (new URL(requestValue.url()).pathname === "/api/cases") caseRequests += 1;
++    const pathname = new URL(requestValue.url()).pathname;
++    if (pathname === "/api/cases") caseRequests += 1;
++    if (/^\/api\/cases\/[^/]+\/(?:lens|snapshot)$/.test(pathname)) authorityRequests += 1;
+   });
+ 
+   let releaseAuthorityDetail;
+@@ -138,6 +169,57 @@ try {
+   await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
+   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
+ 
++  await page.evaluate((caseId) => window.sessionStorage.setItem(`caos-report-draft:${caseId}`, JSON.stringify({ thesis: "Unsaved analyst view" })), caseRecord.id);
++  let cancelledRoutePrompts = 0;
++  const cancelRouteChange = (dialog) => {
++    cancelledRoutePrompts += 1;
++    void dialog.dismiss();
++  };
++  page.on("dialog", cancelRouteChange);
++  for (let attempt = 0; attempt < 2; attempt += 1) {
++    await page.evaluate((nextCaseId) => window.history.pushState(null, "", `/command-center/?case=${nextCaseId}`), raceCase.id);
++    await page.waitForFunction((expectedCaseId) => new URL(window.location.href).searchParams.get("case") === expectedCaseId, caseRecord.id);
++    await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
++  }
++  assert.equal(cancelledRoutePrompts, 2, "a cancelled draft-bound route change was not retryable");
++  page.off("dialog", cancelRouteChange);
++  await page.evaluate((caseId) => window.sessionStorage.removeItem(`caos-report-draft:${caseId}`), caseRecord.id);
++
++  let releaseStaleRun;
++  const staleRunBarrier = new Promise((resolve) => { releaseStaleRun = resolve; });
++  const holdStaleRun = async (route) => {
++    await staleRunBarrier;
++    await route.continue().catch((caught) => {
++      if (!(caught instanceof Error) || !caught.message.includes("Route is already handled")) throw caught;
++    });
++  };
++  const staleRunPath = (url) => url.pathname === `/api/runs/${run.id}`;
++  await page.route(staleRunPath, holdStaleRun);
++  const staleRunRequest = page.waitForRequest((requestValue) => new URL(requestValue.url()).pathname === `/api/runs/${run.id}`);
++  await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}&run=${run.id}`, { waitUntil: "domcontentloaded" });
++  await staleRunRequest;
++  await page.getByRole("combobox", { name: "Select case" }).selectOption(idleCase.id);
++  releaseStaleRun();
++  await page.unroute(staleRunPath, holdStaleRun);
++  await page.getByText("No current execution. Select a purpose and depth to create an immutable plan.", { exact: true }).waitFor();
++  assert.equal(await page.getByRole("status", { name: "Loading" }).count(), 0, "case switch left the run console permanently loading");
++  assert.equal(await page.getByRole("button", { name: "Accept analytical snapshot" }).count(), 0, "stale run data survived the case boundary");
++  await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
++  await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
++
++  let crossCaseAcceptRequests = 0;
++  const countCrossCaseAccept = (requestValue) => {
++    if (requestValue.method() === "POST"
++      && new URL(requestValue.url()).pathname === `/api/runs/${crossCaseRun.id}/accept`) crossCaseAcceptRequests += 1;
++  };
++  page.on("request", countCrossCaseAccept);
++  await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}&run=${crossCaseRun.id}`, { waitUntil: "networkidle" });
++  await page.getByText("Requested run does not belong to the selected case.", { exact: true }).waitFor();
++  assert.equal(await page.getByRole("button", { name: "Accept analytical snapshot" }).count(), 0, "cross-case run exposed an acceptance action");
++  await page.waitForFunction((runId) => new URL(window.location.href).searchParams.get("run") !== runId, crossCaseRun.id);
++  assert.equal(crossCaseAcceptRequests, 0, "cross-case run was accepted from the selected case");
++  page.off("request", countCrossCaseAccept);
++
+   const workflows = ["Overview", "Sources", "Analyse", "Compare", "Model", "Publish"];
+   for (const label of workflows) {
+     await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).waitFor();
+@@ -154,6 +236,42 @@ try {
+         if (element.getAttribute("aria-current") !== "page") throw new Error("workflow is not active");
+       });
+   }
++  await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
++  caseRequests = 0;
++  authorityRequests = 0;
++
++  await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
++  const artifactPalette = page.getByRole("dialog", { name: "Command palette" });
++  await artifactPalette.getByRole("combobox", { name: "Search commands" }).fill(artifact.id);
++  await artifactPalette.getByRole("option", { name: "Open artifact ID in this case" }).click();
++  await page.waitForURL((url) => url.pathname === "/sources/"
++    && url.searchParams.get("case") === caseRecord.id
++    && url.searchParams.get("artifact") === artifact.id);
++  const evidenceFocus = page.getByRole("heading", { name: "Evidence focus" }).locator("../..");
++  await evidenceFocus.getByText(artifact.digest, { exact: true }).waitFor();
++
++  const deepDiveQuestion = "What changed in refinancing capacity?";
++  await page.evaluate(({ caseId, question }) => {
++    const query = new URLSearchParams({ case: caseId, q: question });
++    window.history.pushState(null, "", `/deep-dive/?${query}`);
++  }, { caseId: caseRecord.id, question: deepDiveQuestion });
++  await page.waitForURL((url) => url.pathname === "/deep-dive/" && url.searchParams.get("q") === deepDiveQuestion);
++  await page.getByText(deepDiveQuestion, { exact: true }).waitFor();
++
++  const commandQuestion = "Which evidence changes the downside case?";
++  await page.evaluate(({ caseId, question }) => {
++    const query = new URLSearchParams({ case: caseId, q: question });
++    window.history.pushState(null, "", `/command-center/?${query}`);
++  }, { caseId: caseRecord.id, question: commandQuestion });
++  await page.waitForURL((url) => url.pathname === "/command-center/" && url.searchParams.get("q") === commandQuestion);
++  await page.getByText(commandQuestion, { exact: true }).waitFor();
++
++  for (const label of ["Overview", "Sources", "Analyse"]) {
++    await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).click();
++    await page.waitForLoadState("networkidle");
++  }
++  assert.equal(caseRequests, 0, "same-client query/workflow navigation repeated the case-list request");
++  assert.ok(authorityRequests <= 12, `same-client navigation caused an authority refresh loop (${authorityRequests} requests)`);
+   await page.getByRole("region", { name: "Accepted authority" }).getByText("Northstar / Workbench QA").waitFor();
+   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
+   await page.getByRole("button", { name: /QA unavailable/ }).waitFor();
+@@ -309,6 +427,20 @@ try {
+   assert.equal(overflow, false, "workbench causes page-level horizontal overflow at reflow width");
+   assert.deepEqual(errors, []);
+   await context.close();
++
++  const reduced = await browser.newContext({
++    viewport: { width: 1024, height: 768 },
++    reducedMotion: "reduce",
++  });
++  const reducedPage = await reduced.newPage();
++  await reducedPage.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
++  const reducedStyle = await reducedPage.evaluate(() => {
++    const style = getComputedStyle(document.querySelector(".app-shell"));
++    return { iterationCount: style.animationIterationCount, playState: style.animationPlayState };
++  });
++  assert.equal(reducedStyle.iterationCount, "1");
++  assert.equal(reducedStyle.playState, "paused");
++  await reduced.close();
+ } finally {
+   await browser.close();
+   await api.dispose();
+diff --git a/caos/frontend/src/components/WorkbenchShell.tsx b/caos/frontend/src/components/WorkbenchShell.tsx
+index efa2852..d0e72e6 100644
+--- a/caos/frontend/src/components/WorkbenchShell.tsx
++++ b/caos/frontend/src/components/WorkbenchShell.tsx
+@@ -254,7 +254,7 @@ export default function WorkbenchShell({
+             {selectedCase && authorityPending && <span className="muted">Loading authority…</span>}
+             {selectedCase && authorityStatus === "error" && <span className="status warning">Authority unavailable</span>}
+             {selectedCase && authorityStatus === "ready" && !accepted && <span className="status warning">No accepted snapshot</span>}
+-            {authorityStatus === "ready" && accepted && <><span className="status success">Accepted {new Date(accepted.accepted_at).toLocaleString()}</span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
++            {authorityStatus === "ready" && accepted && <><span className="status success">Accepted <span className="optional">{new Date(accepted.accepted_at).toLocaleString()}</span></span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
+             {(authority?.switch_required || authority?.diff?.changed) && <span className="status warning">New analysis available</span>}
+           </div>
+           <div className="top-actions">
+diff --git a/caos/frontend/src/components/Workspace.tsx b/caos/frontend/src/components/Workspace.tsx
+index d63d420..f99de99 100644
+--- a/caos/frontend/src/components/Workspace.tsx
++++ b/caos/frontend/src/components/Workspace.tsx
+@@ -1,13 +1,13 @@
+ "use client";
+ 
+ import Link from "next/link";
+-import { useSearchParams } from "next/navigation";
+-import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
++import { usePathname, useSearchParams } from "next/navigation";
++import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+ import EvidenceChip from "./EvidenceChip";
+ import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
+-import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
++import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, withQuery } from "../lib/workbench";
+ 
+-type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
++type RunRecord = { id: string; case_id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
+ type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
+ type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
+ type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
+@@ -42,17 +42,15 @@ async function request<T>(path: string, options: RequestInit = {}, signal?: Abor
+   return response.json() as Promise<T>;
+ }
+ 
+-function SourceQuerySync({ onChange }: { onChange: (sourceId: string) => void }) {
+-  const sourceId = useSearchParams().get("source") || "";
+-  useEffect(() => {
+-    // URL state is external navigation state and must follow same-route Link updates.
+-    onChange(sourceId);
+-  }, [onChange, sourceId]);
+-  return null;
+-}
+-
+-export default function Workspace({ destination }: { destination: Destination }) {
+-  const active = destination;
++export default function Workspace({ destination }: { destination?: Destination } = {}) {
++  const pathname = usePathname();
++  const searchParams = useSearchParams();
++  const active = destination ?? destinationFromSlug(pathname.split("/").filter(Boolean)[0] || "cases");
++  const requestedCaseId = searchParams.get("case") || "";
++  const requestedRunId = searchParams.get("run") || "";
++  const routeQuestion = searchParams.get("q") || "";
++  const routeArtifactId = searchParams.get("artifact") || "";
++  const routeSourceId = searchParams.get("source") || "";
+   const [cases, setCases] = useState<CaseRecord[]>([]);
+   const [caseId, setCaseId] = useState("");
+   const [runId, setRunId] = useState("");
+@@ -68,28 +66,33 @@ export default function Workspace({ destination }: { destination: Destination })
+   const [authorityStatus, setAuthorityStatus] = useState<AuthorityStatus>("idle");
+   const [drawer, setDrawer] = useState<DrawerState | null>(null);
+   const authorityRequest = useRef(0);
++  const runRequest = useRef(0);
+   const caseIdRef = useRef("");
+-  const [routeQuestion, setRouteQuestion] = useState("");
+-  const [routeArtifactId, setRouteArtifactId] = useState("");
+-  const [routeSourceId, setRouteSourceId] = useState("");
+-
++  const runIdRef = useRef("");
++  const routeAuthorityRef = useRef("");
+   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
+ 
+-  const selectCase = (nextCaseId: string) => {
+-    if (nextCaseId === caseId) return;
++  const selectCase = useCallback((nextCaseId: string) => {
++    if (nextCaseId === caseId) return true;
+     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
+-    if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
++    if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return false;
+     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
++    // A case boundary owns both the active run and any in-flight run reads.
++    runRequest.current += 1;
++    setRunLoading(false);
+     caseIdRef.current = nextCaseId;
+     setDrawer(null);
+     setAuthority(null);
+     setAuthorityStatus(nextCaseId ? "loading" : "idle");
+     setCaseId(nextCaseId);
+-    setRunId(cases.find((item) => item.id === nextCaseId)?.current_execution_id || "");
++    const nextRunId = cases.find((item) => item.id === nextCaseId)?.current_execution_id || "";
++    runIdRef.current = nextRunId;
++    setRunId(nextRunId);
+     setRun(null);
+     setRunError("");
+     setError("");
+-  };
++    return true;
++  }, [caseId, cases]);
+ 
+   const refreshCases = async (signal?: AbortSignal) => {
+     setCasesLoading(true);
+@@ -106,7 +109,10 @@ export default function Workspace({ destination }: { destination: Destination })
+       }
+       if (!runId && !requestedRunId) {
+         const resolvedCase = next.find((item) => item.id === resolvedCaseId);
+-        if (resolvedCase?.current_execution_id) setRunId(resolvedCase.current_execution_id);
++        if (resolvedCase?.current_execution_id) {
++          runIdRef.current = resolvedCase.current_execution_id;
++          setRunId(resolvedCase.current_execution_id);
++        }
+       }
+     } catch (caught) {
+       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(caught instanceof Error ? caught.message : "Unable to load cases");
+@@ -137,28 +143,45 @@ export default function Workspace({ destination }: { destination: Destination })
+   };
+ 
+   const refreshRun = async (id = runId) => {
+-    if (!id) { setRun(null); return; }
++    const requestId = ++runRequest.current;
++    if (!id) { setRun(null); setRunLoading(false); return; }
++    const expectedCaseId = caseIdRef.current;
+     setRunLoading(true);
+     setRunError("");
+-    try { setRun(await request<RunRecord>(`/api/runs/${id}`)); } catch (caught) {
++    try {
++      const next = await request<RunRecord>(`/api/runs/${id}`);
++      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
++      if (next.case_id !== expectedCaseId) {
++        setRun(null);
++        setRunLoading(false);
++        setRunId((current) => {
++          const nextRunId = current === id ? "" : current;
++          runIdRef.current = nextRunId;
++          return nextRunId;
++        });
++        setRunError("Requested run does not belong to the selected case.");
++        return;
++      }
++      setRun(next);
++    } catch (caught) {
++      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
+       const message = caught instanceof Error ? caught.message : "Unable to refresh run";
+       setRunError(message);
+       setError(message);
+     } finally {
++      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
+       setRunLoading(false);
+     }
+   };
+ 
+   useEffect(() => {
+     // URL-derived state is hydrated after the server render to keep the shell deterministic.
+-    const requestedCaseId = queryParam("case");
+     caseIdRef.current = requestedCaseId;
+     // eslint-disable-next-line react-hooks/set-state-in-effect
+     setCaseId(requestedCaseId);
+     setAuthorityStatus(requestedCaseId ? "loading" : "idle");
+-    setRunId(queryParam("run"));
+-    setRouteQuestion(queryParam("q"));
+-    setRouteArtifactId(queryParam("artifact"));
++    runIdRef.current = requestedRunId;
++    setRunId(requestedRunId);
+     setHydrated(true);
+     const controller = new AbortController();
+     const guardDraftNavigation = (event: MouseEvent) => {
+@@ -181,6 +204,39 @@ export default function Workspace({ destination }: { destination: Destination })
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, []);
+ 
++  useEffect(() => {
++    if (!hydrated) return;
++    const authorizedCase = requestedCaseId ? cases.find((item) => item.id === requestedCaseId) : null;
++    const routeAuthority = `${requestedCaseId}\u0000${requestedRunId}`;
++    if (routeAuthorityRef.current === routeAuthority || (requestedCaseId && !authorizedCase && casesLoading)) return;
++    const timer = window.setTimeout(() => {
++      if (authorizedCase && authorizedCase.id !== caseId) {
++        if (!selectCase(authorizedCase.id)) {
++          const url = new URL(window.location.href);
++          if (caseId) url.searchParams.set("case", caseId); else url.searchParams.delete("case");
++          if (runId) url.searchParams.set("run", runId); else url.searchParams.delete("run");
++          window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
++          return;
++        }
++        if (requestedRunId) {
++          runIdRef.current = requestedRunId;
++          setRunId(requestedRunId);
++        }
++        routeAuthorityRef.current = routeAuthority;
++        return;
++      }
++      // A workflow link may omit `run`; in that case the selected case keeps its
++      // current execution. An explicit run query always wins for the same case.
++      if (requestedRunId && requestedRunId !== runId) {
++        setRun(null);
++        runIdRef.current = requestedRunId;
++        setRunId(requestedRunId);
++      }
++      routeAuthorityRef.current = routeAuthority;
++    }, 0);
++    return () => window.clearTimeout(timer);
++  }, [caseId, cases, casesLoading, hydrated, requestedCaseId, requestedRunId, runId, selectCase]);
++
+   useEffect(() => {
+     authorityRequest.current += 1;
+     // The visible authority and contextual drawer must clear at the external case boundary.
+@@ -211,14 +267,20 @@ export default function Workspace({ destination }: { destination: Destination })
+     // The initial refresh is an external synchronization boundary.
+     // eslint-disable-next-line react-hooks/set-state-in-effect
+     void refreshRun(runId);
++    // refreshRun only depends on the current run id.
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [runId]);
++
++  useEffect(() => {
++    if (!runId || !run || run.id !== runId || run.case_id !== caseId) return;
+     const source = new EventSource(`/api/runs/${runId}/events`);
+     const refresh = () => void refreshRun();
+     ["run.running", "node.running", "node.succeeded", "node.failed", "run.succeeded", "run.failed", "run.paused", "snapshot.accepted"].forEach((name) => source.addEventListener(name, refresh));
+     const timer = window.setInterval(refresh, 1200);
+     return () => { source.close(); window.clearInterval(timer); };
+-    // refreshRun only depends on the current run id.
++    // Event updates only begin after the run has passed its case authority check.
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [runId]);
++  }, [caseId, run?.case_id, run?.id, runId]);
+ 
+   const createCase = async (event: FormEvent<HTMLFormElement>) => {
+     event.preventDefault(); setError("");
+@@ -246,13 +308,17 @@ export default function Workspace({ destination }: { destination: Destination })
+     setPendingAction("start-run");
+     try {
+       const created = await request<RunRecord>(`/api/cases/${caseId}/runs`, { method: "POST", body: JSON.stringify({ pathway: form.get("pathway"), depth: form.get("depth"), focus_questions: [] }) });
+-      setRun(created); setRunId(created.id);
++      setRun(created); runIdRef.current = created.id; setRunId(created.id);
+     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to start run"); }
+     finally { setPendingAction(""); }
+   };
+ 
+   const acceptRun = async () => {
+-    if (!runId || !window.confirm("Accept this analytical snapshot as the visible authority for the case?")) return;
++    if (!runId || !run || run.id !== runId || run.case_id !== caseId) {
++      setRunError("Only a run bound to the selected case can be accepted.");
++      return;
++    }
++    if (!window.confirm("Accept this analytical snapshot as the visible authority for the case?")) return;
+     setPendingAction("accept-run");
+     try { await request(`/api/runs/${runId}/accept`, { method: "POST" }); await refreshCase(caseId); await refreshRun(); }
+     catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to accept snapshot"); }
+@@ -274,9 +340,7 @@ export default function Workspace({ destination }: { destination: Destination })
+     }
+   };
+ 
+-  return <>
+-    <Suspense fallback={null}><SourceQuerySync onChange={setRouteSourceId} /></Suspense>
+-    <WorkbenchShell
++  return <WorkbenchShell
+       active={active}
+       authority={authority}
+       authorityStatus={authorityStatus}
+@@ -291,14 +355,13 @@ export default function Workspace({ destination }: { destination: Destination })
+       selectedCase={selectedCase}
+     >
+       <div key={`${active}:${caseId}`}>{renderDestination()}</div>
+-    </WorkbenchShell>
+-  </>;
++    </WorkbenchShell>;
+ }
+ 
+ function EmptyState({ text }: { text: string }) { return <div className="panel"><div className="empty">{text}</div></div>; }
+ 
+ function LoadState({ loading, error, empty }: { loading: boolean; error?: string; empty?: string }) {
+-  if (loading) return <div className="empty" role="status" aria-live="polite">Loading…</div>;
++  if (loading) return <div className="state-skeleton" role="status" aria-live="polite" aria-label="Loading"><span /><span /><span /></div>;
+   if (error) return <div className="empty error-state" role="alert"><strong>Unable to load this view.</strong><br /><span>{error}</span><br /><span className="muted">Retry by refreshing the destination.</span></div>;
+   return <div className="empty">{empty || "No data available."}</div>;
+ }

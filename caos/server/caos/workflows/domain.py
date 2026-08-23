@@ -43,13 +43,14 @@ class WorkflowRuntime:
             node = self.store.add_node(run["id"], case_id, plan_node["module_id"], plan_node["dependencies"], plan_node["stage"])
             node_records.append(node)
             logical_ids[plan_node["module_id"]] = node["id"]
-        self.store.update_run(run["id"], node_ids=[node["id"] for node in node_records])
+        runnable = bool(source_set and source_set["source_ids"])
+        empty_source_error = None if runnable else {"code": "SOURCE_SET_EMPTY", "message": "Upload and version source material before execution."}
+        self.store.update_run(run["id"], node_ids=[node["id"] for node in node_records], status="queued" if runnable else "paused", error=empty_source_error)
         with self.store.lock:
             self.store.cases[case_id]["current_execution_id"] = run["id"]
             self.store.persist()
         self.store.emit(run["id"], "run.created", {"run_id": run["id"], "plan_digest": plan["plan_digest"], "profile_id": plan["profile_id"], "selection_id": plan["selection_id"]})
-        if not source_set or not source_set["source_ids"]:
-            self.store.update_run(run["id"], status="paused", error={"code": "SOURCE_SET_EMPTY", "message": "Upload and version source material before execution."})
+        if not runnable:
             self.store.emit(run["id"], "run.paused", {"code": "SOURCE_SET_EMPTY"})
         elif self.settings.environment != "production":
             future = self.executor.submit(self._execute, run["id"], actor)

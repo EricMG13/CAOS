@@ -1,0 +1,367 @@
+diff --git a/caos/frontend/scripts/workbench-smoke.mjs b/caos/frontend/scripts/workbench-smoke.mjs
+index ac603fb..f363a40 100644
+--- a/caos/frontend/scripts/workbench-smoke.mjs
++++ b/caos/frontend/scripts/workbench-smoke.mjs
+@@ -13,6 +13,11 @@ const raceCaseResponse = await api.post("/api/cases", {
+ });
+ assert.equal(raceCaseResponse.status(), 201);
+ const raceCase = await raceCaseResponse.json();
++const failedCaseResponse = await api.post("/api/cases", {
++  data: { name: "Authority Failure", issuer: "Unavailable", sector: "Services" },
++});
++assert.equal(failedCaseResponse.status(), 201);
++const failedCase = await failedCaseResponse.json();
+ const upload = await api.post(`/api/cases/${caseRecord.id}/sources`, {
+   multipart: {
+     file: {
+@@ -57,7 +62,41 @@ try {
+     if (new URL(requestValue.url()).pathname === "/api/cases") caseRequests += 1;
+   });
+ 
+-  await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
++  let releaseAuthorityDetail;
++  const authorityDetailBarrier = new Promise((resolve) => {
++    releaseAuthorityDetail = resolve;
++  });
++  const heldAuthorityDetail = (url) => url.pathname === `/api/cases/${caseRecord.id}`;
++  const holdAuthorityDetail = async (route) => {
++    await authorityDetailBarrier;
++    await route.continue();
++  };
++  await page.route(heldAuthorityDetail, holdAuthorityDetail);
++  await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "domcontentloaded" });
++  const loadingSourcesTrigger = page.getByRole("button", { name: "Sources loading" });
++  await loadingSourcesTrigger.click();
++  const sourceDrawer = page.getByRole("dialog", { name: "Source details" });
++  await sourceDrawer.getByText("Loading source authority…").waitFor();
++  assert.equal(await sourceDrawer.getByText(/^0$/).count(), 0);
++  assert.equal(await sourceDrawer.getByText(/No accepted/).count(), 0);
++  await page.keyboard.press("Escape");
++  releaseAuthorityDetail();
++  await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
++  const resolvedSourcesTrigger = page.getByRole("button", { name: "1 sources" });
++  await resolvedSourcesTrigger.click();
++  await sourceDrawer.getByText("Current source count").waitFor();
++  await page.getByRole("combobox", { name: "Select case" }).evaluate((element) => {
++    element.dispatchEvent(new Event("change", { bubbles: true }));
++  });
++  await page.evaluate(() => new Promise((resolve) => {
++    requestAnimationFrame(() => requestAnimationFrame(resolve));
++  }));
++  assert.equal(await sourceDrawer.isVisible(), true, "reselecting the current case closed the resolved authority drawer");
++  assert.equal(await resolvedSourcesTrigger.count(), 1, "reselecting the current case exposed a false authority lifecycle state");
++  assert.equal(await sourceDrawer.getByText("Loading source authority…").count(), 0);
++  assert.equal(await sourceDrawer.getByText("Source authority unavailable.").count(), 0);
++  await page.keyboard.press("Escape");
++  await page.unroute(heldAuthorityDetail, holdAuthorityDetail);
+   const timing = await page.evaluate(() => {
+     const navigation = performance.getEntriesByType("navigation")[0];
+     const paint = performance.getEntriesByName("first-contentful-paint")[0];
+@@ -68,6 +107,24 @@ try {
+   });
+   console.log(JSON.stringify({ timing, caseRequests }));
+ 
++  const failedAuthorityDetail = (url) => url.pathname === `/api/cases/${failedCase.id}`;
++  const failAuthorityDetail = (route) => route.fulfill({
++    status: 503,
++    contentType: "application/json",
++    body: JSON.stringify({ detail: "authority unavailable" }),
++  });
++  await page.route(failedAuthorityDetail, failAuthorityDetail);
++  await page.getByRole("combobox", { name: "Select case" }).selectOption(failedCase.id);
++  const unavailableSourcesTrigger = page.getByRole("button", { name: "Sources unavailable" });
++  await unavailableSourcesTrigger.click();
++  await sourceDrawer.getByText("Source authority unavailable.").waitFor();
++  assert.equal(await sourceDrawer.getByText(/^0$/).count(), 0);
++  assert.equal(await sourceDrawer.getByText(/No accepted/).count(), 0);
++  await page.keyboard.press("Escape");
++  await page.unroute(failedAuthorityDetail, failAuthorityDetail);
++  await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
++  await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
++
+   const workflows = ["Overview", "Sources", "Analyse", "Compare", "Model", "Publish"];
+   for (const label of workflows) {
+     await page.getByRole("navigation", { name: "Workflows" }).getByRole("link", { name: label, exact: true }).waitFor();
+diff --git a/caos/frontend/src/components/WorkbenchShell.tsx b/caos/frontend/src/components/WorkbenchShell.tsx
+index a6d493a..efa2852 100644
+--- a/caos/frontend/src/components/WorkbenchShell.tsx
++++ b/caos/frontend/src/components/WorkbenchShell.tsx
+@@ -26,9 +26,12 @@ export type DrawerState =
+       };
+     };
+ 
++export type AuthorityStatus = "idle" | "loading" | "ready" | "error";
++
+ type Props = {
+   active: Destination;
+   authority: SnapshotView | null;
++  authorityStatus: AuthorityStatus;
+   cases: CaseRecord[];
+   caseId: string;
+   drawer: DrawerState | null;
+@@ -44,6 +47,7 @@ type Props = {
+ export default function WorkbenchShell({
+   active,
+   authority,
++  authorityStatus,
+   cases,
+   caseId,
+   drawer,
+@@ -58,6 +62,9 @@ export default function WorkbenchShell({
+   const activeWorkflow = workflowFor(active);
+   const triggerRef = useRef<HTMLButtonElement>(null);
+   const dialogRef = useRef<HTMLDialogElement>(null);
++  const drawerRef = useRef<HTMLDialogElement>(null);
++  const drawerHeadingRef = useRef<HTMLHeadingElement>(null);
++  const drawerTriggerRef = useRef<HTMLElement>(null);
+   const searchRef = useRef<HTMLInputElement>(null);
+   const resultRef = useRef<HTMLDivElement>(null);
+   const [paletteOpen, setPaletteOpen] = useState(false);
+@@ -83,6 +90,27 @@ export default function WorkbenchShell({
+ 
+   const closePalette = () => dialogRef.current?.close();
+ 
++  const closeDrawer = () => {
++    onDrawerChange(null);
++    const trigger = drawerTriggerRef.current;
++    window.requestAnimationFrame(() => trigger?.focus());
++  };
++
++  useEffect(() => {
++    const dialog = drawerRef.current;
++    if (!dialog) return;
++    if (!drawer) {
++      if (dialog.open) dialog.close();
++      return;
++    }
++    if (!dialog.open) {
++      drawerTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
++      dialog.showModal();
++    }
++    const frame = window.requestAnimationFrame(() => drawerHeadingRef.current?.focus());
++    return () => window.cancelAnimationFrame(frame);
++  }, [drawer]);
++
+   useEffect(() => {
+     const openShortcut = (event: globalThis.KeyboardEvent) => {
+       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+@@ -119,6 +147,71 @@ export default function WorkbenchShell({
+   });
+   const overviewHref = selectedCase ? "/command-center" : "/cases";
+   const accepted = authority?.accepted;
++  const authorityPending = authorityStatus === "idle" || authorityStatus === "loading";
++  const acceptedSnapshotIdentity = authorityPending
++    ? "Loading authority…"
++    : authorityStatus === "error"
++      ? "Authority unavailable"
++      : accepted?.id ?? "No accepted snapshot";
++  const acceptedSourceSetIdentity = authorityPending
++    ? "Loading authority…"
++    : authorityStatus === "error"
++      ? "Authority unavailable"
++      : accepted
++        ? accepted.source_set_version == null ? "Version unavailable" : `v${accepted.source_set_version}`
++        : "No accepted source set";
++  const drawerTitle = drawer?.kind === "qa"
++    ? "QA details"
++    : drawer?.kind === "sources"
++      ? "Source details"
++      : drawer?.kind === "evidence"
++        ? `Evidence ${drawer.evidenceId}`
++        : "Context";
++  let drawerBody: ReactNode = null;
++  if (drawer?.kind === "qa") {
++    drawerBody = <div className="state-block unavailable">
++      <strong>No governed snapshot-level QA summary is available.</strong>
++      <p>Run and artifact status are not substituted for QA. Review module exceptions in Analyse.</p>
++      <Link className="button small" href={withQuery("/run-console", { case: caseId })}>Open Run Console</Link>
++    </div>;
++  } else if (drawer?.kind === "sources") {
++    drawerBody = authorityPending ? <div className="state-block" role="status">
++      <strong>Loading source authority…</strong>
++      <p>Source count and accepted source-set identity are not shown until the case authority resolves.</p>
++      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
++    </div> : authorityStatus === "error" ? <div className="state-block unavailable">
++      <strong>Source authority unavailable.</strong>
++      <p>Current source count and accepted source-set identity could not be verified.</p>
++      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
++    </div> : <div className="state-block">
++      <dl>
++        <dt>Current source count</dt><dd className="mono">{selectedCase?.source_count ?? "Unavailable"}</dd>
++        <dt>Accepted source set</dt><dd className="mono">{acceptedSourceSetIdentity}</dd>
++      </dl>
++      <Link className="button small" href={withQuery("/sources", { case: caseId })}>Open Sources</Link>
++    </div>;
++  } else if (drawer?.kind === "evidence") {
++    drawerBody = <div className="state-block">
++      <dl>
++        <dt>Stable ID</dt><dd className="mono">{drawer.evidenceId}</dd>
++        <dt>Filename</dt><dd>{drawer.source.filename}</dd>
++        <dt>SHA-256</dt><dd className="mono">{drawer.source.sha256}</dd>
++        <dt>Accepted snapshot</dt><dd className="mono">{acceptedSnapshotIdentity}</dd>
++        <dt>Accepted source set</dt><dd className="mono">{acceptedSourceSetIdentity}</dd>
++      </dl>
++      <p className="status warning">Source-level reference; no block locator supplied by this artifact.</p>
++      <h3>Available source text</h3>
++      <div className="source-blocks">
++        {drawer.source.blocks.slice(0, 20).map((block) => <article className="source-block" key={block.block_id}>
++          <div className="eyebrow">{block.block_id}</div>
++          <p>{block.text || "No extracted text."}</p>
++        </article>)}
++        {!drawer.source.blocks.length && <p className="muted">No extracted source text.</p>}
++        {drawer.source.blocks.length > 20 && <p className="muted">Showing the first 20 blocks. Open the full source for the remaining {drawer.source.blocks.length - 20} blocks.</p>}
++      </div>
++      <Link className="button small" href={withQuery("/sources", { case: caseId, source: drawer.source.id })}>Open full source</Link>
++    </div>;
++  }
+   const evidenceHref = exactEvidenceKind === "source"
+     ? withQuery("/sources", { case: caseId, source: query.trim() })
+     : withQuery("/sources", { case: caseId, artifact: query.trim() });
+@@ -158,9 +251,10 @@ export default function WorkbenchShell({
+           <div className="case-context">
+             <span className="eyebrow">CASE</span>
+             <strong>{selectedCase ? `${selectedCase.issuer} / ${selectedCase.name}` : "No case selected"}</strong>
+-            {selectedCase && !authority && <span className="muted">Loading authority…</span>}
+-            {selectedCase && authority && !accepted && <span className="status warning">No accepted snapshot</span>}
+-            {accepted && <><span className="status success">Accepted {new Date(accepted.accepted_at).toLocaleString()}</span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
++            {selectedCase && authorityPending && <span className="muted">Loading authority…</span>}
++            {selectedCase && authorityStatus === "error" && <span className="status warning">Authority unavailable</span>}
++            {selectedCase && authorityStatus === "ready" && !accepted && <span className="status warning">No accepted snapshot</span>}
++            {authorityStatus === "ready" && accepted && <><span className="status success">Accepted {new Date(accepted.accepted_at).toLocaleString()}</span><span className="mono">Source set v{accepted.source_set_version ?? "—"}</span></>}
+             {(authority?.switch_required || authority?.diff?.changed) && <span className="status warning">New analysis available</span>}
+           </div>
+           <div className="top-actions">
+@@ -169,8 +263,8 @@ export default function WorkbenchShell({
+               <option value="">Select case</option>
+               {cases.map((item) => <option key={item.id} value={item.id}>{item.issuer} — {item.name}</option>)}
+             </select>
+-            <button className="button small" type="button" disabled={!selectedCase} aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{selectedCase?.source_count ?? 0} sources</button>
+-            <button className="button small" type="button" disabled={!selectedCase} aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA unavailable</button>
++            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{!selectedCase ? "Sources" : authorityPending ? "Sources loading" : authorityStatus === "error" || selectedCase.source_count == null ? "Sources unavailable" : `${selectedCase.source_count} sources`}</button>
++            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA unavailable</button>
+             <button ref={triggerRef} className="button small" type="button" aria-label="Open command palette" onClick={openPalette}>Command <span className="shortcut">⌘K</span></button>
+           </div>
+         </div>
+@@ -246,5 +340,21 @@ export default function WorkbenchShell({
+         </div>
+       </div>
+     </dialog>
++    <dialog
++      className="context-drawer"
++      id="context-drawer"
++      ref={drawerRef}
++      aria-labelledby="drawer-title"
++      onClose={closeDrawer}
++    >
++      <div className="drawer-header">
++        <div>
++          <span className="eyebrow">CONTEXT</span>
++          <h2 id="drawer-title" ref={drawerHeadingRef} tabIndex={-1}>{drawerTitle}</h2>
++        </div>
++        <button className="button small" type="button" onClick={() => drawerRef.current?.close()}>Close</button>
++      </div>
++      <div className="drawer-body">{drawerBody}</div>
++    </dialog>
+   </>;
+ }
+diff --git a/caos/frontend/src/components/Workspace.tsx b/caos/frontend/src/components/Workspace.tsx
+index 02b00f9..40c71fc 100644
+--- a/caos/frontend/src/components/Workspace.tsx
++++ b/caos/frontend/src/components/Workspace.tsx
+@@ -2,7 +2,7 @@
+ 
+ import Link from "next/link";
+ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+-import WorkbenchShell, { type DrawerState } from "./WorkbenchShell";
++import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
+ import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, withQuery } from "../lib/workbench";
+ 
+ type RunRecord = { id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
+@@ -54,6 +54,7 @@ export default function Workspace({ destination }: { destination: Destination })
+   const [hydrated, setHydrated] = useState(false);
+   const [role, setRole] = useState("ANALYST");
+   const [authority, setAuthority] = useState<SnapshotView | null>(null);
++  const [authorityStatus, setAuthorityStatus] = useState<AuthorityStatus>("idle");
+   const [drawer, setDrawer] = useState<DrawerState | null>(null);
+   const authorityRequest = useRef(0);
+   const caseIdRef = useRef("");
+@@ -63,12 +64,14 @@ export default function Workspace({ destination }: { destination: Destination })
+   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
+ 
+   const selectCase = (nextCaseId: string) => {
++    if (nextCaseId === caseId) return;
+     const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
+     if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return;
+     if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
+     caseIdRef.current = nextCaseId;
+     setDrawer(null);
+     setAuthority(null);
++    setAuthorityStatus(nextCaseId ? "loading" : "idle");
+     setCaseId(nextCaseId);
+     setRunId(cases.find((item) => item.id === nextCaseId)?.current_execution_id || "");
+     setRun(null);
+@@ -86,6 +89,7 @@ export default function Workspace({ destination }: { destination: Destination })
+       const resolvedCaseId = next.find((item) => item.id === caseId)?.id || next.find((item) => item.id === requestedCaseId)?.id || next[0]?.id || "";
+       if (resolvedCaseId !== caseId) {
+         caseIdRef.current = resolvedCaseId;
++        setAuthorityStatus(resolvedCaseId ? "loading" : "idle");
+         setCaseId(resolvedCaseId);
+       }
+       if (!runId && !requestedRunId) {
+@@ -110,9 +114,11 @@ export default function Workspace({ destination }: { destination: Destination })
+       if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
+       setCases((previous) => previous.map((item) => item.id === id ? { ...item, ...detail } : item));
+       setAuthority(snapshot);
++      setAuthorityStatus("ready");
+     } catch (caught) {
+       if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
+       if (!(caught instanceof DOMException && caught.name === "AbortError")) {
++        setAuthorityStatus("error");
+         setError(caught instanceof Error ? caught.message : "Unable to load case authority");
+       }
+     }
+@@ -137,6 +143,7 @@ export default function Workspace({ destination }: { destination: Destination })
+     caseIdRef.current = requestedCaseId;
+     // eslint-disable-next-line react-hooks/set-state-in-effect
+     setCaseId(requestedCaseId);
++    setAuthorityStatus(requestedCaseId ? "loading" : "idle");
+     setRunId(queryParam("run"));
+     setRouteQuestion(queryParam("q"));
+     setRouteArtifactId(queryParam("artifact"));
+@@ -166,7 +173,7 @@ export default function Workspace({ destination }: { destination: Destination })
+     authorityRequest.current += 1;
+     // The visible authority and contextual drawer must clear at the external case boundary.
+     // eslint-disable-next-line react-hooks/set-state-in-effect
+-    setAuthority(null); setDrawer(null);
++    setAuthority(null); setDrawer(null); setAuthorityStatus(caseId ? "loading" : "idle");
+     if (!caseId) return;
+     const controller = new AbortController();
+     void refreshCase(caseId, controller.signal);
+@@ -259,6 +266,7 @@ export default function Workspace({ destination }: { destination: Destination })
+     <WorkbenchShell
+       active={active}
+       authority={authority}
++      authorityStatus={authorityStatus}
+       cases={cases}
+       caseId={caseId}
+       drawer={drawer}
+diff --git a/caos/tests/test_clean_slate.py b/caos/tests/test_clean_slate.py
+index df59bbd..00e1ed1 100644
+--- a/caos/tests/test_clean_slate.py
++++ b/caos/tests/test_clean_slate.py
+@@ -58,6 +58,15 @@ def test_end_to_end_source_run_snapshot_and_stale_boundary(tmp_path: Path) -> No
+         assert state["status"] == "succeeded"
+         assert [node["module_id"] for node in state["nodes"]] == ["CP-PARSE", "CP-0", "CP-L10", "CP-5"]
+         cp0 = next(value for value in client.app.state.store.artifacts.values() if value["run_id"] == run_id and value["module_id"] == "CP-0")
++        other_case_id = client.post(
++            "/api/cases",
++            json={"name": "Other", "issuer": "Other issuer", "sector": "Other"},
++        ).json()["id"]
++        assert client.get(f"/api/cases/{other_case_id}/artifacts/{cp0['id']}").status_code == 404
++        assert client.get(
++            f"/api/cases/{case_id}/artifacts/{cp0['id']}",
++            headers={"x-forwarded-user": "outsider"},
++        ).status_code == 404
+         assert cp0["payload"]["lineage"]["upstream_artifacts"][0]["module_id"] == "CP-PARSE"
+         assert client.get(f"/api/runs/{run_id}/events", headers={"last-event-id": "999"}).text == ""
+         snapshot = client.post(f"/api/runs/{run_id}/accept")

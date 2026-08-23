@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -74,7 +75,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         yield
         runtime.close()
 
-    app = FastAPI(title="CAOS", version="0.1.0", lifespan=lifespan, docs_url=None if settings.environment == "production" else "/api/docs", redoc_url=None)
+    app = FastAPI(title="CAOS", version="0.1.0", lifespan=lifespan, docs_url=None if settings.environment == "production" else "/api/docs", redoc_url=None, openapi_url=None if settings.environment == "production" else "/openapi.json")
     app.state.settings = settings
     app.state.store = store
     app.state.bundle = bundle
@@ -185,14 +186,35 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="source not found")
             if source.get("withdrawn"):
                 return {key: value for key, value in source.items() if key != "vault_path"}
+            prior_source_set = store.source_sets.get(case_id)
+            prior_withdrawn = source.get("withdrawn", False)
+            prior_assumptions = copy.deepcopy(store.assumptions.get(case_id))
+            audit_start = len(store.audit)
             source["withdrawn"] = True
             current = store.source_sets.get(case_id)
+            new_source_set_id: str | None = None
             if current:
                 active_source_ids = [existing_id for existing_id in current["source_ids"] if not store.sources.get(existing_id, {}).get("withdrawn")]
-                store.register_source_set({"id": store._id("set"), "case_id": case_id, "version": current["version"] + 1, "source_ids": active_source_ids, "created_by": who.subject, "created_at": now_iso()})
-            store.persist()
-        mark_assumptions_stale(store, case_id, {source_id})
-        store.audit_event("source.withdrawn", who.subject, case_id=case_id, source_id=source_id)
+                new_source_set_id = store._id("set")
+                store.register_source_set({"id": new_source_set_id, "case_id": case_id, "version": current["version"] + 1, "source_ids": active_source_ids, "created_by": who.subject, "created_at": now_iso()})
+            mark_assumptions_stale(store, case_id, {source_id}, persist=False)
+            store.audit_event("source.withdrawn", who.subject, case_id=case_id, source_id=source_id)
+            try:
+                store.persist()
+            except Exception:
+                source["withdrawn"] = prior_withdrawn
+                if prior_source_set is None:
+                    store.source_sets.pop(case_id, None)
+                else:
+                    store.source_sets[case_id] = prior_source_set
+                if new_source_set_id:
+                    store.source_set_history.pop(new_source_set_id, None)
+                if prior_assumptions is None:
+                    store.assumptions.pop(case_id, None)
+                else:
+                    store.assumptions[case_id] = prior_assumptions
+                del store.audit[audit_start:]
+                raise
         return {key: value for key, value in source.items() if key != "vault_path"}
 
     @app.get("/api/cases/{case_id}/pathway-fit")
@@ -414,12 +436,19 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             current_fingerprint = digest(clean_json({"snapshot": snapshot_value, "thesis": thesis_value, "recommendations": recommendation_value, "include_model": False}))
             if current_fingerprint != report["input_fingerprint"]:
                 raise HTTPException(status_code=409, detail="STALE_PREVIEW")
+            prior_report = copy.deepcopy(report)
+            audit_start = len(store.audit)
             report["status"] = "APPROVED"
             report["approved_by"] = who.subject
             report["approved_at"] = now_iso()
             report["approval_comment"] = payload.comment
-            store.persist()
-        store.audit_event("report.approved", who.subject, case_id=case_id, report_id=report["id"])
+            store.audit_event("report.approved", who.subject, case_id=case_id, report_id=report["id"])
+            try:
+                store.persist()
+            except Exception:
+                store.reports[case_id] = prior_report
+                del store.audit[audit_start:]
+                raise
         return report.copy()
 
     @app.get("/api/cases/{case_id}/reports/export/{format_name}")
@@ -475,9 +504,15 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         }
         draft["digest"] = digest(draft)
         with store.lock:
+            audit_start = len(store.audit)
             store.methodology_drafts[draft["id"]] = draft
-            store.persist()
-        store.audit_event("methodology.draft_created", who.subject, draft_id=draft["id"], module_id=draft["module_id"])
+            store.audit_event("methodology.draft_created", who.subject, draft_id=draft["id"], module_id=draft["module_id"])
+            try:
+                store.persist()
+            except Exception:
+                store.methodology_drafts.pop(draft["id"], None)
+                del store.audit[audit_start:]
+                raise
         return draft
 
     @app.post("/api/admin/drafts/{draft_id}/validate")
@@ -489,11 +524,18 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="draft not found")
             if draft["expected_build_id"] != bundle.build_id or draft["before"] == draft["after"]:
                 raise HTTPException(status_code=422, detail="draft does not validate against the current authority")
+            prior_draft = copy.deepcopy(draft)
+            audit_start = len(store.audit)
             draft["status"] = "VALIDATED"
             draft["validated_by"] = who.subject
             draft["validated_at"] = now_iso()
-            store.persist()
-        store.audit_event("methodology.draft_validated", who.subject, draft_id=draft_id)
+            store.audit_event("methodology.draft_validated", who.subject, draft_id=draft_id)
+            try:
+                store.persist()
+            except Exception:
+                store.methodology_drafts[draft_id] = prior_draft
+                del store.audit[audit_start:]
+                raise
         return draft.copy()
 
     @app.post("/api/admin/drafts/{draft_id}/confirm")
@@ -505,12 +547,19 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="draft not found")
             if draft["status"] != "VALIDATED":
                 raise HTTPException(status_code=409, detail="validated draft required")
+            prior_draft = copy.deepcopy(draft)
+            audit_start = len(store.audit)
             draft["status"] = "CONFIRMED_PENDING_SIGNED_AUTHORITY"
             draft["confirmed_by"] = who.subject
             draft["confirmed_at"] = now_iso()
             draft["signature"] = digest({"draft": draft["digest"], "build_id": bundle.build_id, "confirmation": payload.confirmation})
-            store.persist()
-        store.audit_event("methodology.draft_confirmed", who.subject, draft_id=draft_id, signature=draft["signature"])
+            store.audit_event("methodology.draft_confirmed", who.subject, draft_id=draft_id, signature=draft["signature"])
+            try:
+                store.persist()
+            except Exception:
+                store.methodology_drafts[draft_id] = prior_draft
+                del store.audit[audit_start:]
+                raise
         return draft.copy()
 
     @app.post("/api/admin/recipes/validate")

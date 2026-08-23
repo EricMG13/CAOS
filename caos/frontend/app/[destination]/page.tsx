@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import Workspace from "../../src/components/Workspace";
+import { notFound } from "next/navigation";
 import { destinationFromSlug, routeDestinations } from "../../src/lib/workbench";
 
 export function generateStaticParams() {
@@ -8,10 +8,12 @@ export function generateStaticParams() {
 
 export async function generateMetadata({ params }: { params: Promise<{ destination: string }> }): Promise<Metadata> {
   const { destination } = await params;
-  return { title: `CAOS — ${destinationFromSlug(destination)}` };
+  const known = routeDestinations.some(([route]) => route === destination);
+  return { title: known ? `CAOS — ${destinationFromSlug(destination)}` : "CAOS — Not found" };
 }
 
 export default async function DestinationPage({ params }: { params: Promise<{ destination: string }> }) {
   const { destination } = await params;
-  return <Workspace destination={destinationFromSlug(destination)} />;
+  if (!routeDestinations.some(([route]) => route === destination)) notFound();
+  return null;
 }

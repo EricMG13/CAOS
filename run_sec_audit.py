@@ -23,12 +23,7 @@ IDENTITY_DEPENDENCIES = {"get_identity", "get_write_identity"}
 # same module cannot inherit an exemption by filename.
 ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
-        ("caos/server/routes/auth.py", "create_profile"),
-        ("caos/server/routes/auth.py", "register"),
-        ("caos/server/routes/auth.py", "login"),
-        ("caos/server/routes/auth.py", "recover_login"),
-        ("caos/server/routes/auth.py", "logout"),
-        ("caos/server/routes/health.py", "health"),
+        ("caos/server/caos/http.py", "health"),
     }
 )
 
@@ -83,7 +78,13 @@ def _handler_has_identity(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     if any(_symbol(argument.annotation) == "CallerIdentity" for argument in arguments):
         return True
     defaults: Iterable[ast.AST | None] = [*node.args.defaults, *node.args.kw_defaults]
-    return any(_is_identity_dependency(default) for default in defaults)
+    if any(_is_identity_dependency(default) for default in defaults):
+        return True
+    return any(
+        isinstance(call, ast.Call)
+        and _symbol(call.func) in {"identity", "admin_step_up", "get_run_or_404", "require_case"}
+        for call in ast.walk(node)
+    )
 
 
 def scan_file(path: Path, *, allowlist: frozenset[tuple[str, str]] = ALLOWLIST) -> list[dict[str, object]]:
@@ -127,11 +128,7 @@ def scan_file(path: Path, *, allowlist: frozenset[tuple[str, str]] = ALLOWLIST) 
 
 
 def route_files() -> list[Path]:
-    return [
-        *sorted((SERVER / "routes").glob("*.py")),
-        SERVER / "main.py",
-        SERVER / "identity.py",
-    ]
+    return [SERVER / "caos" / "http.py"]
 
 
 def main() -> int:

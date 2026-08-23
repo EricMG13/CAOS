@@ -8,6 +8,6 @@ export const metadata: Metadata = {
   description: "Evidence-forward institutional credit analysis",
 };
 
-export default function RootLayout() {
-  return <html lang="en"><body><Suspense fallback={<div className="state-skeleton" role="status" aria-live="polite" aria-label="Loading"><span /><span /><span /></div>}><Workspace /></Suspense></body></html>;
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return <html lang="en"><body><Suspense fallback={<div className="state-skeleton" role="status" aria-live="polite" aria-label="Loading"><span /><span /><span /></div>}><Workspace>{children}</Workspace></Suspense></body></html>;
 }

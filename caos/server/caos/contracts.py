@@ -189,6 +189,11 @@ class RVRow(StrictModel):
     def finite_number(cls, value: float | None) -> float | None:
         return finite_or_none(value)
 
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: Any) -> Any:
+        return value.upper() if isinstance(value, str) else value
+
 
 class RVUniverseRequest(StrictModel):
     source_version: str = Field(min_length=1, max_length=120)

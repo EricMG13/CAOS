@@ -1,38 +1,5 @@
-# Fingerprints for verified false positives (not real credentials), one per
-# line: <commit>:<file>:<rule>:<line>. Gitleaks reads this automatically from
-# the scan root — no CI flag needed. Do NOT add a fingerprint here without
-# confirming the matched value is not a live secret.
-#
-# .claude/launch.json:21,49 — bare `ANTHROPIC_API_KEY=` (empty value), a dev
-# launch-config env var name, never a real key.
-472e53ec9eda19a7d14878c5b5bf60247d24d19e:.claude/launch.json:generic-api-key:21
-472e53ec9eda19a7d14878c5b5bf60247d24d19e:.claude/launch.json:generic-api-key:49
-# caos/tests/server/test_secret_log_hygiene.py:25 — intentionally fake test
-# sentinel value (SECRET_SENTINELS), not a real secret.
-a8706a1c94bb2ab2325950d12e4a6431c9877f7f:caos/tests/server/test_secret_log_hygiene.py:generic-api-key:25
-# caos/docs/QA_FULL_SWEEP.md:503 — the literal words "council/debate" (a
-# feature-name mention), matched as a generic-api-key false positive.
-e9e36ffacfa2ee644cefb7ec5c771455461488e5:caos/docs/QA_FULL_SWEEP.md:generic-api-key:503
-# caos/docs/QA_FULL_SWEEP.md:270 — doc example showing how to clear the key
-# (`ANTHROPIC_API_KEY=""`) for offline QA, not a real key.
-183b459604143b19f87cfa7b7655e915ec1d7b6d:caos/docs/QA_FULL_SWEEP.md:generic-api-key:270
-# .claude/launch.json:29,69,89 — empty SESSION_SECRET/model-key values in
-# local QA launch commands. The generic rule consumes the following env-var
-# name as the value when the assignment is intentionally blank; no credential
-# is present (verified from the parsed command tokens without printing values).
-dd92f2dfb9a1b7321a301527ff4958c9c341aa95:.claude/launch.json:generic-api-key:29
-dd92f2dfb9a1b7321a301527ff4958c9c341aa95:.claude/launch.json:generic-api-key:69
-dd92f2dfb9a1b7321a301527ff4958c9c341aa95:.claude/launch.json:generic-api-key:89
-# caos/docs/CONTAINER_HARDENING_BLUEPRINT.md:735 — Docker's numeric
-# non-root UID:GID argument, misclassified by the curl-auth-user rule.
-197e8371eaa0ee45be0fcd290abeb6b421febef3:caos/docs/CONTAINER_HARDENING_BLUEPRINT.md:curl-auth-user:735
-# caos/frontend/src/lib/command/qa.test.ts:100 — deterministic finding-key
-# assertion in a unit-test fixture, verified not to be a credential.
-caos/frontend/src/lib/command/qa.test.ts:generic-api-key:100
-
-# caos/server/alert_evaluation.py:23 — `_OBSERVATION_KEY_VERSION = "c3-observation-v1"`,
-# the C3 observation-identity schema tag (a public constant, not a credential);
-# the generic-api-key heuristic matched the KEY token in the variable name. The
-# constant is renamed _OBSERVATION_SCHEMA_VERSION going forward; this pins the
-# historical addition commit.
-99d95cd1b2b76d4ea339af07dd6e546f48f8feda:caos/server/alert_evaluation.py:generic-api-key:23
+# Historical launch-profile false positives: empty assignments in the immutable
+# initial commit, not credential values. The current profile omits them.
+0e6d1991b5cd260e7cc6946b90caee9d97dc3680:.claude/launch.json:generic-api-key:29
+0e6d1991b5cd260e7cc6946b90caee9d97dc3680:.claude/launch.json:generic-api-key:69
+0e6d1991b5cd260e7cc6946b90caee9d97dc3680:.claude/launch.json:generic-api-key:89

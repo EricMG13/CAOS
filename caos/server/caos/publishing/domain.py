@@ -43,8 +43,19 @@ def freeze_report(store: MemoryStore, case_id: str, actor: str, snapshot: dict[s
         "markdown": render_markdown(store, snapshot, thesis, recommendations, preview_digest),
     }
     with store.lock:
+        previous_report = store.reports.get(case_id)
+        audit_start = len(store.audit)
         store.reports[case_id] = report
-    store.audit_event("report.frozen", actor, case_id=case_id, report_id=report["id"])
+        store.audit_event("report.frozen", actor, case_id=case_id, report_id=report["id"])
+        try:
+            store.persist()
+        except Exception:
+            if previous_report is None:
+                store.reports.pop(case_id, None)
+            else:
+                store.reports[case_id] = previous_report
+            del store.audit[audit_start:]
+            raise
     return copy.deepcopy(report)
 
 
