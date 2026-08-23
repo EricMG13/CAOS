@@ -156,6 +156,42 @@ def test_read_only_member_cannot_upgrade_a_run(tmp_path: Path) -> None:
         assert client.post(f"/api/runs/{run['id']}/upgrade", headers={"x-caos-role": "READER"}).status_code == 403
 
 
+def test_case_reader_authorization_blocks_privileged_writes_and_allows_case_writers(tmp_path: Path) -> None:
+    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
+    store = MemoryStore()
+    with TestClient(create_app(settings, store)) as client:
+        case_id = client.post("/api/cases", json={"name": "Role matrix", "issuer": "A", "sector": "A"}).json()["id"]
+        run = client.post(f"/api/cases/{case_id}/runs", json={"pathway": "EARNINGS_UPDATE", "depth": "screen"}).json()
+        assert store.add_member(case_id, "local-analyst", "privileged-reader", "READER", "ADMIN")
+
+        reader_actions = [
+            ("upload", f"/api/cases/{case_id}/sources", {"files": {"file": ("source.txt", b"source", "text/plain")}}),
+            ("start", f"/api/cases/{case_id}/runs", {"json": {"pathway": "EARNINGS_UPDATE", "depth": "screen"}}),
+            ("upgrade", f"/api/runs/{run['id']}/upgrade", {}),
+            ("approve", f"/api/cases/{case_id}/reports/approve", {"json": {}}),
+            ("accept", f"/api/runs/{run['id']}/accept", {}),
+            ("mutate analysis", f"/api/cases/{case_id}/notes", {"json": {"body": "Reader write"}}),
+        ]
+        for global_role in ("ANALYST", "APPROVER", "ADMIN"):
+            headers = {"x-forwarded-user": "privileged-reader", "x-caos-role": global_role}
+            assert client.get(f"/api/cases/{case_id}", headers=headers).status_code == 200
+            for action, path, kwargs in reader_actions:
+                response = client.post(path, headers=headers, **kwargs)
+                assert response.status_code == 403, f"{global_role} case READER could {action}: {response.text}"
+
+        assert client.get(f"/api/cases/{case_id}", headers={"x-forwarded-user": "outsider", "x-caos-role": "ADMIN"}).status_code == 404
+        for member_role in ("ANALYST", "APPROVER", "ADMIN"):
+            for global_role in ("ANALYST", "APPROVER", "ADMIN"):
+                subject = f"{member_role.lower()}-{global_role.lower()}"
+                assert store.add_member(case_id, "local-analyst", subject, member_role, "ADMIN")
+                response = client.post(
+                    f"/api/cases/{case_id}/notes",
+                    headers={"x-forwarded-user": subject, "x-caos-role": global_role},
+                    json={"body": "Authorized write"},
+                )
+                assert response.status_code == 201, response.text
+
+
 def test_source_withdrawal_versions_active_set_and_stales_assumptions(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         case_id = client.post("/api/cases", json={"name": "Withdraw", "issuer": "A", "sector": "A"}).json()["id"]
