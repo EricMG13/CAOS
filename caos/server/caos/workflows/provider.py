@@ -8,6 +8,7 @@ from typing import Any, Callable
 import anthropic
 
 from ..methodology.cpdr import CPDRPayload
+from ..store import JobFencedError
 
 
 READ_EVIDENCE_TOOL = {
@@ -97,12 +98,16 @@ class AnthropicGateway:
             return AgentError(code, message)
 
         def finish_interaction(kind: str, elapsed: float, **details: Any) -> None:
-            lease_check()
             try:
+                lease_check()
                 active_time(elapsed)
                 record(kind, **details, latency_ms=round(elapsed * 1_000))
+            except JobFencedError:
+                raise
             except AgentError as exc:
                 raise abort(exc.code) from exc
+            except Exception as exc:
+                raise abort("AGENT_OUTPUT_INVALID") from exc
 
         def provider_call(kind: str, kwargs: dict[str, Any], before: Callable[[bool], None] | None = None) -> Any:
             nonlocal provider_interacted

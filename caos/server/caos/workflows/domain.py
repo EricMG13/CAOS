@@ -211,6 +211,44 @@ class WorkflowRuntime:
             if lease_fence.lost.is_set() or not self.store.job_is_current(run_id, attempt_token):
                 raise JobFencedError("lost workflow lease")
 
+        def charge_final_cpdr_work(elapsed: float) -> tuple[dict[str, Any], bool]:
+            current = self.store.get_run(run_id) or {}
+            research = copy.deepcopy(current.get("research") or {})
+            used = research.get("budget_used") or {}
+            limit = (research.get("budget_limits") or {}).get("active_minutes", 3)
+            used["active_minutes"] = used.get("active_minutes", 0) + max(0.0, elapsed) / 60
+            research["budget_used"] = used
+            fenced_call(self.store.update_run_fenced, research=research)
+            return research, used["active_minutes"] >= limit
+
+        def fail_final_cpdr_budget(node: dict[str, Any], research: dict[str, Any]) -> None:
+            research["phase"] = "failed"
+            if research.get("attempts"):
+                research["attempts"][-1]["terminal_code"] = "AGENT_BUDGET_EXCEEDED"
+            error = {
+                "code": "AGENT_BUDGET_EXCEEDED",
+                "module_id": "CP-DR",
+                "message": "CP-DR agent execution failed.",
+            }
+            fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
+            fenced_call(
+                self.store.update_run_fenced,
+                status="failed",
+                current_node_id=None,
+                error=error,
+                research=research,
+            )
+            fenced_call(
+                self.store.emit_fenced,
+                "node.failed",
+                {"node_id": node["id"], "module_id": "CP-DR", "code": "AGENT_BUDGET_EXCEEDED"},
+            )
+            fenced_call(
+                self.store.emit_fenced,
+                "run.failed",
+                {"code": "AGENT_BUDGET_EXCEEDED", "module_id": "CP-DR"},
+            )
+
         heartbeat_thread = threading.Thread(target=heartbeat, name=f"{worker}-heartbeat", daemon=True)
         heartbeat_thread.start()
         try:
@@ -225,22 +263,40 @@ class WorkflowRuntime:
                 pending = [node for node in run["nodes"] if node["status"] in {"pending", "ready"}]
                 completed = {node["module_id"] for node in run["nodes"] if node["status"] == "succeeded"}
                 if not pending:
-                    if any(
-                        node.get("status") != "succeeded"
-                        or not node.get("artifact_id")
-                        or not (artifact := self.store.get_artifact(node["artifact_id"]))
-                        or artifact.get("run_id") != run_id
-                        or artifact.get("module_id") != node.get("module_id")
-                        or (
-                            node.get("module_id") == "CP-DR"
-                            and not cpdr_artifact_is_valid(self.store, run, node, artifact, self.bundle)
-                        )
-                        for node in run["nodes"]
-                    ):
+                    blocked = False
+                    cpdr_node = None
+                    for node in run["nodes"]:
+                        artifact_id = node.get("artifact_id")
+                        artifact = self.store.get_artifact(artifact_id) if artifact_id else None
+                        if (
+                            node.get("status") != "succeeded"
+                            or not artifact
+                            or artifact.get("run_id") != run_id
+                            or artifact.get("module_id") != node.get("module_id")
+                        ):
+                            blocked = True
+                            continue
+                        if node.get("module_id") == "CP-DR":
+                            cpdr_node = node
+                            validation_started = time.monotonic()
+                            valid = cpdr_artifact_is_valid(self.store, run, node, artifact, self.bundle)
+                            research, exceeded = charge_final_cpdr_work(time.monotonic() - validation_started)
+                            run["research"] = research
+                            if exceeded:
+                                fail_final_cpdr_budget(node, research)
+                                return
+                            blocked = blocked or not valid
+                    if blocked:
                         fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "Planned nodes are incomplete or missing artifacts."})
                         fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
                         return
+                    success_started = time.monotonic()
                     fenced_call(self.store.update_run_fenced, status="succeeded", current_node_id=None)
+                    if cpdr_node is not None:
+                        research, exceeded = charge_final_cpdr_work(time.monotonic() - success_started)
+                        if exceeded:
+                            fail_final_cpdr_budget(cpdr_node, research)
+                            return
                     fenced_call(self.store.emit_fenced, "run.succeeded", {"run_id": run_id})
                     return
                 ready = [node for node in pending if set(node["dependencies"]).issubset(completed)]

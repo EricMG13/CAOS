@@ -531,7 +531,7 @@ class PostgresStore(MemoryStore):
                 for subject, role in case["members"].items():
                     cursor.execute("INSERT INTO case_members(case_id, subject, role) VALUES (%s, %s, %s) ON CONFLICT (case_id, subject) DO UPDATE SET role=EXCLUDED.role", (case["id"], subject, role))
                 cursor.execute(
-                    "INSERT INTO runs(id, case_id, status, plan, accepted_snapshot_id, created_by, created_at, error) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, plan=EXCLUDED.plan, error=EXCLUDED.error",
+                    "INSERT INTO runs(id, case_id, status, plan, accepted_snapshot_id, created_by, created_at, error) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
                     (run["id"], run["case_id"], run["status"], self._jsonb(run["plan"]), run.get("accepted_snapshot_id"), run["created_by"], run["created_at"], self._jsonb(run.get("error"))),
                 )
                 cursor.execute("SELECT id, state, worker_id, attempt_token, lease_until FROM jobs WHERE run_id = %s AND state IN ('queued', 'claimed') ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1", (run_id,))
@@ -548,8 +548,20 @@ class PostgresStore(MemoryStore):
             connection.commit()
         with self.lock:
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60}
-        with self._fenced_connection(run_id, token, adopt_current=True):
+        with self._fenced_connection(run_id, token, adopt_current=True) as connection:
             self._recover_running_nodes_locked(run_id)
+            authoritative_run = self.runs[run_id]
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE runs SET status=%s, error=%s, plan=%s, accepted_snapshot_id=%s WHERE id=%s",
+                    (
+                        authoritative_run["status"],
+                        self._jsonb(authoritative_run.get("error")),
+                        self._jsonb(authoritative_run["plan"]),
+                        authoritative_run.get("accepted_snapshot_id"),
+                        run_id,
+                    ),
+                )
         return token
 
     def renew_job(self, run_id: str, attempt_token: str) -> bool:

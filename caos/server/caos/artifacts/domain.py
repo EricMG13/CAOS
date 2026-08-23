@@ -332,6 +332,7 @@ def cpdr_artifact_is_valid(
     try:
         if bundle is None:
             return False
+        bundle.verify()
         envelope = artifact["payload"]
         expected_keys = {
             "schema_version", "module_id", "transport", "host_confidence", "canonical_output",
