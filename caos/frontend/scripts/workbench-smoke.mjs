@@ -329,6 +329,19 @@ try {
   await page.locator(".cases-register tbody tr").first().waitFor();
   await snapshotFilter.selectOption("all");
 
+  await page.goto(`${baseURL}/deep-dive/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  const caseContext = page.locator(".case-context");
+  await page.setViewportSize({ width: 720, height: 900 });
+  await caseContext.locator(".optional").waitFor({ state: "visible" });
+  await caseContext.locator(".mono").first().waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await caseContext.locator(".mono").first().waitFor({ state: "visible" });
+  assert.ok(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    "topbar overflows horizontally at 390px",
+  );
+  await page.setViewportSize({ width: 1280, height: 720 });
+
   const commandQuestion = "Which evidence changes the downside case?";
   await page.evaluate(({ caseId, question }) => {
     const query = new URLSearchParams({ case: caseId, q: question });
