@@ -10,14 +10,17 @@ Implementation commit: `ae0400a` — `feat(server): execute bounded CP-DR resear
 
 Remediation commit: `be242e1` — `fix(server): harden CP-DR execution boundaries`
 
+Second remediation commit: `2bb8af6` — `fix(server): close CP-DR second review gaps`
+
 ## Status
 
-Remediated after independent rejection. Commits `ae0400a..a8005f3` were
-independently rejected because the original verification did not cover several
-critical crash, provenance, scope, citation, timing, artifact, telemetry, and
-authority roots. The original implementation narrative and 200-test evidence
-below are retained as historical evidence only and are superseded by the
-remediation addendum at the end of this report.
+Corrected after two independent rejections. Commits `ae0400a..a8005f3` and the
+first remediation at `be242e1` were independently rejected because their
+verification missed critical cross-process recovery, canonical-artifact,
+host-provenance, completion-time, terminal-telemetry, manifest-allocation, and
+installed-SDK roots. Earlier implementation/test narratives below are retained
+as historical evidence only; the second-remediation addendum at the end is the
+current result and is pending fresh independent review.
 
 After `be242e1`, an approved FULL issuer CP-DR run executes through one concrete
 Anthropic Messages/client-tool loop only when the server flag, original run
@@ -336,8 +339,9 @@ Exact implementation/test paths in the remediation commit:
    fingerprint reuse, and completion-before-terminal-event recovery.
 2. Returned evidence carries the host's canonical source-content SHA-256 as its
    origin family and an unclassified authority class. Ordinary material facts
-   need two host-distinct origins; one source is allowed only for attributed
-   source characterisation or provable host authority. Provider lineage, QA,
+   need two host-distinct origins or provable host primary authority. A single
+   source characterisation is sufficient only when explicitly non-material.
+   Provider lineage, QA,
    independence, and coverage cannot set the scorer inputs or result.
 3. The complete approved brief is digest-checked immediately before prompt
    compilation and sent separately as lower-authority untrusted user data. The
@@ -352,7 +356,8 @@ Exact implementation/test paths in the remediation commit:
 5. Planning and every active research segment are durably charged; approval
    wait is excluded. SDK and tool operations receive a timeout no greater than
    remaining active seconds, and failed evidence, validation, rendering, and
-   final persistence checkpoints are charged before artifact completion.
+   fenced completion are charged. Crossing the ceiling after atomic completion
+   fails the node/run before any run-success transition.
 6. The source metadata manifest is incrementally bounded to 2,000 blocks and
    256 KiB. Exact limits pass; overflow fails `AGENT_BUDGET_EXCEEDED` before
    gateway construction without truncation or persisted source text.
@@ -454,3 +459,174 @@ and build flows are covered by the seven real-PostgreSQL focused cases and the
   it requires operator resolution rather than risking duplicate paid work.
 - LITE, sector/theme, web, external retrieval, other providers, dynamic DAGs,
   and horizontal scale-out remain explicitly unauthorized.
+
+## Second independent-rejection remediation addendum
+
+The fresh review of `be242e1`/`fe742c7` returned **NOT APPROVED — CRITICAL**.
+Commit `2bb8af6` closes every Critical and Important item from the second
+corrective brief. No live provider, external document, web access, or new
+methodology authority was used.
+
+### Root fixes
+
+1. **Authoritative PostgreSQL takeover.** `PostgresStore.claim_job()` now uses
+   an opt-in fenced transaction that locks and adopts the current `caos_state`
+   before stale running-node recovery, while preserving the replacement claim's
+   new job token. Failure restores the locked authoritative state. The exact
+   two-store regression constructs the replacement before the first worker
+   persists running state, expires the database lease, and proves pending
+   recovery, completion, and reload without relying on shared memory.
+2. **One strict artifact boundary.** The shared CP-DR validator independently
+   recomputes the approved-plan hash, exact current input fingerprint, host
+   identity, every pinned source and cited block, canonical host provenance and
+   coverage, vendored confidence, exact filename/Markdown/envelope, and the real
+   vendored handoff result. Crash reuse, run-success eligibility, snapshot
+   acceptance, and atomic completion all use that same loaded bundle-backed
+   validator. Memory and PostgreSQL replace an invalid older same-fingerprint
+   artifact transactionally with the already validated new one.
+3. **Host-owned provenance/confidence.** Persisted evidence families are exact
+   canonical source-content SHA-256 digests. Evidence lineage and claim
+   lineage/confidence are host-derived before persistence and rendering.
+   Material adequacy requires host primary authority or two distinct host
+   origins; provider `source_characterisation` cannot upgrade one ordinary
+   source. A single-source characterisation can describe only an explicitly
+   non-material claim.
+4. **Hard active wall time.** Confidence scoring, rendering, vendored
+   validation, envelope construction, strict completion validation, and fenced
+   atomic completion charge elapsed time in `finally` paths. Failure time is
+   durable where the lease remains current. A completion that moves usage from
+   179 to 181 seconds cannot transition the run to success; the CP-DR node and
+   run finish with `AGENT_BUDGET_EXCEEDED`.
+5. **Terminal interaction guarantee.** Once an SDK interaction begins, an
+   `AgentError` from active-time charging or ordinary recording routes through
+   a sanitized emergency terminal record. It updates the last bounded attempt
+   or creates one, respects the 50-record cap, and stores no prompt, evidence,
+   response/error body, or exception text. Count and create ceiling crossings
+   both end with `AGENT_BUDGET_EXCEEDED` telemetry.
+6. **Pre-encoding manifest bounds.** Filename, media type, block ID, locator,
+   extractor version, and confidence receive concrete type, character,
+   depth, per-container, and total-node limits before encoding. The existing
+   2,000-block and 256-KiB totals remain incremental. Pathological fields and
+   many short locator nodes fail before gateway construction or derived JSON
+   allocation; exact aggregate boundaries still pass.
+7. **Real installed-SDK brief assertion.** The local Anthropic 1.0.0
+   `MockTransport` capture now asserts that the serialized count/create request
+   contains sentinels for research question, decision context, time horizon,
+   must-answer, and exclusions together with the strict evidence tool and
+   transformed output schema.
+
+### TDD evidence
+
+The second pass began with deterministic red cases:
+
+- the replacement `PostgresStore` retained a running node after takeover;
+- one unclassified source plus forged `source_characterisation`/family/lineage/
+  confidence passed host validation;
+- count/create active-time crossings produced no terminal attempt;
+- arbitrary Markdown and stale/corrupted artifact fields could satisfy the old
+  self-consistency predicate;
+- invalid-old/new-valid fingerprint collisions selected the old artifact;
+- throwing post-provider host operations and slow completion skipped time;
+- huge manifest fields reached `json.dumps`; and
+- the real SDK request had no complete-brief sentinel assertion.
+
+After the root fixes, the focused real-PostgreSQL matrix is **128 passed**. It
+includes invalid Markdown, transport, confidence, filename, digest, fingerprint,
+approved-plan state, pinned-source withdrawal, real vendored validation,
+memory/PostgreSQL collision replacement, two-process takeover, all host-operation
+failure clocks, 179-second completion, pre-encoding field/node bounds, and the
+actual SDK request capture.
+
+### Rewrite tournament
+
+The mandated no-argument tournament ran inline in successive two-symbol passes
+over `cpdr_artifact_is_valid`, `_execute_cpdr`, `AnthropicGateway.run`,
+`PostgresStore._fenced_connection`, `validate_cpdr_payload`, both atomic
+completion implementations, `_build_artifact`, and the manifest bound helpers.
+Each pass compared incumbent, speed, memory, and readability candidates against
+the live callers and lease/security invariants. **Incumbents held.** Proposed
+splits either duplicated the one artifact authority, passed mutable ledger state
+across more seams, weakened `finally` charging/terminal ordering, or changed the
+single database transaction. The only small readability improvements retained
+were named host-operation/envelope/bound helpers already covered by the focused
+matrix. No signature or persistence side effect changed during the tournament.
+
+### Confidence review
+
+Least-confident points were investigated adversarially:
+
+1. **Current approved-plan and fingerprint identity:** confirmed bug. The first
+   strict validator trusted surrounding research/fingerprint fields without
+   independently recomputing them. It now verifies the canonical plan hash,
+   proposed/approved equality, brief/build/scope/source/upstream identities, and
+   current input fingerprint. Plan-state and fingerprint mutations fail.
+2. **Uncited pinned-source mutation:** confirmed bug. Evidence reconstruction
+   originally visited only registry rows. The validator now checks every pinned
+   source for case, withdrawal, canonical digest, block-list type, and unique
+   block IDs before validating citations. Withdrawing an uncited pinned source
+   invalidates reuse and snapshot acceptance.
+3. **Evidence-read wall-time double charge:** confirmed bug. Ordinary attempt
+   recording also checkpointed elapsed time before the gateway's explicit tool
+   `finally` charge. Removing that duplicate checkpoint preserves hard charging
+   while avoiding premature budget exhaustion; later host checkpoints still
+   include recording persistence time.
+4. **Nested locator allocation:** confirmed weakness. Per-container bounds alone
+   allowed many individually short child collections. A shared 500-node budget
+   now rejects the structure before encoding.
+5. **Cross-process merge/rollback, collision rollback, terminal secrecy/cap,
+   exact manifest byte arithmetic, and post-completion ceiling behavior:**
+   verified fine through real PostgreSQL, mutation, fake-clock, and exact-boundary
+   cases. Broad validator exception handling is deliberately fail-closed.
+
+No known implementation correctness issue remains after this review.
+
+### Final verification evidence
+
+- Focused, real PostgreSQL:
+  `CAOS_TEST_DATABASE_URL=postgresql://caos_test:…@127.0.0.1:55460/caos_test
+  caos/server/.venv/bin/pytest -q caos/tests/test_cp_dr_runtime.py` →
+  **`128 passed in 6.88s`**.
+- Full backend, real PostgreSQL:
+  `CAOS_TEST_DATABASE_URL=postgresql://caos_test:…@127.0.0.1:55460/caos_test
+  caos/server/.venv/bin/pytest -q caos/tests` →
+  **`256 passed in 14.53s`**.
+- Vendored scorer:
+  `caos/server/.venv/bin/python .../confidence_score.py --self-check` →
+  **`confidence_score self-check: OK`**.
+- Ruff:
+  `caos/server/.venv/bin/python -m ruff check caos/server/caos caos/tests` →
+  **`All checks passed!`**.
+- Dependency integrity:
+  `caos/server/.venv/bin/python -m pip check` →
+  **`No broken requirements found.`** (the disabled user-cache warning is
+  environmental and does not affect package integrity).
+- Root security audit:
+  `caos/server/.venv/bin/python run_sec_audit.py` → **`[]`**.
+- Patch checks: unstaged/cached `git diff --check` were clean; the corrective
+  red-team hunk was an append-only RT-077..083 section.
+
+Staged GitNexus `detect_changes()` reported **HIGH** with nine indexed changed
+symbols and seven flows. The stale index attributed shifted lines to untouched
+`latest_version`, `_merge_state`, `WorkflowRuntime.__init__`, `close`,
+`start_run`, and `logical_ids`. The cached patch shows the actual affected
+surfaces are strict CP-DR artifact/snapshot validation, opt-in PostgreSQL
+adoption and atomic collision handling, CP-DR execution/provenance/time/manifest
+logic, provider terminal handling, and their tests. The genuine `_execute` and
+PostgreSQL persistence paths are covered by the 128-test focused PostgreSQL
+matrix and 256-test full suite.
+
+### Remaining doubts and external gates
+
+- Live-provider behavior remains intentionally untested until approved
+  processing/ZDR and shadow-evaluation gates are satisfied.
+- Runtime source authority is conservatively `unclassified`; absent a separate
+  host-owned primary-authority classifier, material adequacy needs two distinct
+  canonical content digests.
+- The provider semaphore remains process-local. Horizontal worker deployment
+  still needs a durable global concurrency reservation and a separate review.
+- Whole-envelope PostgreSQL persistence remains the accepted current topology;
+  scale-out beyond that topology is not authorized by Phase 4.
+- Unresolved in-flight spend remains charged and fails closed for operator
+  resolution rather than risking a duplicate paid request.
+- LITE, sector/theme, web, external retrieval, other providers, dynamic DAGs,
+  and horizontal scale-out remain unauthorized.
