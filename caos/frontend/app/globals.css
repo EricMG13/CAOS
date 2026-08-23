@@ -278,3 +278,5 @@ dialog:not(.context-drawer) { width: min(680px, calc(100% - 32px)); max-width: 6
 .research-workstreams > li { min-width: 0; border-top: 1px solid var(--caos-border); padding-top: var(--space-md); }
 .research-workstreams h5 { margin: 0 0 var(--space-md); font-size: 12px; }
 @media (max-width: 520px) { .research-plan-facts { grid-template-columns: 1fr; gap: var(--space-xs); } .research-plan-facts dd + dt { margin-top: var(--space-sm); } }
+.inline-run-body { display: grid; gap: var(--space-lg); grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); align-items: start; }
+@media (max-width: 900px) { .inline-run-body { grid-template-columns: 1fr; } }
