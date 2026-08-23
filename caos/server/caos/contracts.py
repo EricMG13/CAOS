@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import date
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Role(StrEnum):
@@ -107,10 +108,31 @@ class ConfirmDraftRequest(StrictModel):
     confirmation: Literal["CONFIRM_DRAFT"]
 
 
+ResearchBriefItem = Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class ResearchBrief(StrictModel):
+    research_question: str = Field(min_length=1, max_length=400)
+    decision_context: str = Field(min_length=1, max_length=400)
+    as_of_date: date
+    time_horizon: str = Field(min_length=1, max_length=200)
+    must_answer: list[ResearchBriefItem] = Field(default_factory=list, max_length=10)
+    exclusions: list[ResearchBriefItem] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def combined_item_cap(self) -> ResearchBrief:
+        if not all(value.strip() for value in (self.research_question, self.decision_context, self.time_horizon, *self.must_answer, *self.exclusions)):
+            raise ValueError("research brief text must not be blank")
+        if len(self.must_answer) + len(self.exclusions) > 10:
+            raise ValueError("must_answer and exclusions may contain at most 10 entries combined")
+        return self
+
+
 class StartRunRequest(StrictModel):
     pathway: str
     depth: Depth
     focus_questions: list[str] = Field(default_factory=list, max_length=5)
+    research_brief: ResearchBrief | None = None
 
     @field_validator("pathway")
     @classmethod
@@ -118,6 +140,21 @@ class StartRunRequest(StrictModel):
         if value not in PATHWAYS:
             raise ValueError("unknown pathway")
         return value
+
+    @model_validator(mode="after")
+    def research_pathway_contract(self) -> StartRunRequest:
+        if self.pathway == "DEEP_RESEARCH":
+            if self.depth is not Depth.FULL:
+                raise ValueError("DEEP_RESEARCH requires full depth")
+            if self.research_brief is None:
+                raise ValueError("DEEP_RESEARCH requires a research brief")
+        elif self.research_brief is not None:
+            raise ValueError("research_brief is only valid for DEEP_RESEARCH")
+        return self
+
+
+class ApproveResearchPlanRequest(StrictModel):
+    plan_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class ThesisRequest(StrictModel):
@@ -155,6 +192,11 @@ class RecommendationMatrixRequest(StrictModel):
         return value
 
 
+class ReportInputsRequest(StrictModel):
+    thesis: ThesisRequest
+    recommendations: RecommendationMatrixRequest
+
+
 class NoteRequest(StrictModel):
     body: str = Field(min_length=1, max_length=12000)
 
@@ -183,6 +225,11 @@ class RVRow(StrictModel):
     @classmethod
     def finite_number(cls, value: float | None) -> float | None:
         return finite_or_none(value)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: Any) -> Any:
+        return value.upper() if isinstance(value, str) else value
 
 
 class RVUniverseRequest(StrictModel):
@@ -217,7 +264,7 @@ def digest(value: Any) -> str:
 
 def clean_json(value: Any) -> Any:
     """Reject non-finite values before they can reach an API or artifact."""
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+    if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("non-finite numeric values are not serializable")
     if isinstance(value, dict):
         return {str(k): clean_json(v) for k, v in value.items()}

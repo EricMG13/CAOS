@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ class DeployVBundle:
         self.retrieval = self._read("CP_DEPLOY_V_RETRIEVAL_INDEX_v1.json")
         self.profiles = self._read("CP_DEPLOY_V_EXECUTION_PROFILES_v1.json")
         self.catalog = self._read("skills/cp-os-credit-os/references/CREDIT_OS_V_MODULE_CATALOG_v2.json")
+        self._cpdr_scripts: dict[str, Any] = {}
 
     def _read(self, name: str) -> dict[str, Any]:
         path = self.root / name
@@ -101,6 +104,63 @@ class DeployVBundle:
         plan["plan_digest"] = digest(plan)
         return plan
 
+    def plan_research(self, brief: dict[str, Any], source_set_id: str, source_set_version: int, upstream_artifacts: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+        topics = list(brief.get("must_answer") or [brief["research_question"]])
+        lane_count = min(3, len(topics))
+        chunk_size = (len(topics) + lane_count - 1) // lane_count
+        subject = brief.get("subject_name", "the issuer")
+        workstreams = []
+        for index in range(0, len(topics), chunk_size):
+            assigned = topics[index : index + chunk_size]
+            workstreams.append({
+                "id": f"WS-{len(workstreams) + 1}",
+                "kind": "topical",
+                "question": " / ".join(assigned),
+                "assigned_questions": assigned,
+                "perspective": "Buy-side credit analyst",
+                "hypothesis": f"The supplied evidence can resolve the defined credit question for {subject}.",
+                "evidence_needs": assigned,
+                "source_classes": ["supplied_case_sources"],
+                "disconfirming_test": "Identify supplied evidence that contradicts the working credit conclusion.",
+                "completion_test": "Answer every assigned question with source locators or record the evidence gap.",
+                "effort_cap": "Within the fixed standard research budget.",
+            })
+        workstreams.extend([
+            {
+                "id": f"WS-{len(workstreams) + 1}",
+                "kind": "synthesis",
+                "question": f"What cross-workstream credit conclusion follows for {subject}?",
+                "perspective": "Cross-workstream synthesis",
+                "hypothesis": "The workstreams support one decision-useful conclusion without exceeding the approved scope.",
+                "evidence_needs": ["Completed topical workstreams and their cited supplied evidence."],
+                "source_classes": ["supplied_case_sources"],
+                "disconfirming_test": "Reconcile contradictions and refuse a conclusion where evidence remains insufficient.",
+                "completion_test": "State the direct answer, material disagreement, gaps, and decision implications.",
+                "effort_cap": "One synthesis pass within the fixed standard research budget.",
+            },
+            {
+                "id": f"WS-{len(workstreams) + 2}",
+                "kind": "adversarial",
+                "question": f"What would make the proposed credit conclusion for {subject} wrong?",
+                "perspective": "Adversarial credit reviewer",
+                "hypothesis": "A plausible downside or contrary reading can be tested from the supplied evidence.",
+                "evidence_needs": ["Contrary facts, missing periods, perimeter conflicts, and excluded-scope checks."],
+                "source_classes": ["supplied_case_sources"],
+                "disconfirming_test": "Attempt to overturn each material conclusion with the strongest supplied counter-evidence.",
+                "completion_test": "Record surviving objections, rebuttals, and unresolved downside evidence gaps.",
+                "effort_cap": "One adversarial pass within the fixed standard research budget.",
+            },
+        ])
+        plan = {
+            "methodology_build_id": self.build_id,
+            "brief_digest": digest(brief),
+            "source_set": {"id": source_set_id, "version": source_set_version},
+            "upstream_artifacts": upstream_artifacts,
+            "scope": {"type": brief.get("scope_type"), "key": brief.get("scope_key"), "source_mode": brief.get("source_mode")},
+            "workstreams": workstreams,
+        }
+        return plan, f"sha256:{digest(plan)}"
+
     def validate_payload(self, payload: dict[str, Any], module_id: str) -> dict[str, Any]:
         required = {"module_id", "schema_version", "status", "summary", "evidence_refs", "lineage", "narrative", "authority", "confidence", "provenance"}
         missing = sorted(required - payload.keys())
@@ -130,3 +190,84 @@ class DeployVBundle:
 
     def route_golden_cases(self) -> list[tuple[str, Depth]]:
         return [(pathway, depth) for pathway in INTERNAL_PATHWAYS for depth in (Depth.FULL, Depth.SCREEN)]
+
+    def _load_cpdr_script(self, name: str) -> Any:
+        cached = self._cpdr_scripts.get(name)
+        if cached is not None:
+            return cached
+        path = self.root / "skills" / "cp-dr-deep-research" / "scripts" / f"{name}.py"
+        module_name = f"caos_deploy_v_cpdr_{name}_{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
+        registered = sys.modules.get(module_name)
+        if registered is not None:
+            self._cpdr_scripts[name] = registered
+            return registered
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise MethodologyError(f"cannot load CP-DR authority script: {name}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(module_name, None)
+            raise
+        self._cpdr_scripts[name] = module
+        return module
+
+    def cpdr_confidence(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        module = self._load_cpdr_script("confidence_score")
+        return module.compute(
+            inputs["lineage_counts"],
+            inputs["fields_present"],
+            inputs["fields_total"],
+            inputs["source_gate"],
+            inputs["findings"],
+        )
+
+    def cpdr_authority(self) -> str:
+        self.verify()
+        folder = self.root / "skills" / "cp-dr-deep-research"
+        skill = (folder / "SKILL.md").read_text(encoding="utf-8")
+        steps = (folder / "references" / "REF_CP-DR_STEPS.md").read_text(encoding="utf-8")
+
+        def section(text: str, heading: str, end_marker: str = "\n## ") -> str:
+            try:
+                start = text.index(heading)
+            except ValueError as exc:
+                raise MethodologyError(f"missing CP-DR authority section: {heading}") from exc
+            end = text.find(end_marker, start + len(heading))
+            return text[start : end if end >= 0 else len(text)].strip()
+
+        source_data_rule = next(
+            (line.strip() for line in skill.splitlines() if line.startswith("> Source, email, web, document")),
+            None,
+        )
+        if source_data_rule is None:
+            raise MethodologyError("missing CP-DR untrusted-source authority")
+        hard_rules = section(skill, "#### HARD RULES", "\n<!-- READING_ORDER:BEGIN -->")
+        selected = [
+            section(steps, "## REF_CP-DR_C_SourceAndSearchPolicy.md"),
+            section(steps, "## REF_CP-DR_D_ClaimEvidenceLedger.md"),
+            section(steps, "## REF_CP-DR_E_SynthesisAndStopRules.md"),
+            section(steps, "## REF_CP-DR_F_OutputAndQA.md"),
+            section(steps, "## REF_CP-DR_H_IssuerProfile.md"),
+        ]
+        wrapper = """CAOS HOST COMPATIBILITY WRAPPER
+CP-0 is required with matching accepted run and source-set lineage. Source mode is supplied_only and evidence is available only through read_evidence. Execute only the exact approved issuer plan and immutable brief. Return exactly one strict CPDRPayload JSON value; the host owns coverage, confidence, canonical Markdown, validation, fencing, and persistence."""
+        return "\n\n".join((wrapper, source_data_rule, hard_rules, *selected))
+
+    def validate_cpdr_handoff(
+        self,
+        text: str,
+        filename: str,
+        run_id: str,
+        reporting_period: str,
+    ) -> Any:
+        module = self._load_cpdr_script("validate_handoff")
+        return module.validate_text(
+            text,
+            filename=filename,
+            expected_module="CP-DR",
+            expected_run_id=run_id,
+            expected_period=reporting_period,
+        )

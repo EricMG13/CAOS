@@ -43,6 +43,8 @@ def save_universe(store: MemoryStore, case_id: str, actor: str, request: RVUnive
         if row.duration is None and row.spread_bps is not None:
             raise ValueError("duration is required when spread is supplied")
     with store.lock:
+        previous_universe = store.rv_universes.get(case_id)
+        audit_start = len(store.audit)
         version = (store.rv_universes.get(case_id, {}).get("version", 0) + 1)
         universe = {
             "id": store._id("rv"),
@@ -55,7 +57,16 @@ def save_universe(store: MemoryStore, case_id: str, actor: str, request: RVUnive
             "digest": digest(request.model_dump(mode="json")),
         }
         store.rv_universes[case_id] = universe
-    store.audit_event("rv.universe_versioned", actor, case_id=case_id, version=version)
+        store.audit_event("rv.universe_versioned", actor, case_id=case_id, version=version)
+        try:
+            store.persist()
+        except Exception:
+            if previous_universe is None:
+                store.rv_universes.pop(case_id, None)
+            else:
+                store.rv_universes[case_id] = previous_universe
+            del store.audit[audit_start:]
+            raise
     return copy.deepcopy(universe)
 
 

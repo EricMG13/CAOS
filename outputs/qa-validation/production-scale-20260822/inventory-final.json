@@ -1,0 +1,59 @@
+{
+  "dataset": {
+    "dense_case_id": "case_d5e3151a64554296",
+    "dense_sources": 130,
+    "roles": ["ADMIN", "ANALYST", "APPROVER", "READER"],
+    "pathways": [
+      "COVENANT_REFINANCING",
+      "DEEP_RESEARCH",
+      "DISTRESSED_RESTRUCTURING",
+      "EARNINGS_UPDATE",
+      "FULL_CREDIT",
+      "RELATIVE_VALUE"
+    ],
+    "rv": { "eligible": 250, "excluded": 50 }
+  },
+  "journey": {
+    "case_id": "case_d4de0cdd20964921",
+    "empty_case_id": "case_2fc908a521f542af",
+    "run_id": "run_198cefb5f6864001",
+    "exports": {
+      "md": { "bytes": 624, "content_type": "text/markdown; charset=utf-8" },
+      "pdf": { "bytes": 742, "content_type": "application/pdf" },
+      "xlsx": { "bytes": 5042, "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }
+    }
+  },
+  "loaded_inventory": {
+    "combinations": 16,
+    "failures": 0,
+    "rows": [
+      { "role": "analyst", "route": "cases", "controls": 220, "kinds": { "input": 4, "button": 216 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "analyst", "route": "sources", "controls": 132, "kinds": { "summary": 130, "input": 1, "button": 1 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "analyst", "route": "run-console", "controls": 4, "kinds": { "select": 2, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "analyst", "route": "deep-dive", "controls": 3, "kinds": { "a": 3 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "analyst", "route": "rv-screener", "controls": 13, "kinds": { "summary": 1, "input": 10, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "analyst", "route": "command-center", "controls": 0, "kinds": {}, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "analyst", "route": "model-builder", "controls": 0, "kinds": {}, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "analyst", "route": "report-studio", "controls": 8, "kinds": { "textarea": 1, "input": 2, "select": 1, "button": 1, "a": 3 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "cases", "controls": 228, "kinds": { "input": 4, "button": 224 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "sources", "controls": 132, "kinds": { "summary": 130, "input": 1, "button": 1 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "run-console", "controls": 4, "kinds": { "select": 2, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "deep-dive", "controls": 3, "kinds": { "a": 3 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "rv-screener", "controls": 13, "kinds": { "summary": 1, "input": 10, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "command-center", "controls": 0, "kinds": {}, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "model-builder", "controls": 0, "kinds": {}, "alerts": 0, "loading": 0, "overflow": false },
+      { "role": "pm_qa", "route": "report-studio", "controls": 8, "kinds": { "textarea": 1, "input": 2, "select": 1, "button": 1, "a": 3 }, "alerts": 0, "loading": 0, "overflow": false }
+    ]
+  },
+  "state_inventory": { "loading": 16, "error": 16, "empty": 14, "failures": 0 },
+  "load": {
+    "stages": [
+      { "workers": 1, "requests": 30, "failures": 0, "p50_ms": 38.2, "p95_ms": 45.6, "max_ms": 68.8 },
+      { "workers": 4, "requests": 30, "failures": 0, "p50_ms": 147.6, "p95_ms": 149.8, "max_ms": 150.2 },
+      { "workers": 12, "requests": 30, "failures": 0, "p50_ms": 448.5, "p95_ms": 704.7, "max_ms": 709.1 },
+      { "workers": 24, "requests": 30, "failures": 0, "p50_ms": 1079.9, "p95_ms": 1172.8, "max_ms": 1173.1 }
+    ],
+    "post_load_ms": 42.6,
+    "failures": 0
+  }
+}

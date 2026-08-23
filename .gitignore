@@ -65,6 +65,10 @@ caos/tests/frontend/e2e/.auth/
 # impeccable hook cache (generated per app dir)
 **/.impeccable/
 
+# Local Superpowers brainstorm server state (ports, tokens, PIDs).
+/.superpowers/brainstorm/.last-*
+/.superpowers/brainstorm/*/state/
+
 # H0 release-manifest diagnostic runs are scratch evidence; only deliberate
 # strict-h0 records are committed.
 caos/docs/qa/release/diagnostic-*/

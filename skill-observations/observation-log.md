@@ -210,3 +210,20 @@ references, refuses unresolved destination collisions, preserves disabled-skill
 state in an ignored but recoverable directory, backs up global instructions,
 and notes that newly installed Codex skills become discoverable on the next
 turn.
+
+## 2026-08-23 — impeccable — OPEN
+
+The detector's broad directory scan includes generated Next.js `out/` assets,
+then reports compiled `next/font` fallback names and bundled font sizes as
+authored design-system violations. The same scan against `app/` and `src/` was
+clean. Exclude standard generated directories by default (including `out/` and
+`.next/`), or label generated findings separately so the audit does not require
+manual source-only reruns to distinguish real issues from build artifacts.
+
+## 2026-08-23 — commit — OPEN
+
+The skill hard-codes a `Codex Opus 4.8 <noreply@anthropic.com>` trailer, which
+conflicts with this repository's active SDD briefs requiring
+`Codex GPT-5 <noreply@openai.com>`. Make the skill defer first to an explicit
+task/repository trailer and use its built-in identity only when no higher-level
+contract specifies one.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -13,18 +14,21 @@ from .artifacts.domain import (
     accepted_snapshot,
     create_assumption,
     create_note,
-    latest_version,
     latest_accepted_snapshot,
+    latest_version,
     mark_assumptions_stale,
     promote_note,
     recommendation_state,
     save_recommendations,
+    save_report_inputs,
     save_thesis,
     snapshot_diff,
 )
 from .artifacts.relative_value import compare_universe, save_universe
 from .config import Settings
 from .contracts import (
+    DESTINATIONS,
+    ApproveResearchPlanRequest,
     ApproveRequest,
     AssumptionRequest,
     ConfirmDraftRequest,
@@ -35,20 +39,25 @@ from .contracts import (
     MethodologyDraftRequest,
     NoteRequest,
     RecommendationMatrixRequest,
+    ReportInputsRequest,
     RVUniverseRequest,
-    StartRunRequest,
     SnapshotSwitchRequest,
+    StartRunRequest,
     ThesisRequest,
-    DESTINATIONS,
     clean_json,
     digest,
 )
-from .identity_cases.domain import Identity, identity_from_request, require_case, require_role
+from .identity_cases.domain import (
+    Identity,
+    identity_from_request,
+    require_case,
+    require_role,
+)
 from .methodology.bundle import DeployVBundle, MethodologyError
 from .publishing.domain import freeze_report, render_pdf, render_xlsx
 from .publishing.recipes import validate_recipe
 from .sources.domain import current_source_set, ingest_upload, list_sources, pathway_fit
-from .store import MemoryStore, PostgresStore, STORE, now_iso
+from .store import STORE, MemoryStore, PostgresStore, now_iso
 from .workflows.domain import WorkflowError, WorkflowRuntime
 
 
@@ -67,7 +76,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         yield
         runtime.close()
 
-    app = FastAPI(title="CAOS", version="0.1.0", lifespan=lifespan, docs_url=None if settings.environment == "production" else "/api/docs", redoc_url=None)
+    app = FastAPI(title="CAOS", version="0.1.0", lifespan=lifespan, docs_url=None if settings.environment == "production" else "/api/docs", redoc_url=None, openapi_url=None if settings.environment == "production" else "/openapi.json")
     app.state.settings = settings
     app.state.store = store
     app.state.bundle = bundle
@@ -125,7 +134,13 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         who = identity(request)
         case = require_case(store, case_id, who)
         latest = store.latest_run_for_case(case_id)
-        return {**case, "source_set": current_source_set(store, case_id), "source_count": len(list_sources(store, case_id)), "pathway_fit": pathway_fit(store, case_id), "accepted_snapshot": accepted_snapshot(store, case_id), "latest_run": store.get_run(latest["id"]) if latest else None}
+        deep_research_available = settings.cpdr_agent_enabled and (case_id in settings.cpdr_pilot_case_ids or who.subject in settings.cpdr_pilot_subjects)
+        deep_research_unavailable_reason = None if deep_research_available else (
+            "Deep Research is disabled for this deployment."
+            if not settings.cpdr_agent_enabled
+            else "Deep Research is outside the pilot allowlist."
+        )
+        return {**case, "source_set": current_source_set(store, case_id), "source_count": len(list_sources(store, case_id)), "pathway_fit": pathway_fit(store, case_id), "accepted_snapshot": accepted_snapshot(store, case_id), "latest_run": store.get_run(latest["id"]) if latest else None, "deep_research_available": deep_research_available, "deep_research_unavailable_reason": deep_research_unavailable_reason}
 
     @app.post("/api/cases/{case_id}/members", status_code=201)
     def add_member(case_id: str, payload: MemberRequest, request: Request) -> dict[str, Any]:
@@ -160,6 +175,14 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="source not found")
             return {key: value for key, value in source.items() if key != "vault_path"}
 
+    @app.get("/api/cases/{case_id}/artifacts/{artifact_id}")
+    def artifact_detail(case_id: str, artifact_id: str, request: Request) -> dict[str, Any]:
+        require_case(store, case_id, identity(request))
+        artifact = store.get_artifact(artifact_id)
+        if not artifact or artifact.get("case_id") != case_id:
+            raise HTTPException(status_code=404, detail="artifact not found")
+        return artifact
+
     @app.post("/api/cases/{case_id}/sources/{source_id}/withdraw")
     def withdraw_source(case_id: str, source_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
@@ -170,14 +193,35 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="source not found")
             if source.get("withdrawn"):
                 return {key: value for key, value in source.items() if key != "vault_path"}
+            prior_source_set = store.source_sets.get(case_id)
+            prior_withdrawn = source.get("withdrawn", False)
+            prior_assumptions = copy.deepcopy(store.assumptions.get(case_id))
+            audit_start = len(store.audit)
             source["withdrawn"] = True
             current = store.source_sets.get(case_id)
+            new_source_set_id: str | None = None
             if current:
                 active_source_ids = [existing_id for existing_id in current["source_ids"] if not store.sources.get(existing_id, {}).get("withdrawn")]
-                store.register_source_set({"id": store._id("set"), "case_id": case_id, "version": current["version"] + 1, "source_ids": active_source_ids, "created_by": who.subject, "created_at": now_iso()})
-            store.persist()
-        mark_assumptions_stale(store, case_id, {source_id})
-        store.audit_event("source.withdrawn", who.subject, case_id=case_id, source_id=source_id)
+                new_source_set_id = store._id("set")
+                store.register_source_set({"id": new_source_set_id, "case_id": case_id, "version": current["version"] + 1, "source_ids": active_source_ids, "created_by": who.subject, "created_at": now_iso()})
+            mark_assumptions_stale(store, case_id, {source_id}, persist=False)
+            store.audit_event("source.withdrawn", who.subject, case_id=case_id, source_id=source_id)
+            try:
+                store.persist()
+            except Exception:
+                source["withdrawn"] = prior_withdrawn
+                if prior_source_set is None:
+                    store.source_sets.pop(case_id, None)
+                else:
+                    store.source_sets[case_id] = prior_source_set
+                if new_source_set_id:
+                    store.source_set_history.pop(new_source_set_id, None)
+                if prior_assumptions is None:
+                    store.assumptions.pop(case_id, None)
+                else:
+                    store.assumptions[case_id] = prior_assumptions
+                del store.audit[audit_start:]
+                raise
         return {key: value for key, value in source.items() if key != "vault_path"}
 
     @app.get("/api/cases/{case_id}/pathway-fit")
@@ -195,8 +239,14 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     def start_run(case_id: str, payload: StartRunRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
+        if payload.pathway == "DEEP_RESEARCH":
+            if not settings.cpdr_agent_enabled:
+                raise HTTPException(status_code=403, detail="Deep Research is disabled for this deployment.")
+            if case_id not in settings.cpdr_pilot_case_ids and who.subject not in settings.cpdr_pilot_subjects:
+                raise HTTPException(status_code=403, detail="Deep Research is outside the pilot allowlist.")
         try:
-            return runtime.start_run(case_id, who.subject, payload.pathway, payload.depth, payload.focus_questions)
+            research_brief = payload.research_brief.model_dump(mode="json") if payload.research_brief else None
+            return runtime.start_run(case_id, who.subject, payload.pathway, payload.depth, payload.focus_questions, research_brief)
         except MethodologyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -208,7 +258,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         if previous["plan"]["depth"] != Depth.SCREEN.value:
             raise HTTPException(status_code=409, detail="only Screen runs can be upgraded")
         try:
-            return runtime.start_run(previous["case_id"], who.subject, previous["plan"]["pathway"], Depth.FULL, previous["plan"].get("focus_questions", []), previous["id"])
+            return runtime.start_run(previous["case_id"], who.subject, previous["plan"]["pathway"], Depth.FULL, previous["plan"].get("focus_questions", []), upgraded_from_run_id=previous["id"])
         except MethodologyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -224,6 +274,16 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except ValueError:
             cursor = 0
         return StreamingResponse(runtime.stream_events(run_id, cursor), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/runs/{run_id}/research-plan/approve")
+    def approve_research_plan(run_id: str, payload: ApproveResearchPlanRequest, request: Request) -> dict[str, Any]:
+        who = identity(request)
+        run = get_run_or_404(run_id, who)
+        require_case(store, run["case_id"], who, write=True)
+        try:
+            return runtime.approve_research_plan(run_id, who.subject, payload.plan_hash)
+        except WorkflowError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runs/{run_id}/accept")
     def accept_run(run_id: str, request: Request) -> dict[str, Any]:
@@ -265,6 +325,19 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     def thesis(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return {"versions": store.versioned(store.theses, case_id), "current": latest_version(store, store.theses, case_id)}
+
+    @app.post("/api/cases/{case_id}/report-inputs", status_code=201)
+    def report_inputs(case_id: str, payload: ReportInputsRequest, request: Request) -> dict[str, Any]:
+        who = identity(request)
+        require_case(store, case_id, who, write=True)
+        try:
+            accepted = accepted_snapshot(store, case_id)
+            if not accepted:
+                raise HTTPException(status_code=409, detail="SNAPSHOT_REQUIRED")
+            return save_report_inputs(store, case_id, who.subject, payload.thesis, payload.recommendations, accepted["id"])
+        except ValueError as exc:
+            status = 409 if str(exc) == "VERSION_CONFLICT" else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post("/api/cases/{case_id}/thesis", status_code=201)
     def write_thesis(case_id: str, payload: ThesisRequest, request: Request) -> dict[str, Any]:
@@ -386,12 +459,19 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             current_fingerprint = digest(clean_json({"snapshot": snapshot_value, "thesis": thesis_value, "recommendations": recommendation_value, "include_model": False}))
             if current_fingerprint != report["input_fingerprint"]:
                 raise HTTPException(status_code=409, detail="STALE_PREVIEW")
+            prior_report = copy.deepcopy(report)
+            audit_start = len(store.audit)
             report["status"] = "APPROVED"
             report["approved_by"] = who.subject
             report["approved_at"] = now_iso()
             report["approval_comment"] = payload.comment
-            store.persist()
-        store.audit_event("report.approved", who.subject, case_id=case_id, report_id=report["id"])
+            store.audit_event("report.approved", who.subject, case_id=case_id, report_id=report["id"])
+            try:
+                store.persist()
+            except Exception:
+                store.reports[case_id] = prior_report
+                del store.audit[audit_start:]
+                raise
         return report.copy()
 
     @app.get("/api/cases/{case_id}/reports/export/{format_name}")
@@ -447,9 +527,15 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         }
         draft["digest"] = digest(draft)
         with store.lock:
+            audit_start = len(store.audit)
             store.methodology_drafts[draft["id"]] = draft
-            store.persist()
-        store.audit_event("methodology.draft_created", who.subject, draft_id=draft["id"], module_id=draft["module_id"])
+            store.audit_event("methodology.draft_created", who.subject, draft_id=draft["id"], module_id=draft["module_id"])
+            try:
+                store.persist()
+            except Exception:
+                store.methodology_drafts.pop(draft["id"], None)
+                del store.audit[audit_start:]
+                raise
         return draft
 
     @app.post("/api/admin/drafts/{draft_id}/validate")
@@ -461,11 +547,18 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="draft not found")
             if draft["expected_build_id"] != bundle.build_id or draft["before"] == draft["after"]:
                 raise HTTPException(status_code=422, detail="draft does not validate against the current authority")
+            prior_draft = copy.deepcopy(draft)
+            audit_start = len(store.audit)
             draft["status"] = "VALIDATED"
             draft["validated_by"] = who.subject
             draft["validated_at"] = now_iso()
-            store.persist()
-        store.audit_event("methodology.draft_validated", who.subject, draft_id=draft_id)
+            store.audit_event("methodology.draft_validated", who.subject, draft_id=draft_id)
+            try:
+                store.persist()
+            except Exception:
+                store.methodology_drafts[draft_id] = prior_draft
+                del store.audit[audit_start:]
+                raise
         return draft.copy()
 
     @app.post("/api/admin/drafts/{draft_id}/confirm")
@@ -477,12 +570,19 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="draft not found")
             if draft["status"] != "VALIDATED":
                 raise HTTPException(status_code=409, detail="validated draft required")
+            prior_draft = copy.deepcopy(draft)
+            audit_start = len(store.audit)
             draft["status"] = "CONFIRMED_PENDING_SIGNED_AUTHORITY"
             draft["confirmed_by"] = who.subject
             draft["confirmed_at"] = now_iso()
             draft["signature"] = digest({"draft": draft["digest"], "build_id": bundle.build_id, "confirmation": payload.confirmation})
-            store.persist()
-        store.audit_event("methodology.draft_confirmed", who.subject, draft_id=draft_id, signature=draft["signature"])
+            store.audit_event("methodology.draft_confirmed", who.subject, draft_id=draft_id, signature=draft["signature"])
+            try:
+                store.persist()
+            except Exception:
+                store.methodology_drafts[draft_id] = prior_draft
+                del store.audit[audit_start:]
+                raise
         return draft.copy()
 
     @app.post("/api/admin/recipes/validate")

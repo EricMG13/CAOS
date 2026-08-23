@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-06-28T23:41:10Z",
+  "generatedAt": "2026-08-22T20:14:04Z",
   "title": "Design System: CAOS - Credit Agent OS",
   "extensions": {
     "colorMeta": {
@@ -39,6 +39,12 @@
         "displayName": "Success Green",
         "canonical": "#22c55e",
         "tonalRamp": ["#041c0d", "#073819", "#0d6b31", "#16a34a", "#22c55e", "#4ade80", "#bbf7d0", "#f0fdf4"]
+      },
+      "paper-success": {
+        "role": "status",
+        "displayName": "Filed Success Green",
+        "canonical": "#166534",
+        "tonalRamp": ["#041409", "#082a13", "#0d481f", "#166534", "#2f8550", "#68b984", "#b7dfc3", "#effaf2"]
       },
       "paper": {
         "role": "neutral",

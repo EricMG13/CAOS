@@ -9,6 +9,8 @@ def migrate() -> None:
     if not url:
         print("DATABASE_URL not set; migration plan available at migrations/001_baseline.sql")
         return
+    if not url.startswith(("postgresql://", "postgresql+psycopg://")):
+        raise SystemExit("DATABASE_URL must be a PostgreSQL URL")
     import psycopg
 
     sql = (Path(__file__).parent / "migrations" / "001_baseline.sql").read_text()

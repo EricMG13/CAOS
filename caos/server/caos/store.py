@@ -5,7 +5,7 @@ import json
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +21,15 @@ MAX_ACTIVE_JOBS = 20
 
 def now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def _remaining_finalization_seconds(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("finalization deadline exceeded")
+    return remaining
 
 
 class MemoryStore:
@@ -119,7 +128,7 @@ class MemoryStore:
                 "case_id": case_id,
                 "created_by": actor,
                 "created_at": now_iso(),
-                "status": "queued",
+                "status": "planning",
                 "plan": copy.deepcopy(plan),
                 "node_ids": list(node_ids),
                 "current_node_id": None,
@@ -199,6 +208,27 @@ class MemoryStore:
             self.nodes[node_id].update(copy.deepcopy(changes))
             self.persist()
 
+    def pause_research_plan_fenced(self, run_id: str, attempt_token: str, node_id: str, research: dict[str, Any]) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            if self.nodes[node_id]["run_id"] != run_id:
+                raise JobFencedError("node does not belong to run")
+            prior_run = copy.deepcopy(self.runs[run_id])
+            prior_node = copy.deepcopy(self.nodes[node_id])
+            try:
+                self.nodes[node_id].update(status="pending", error=None)
+                self.runs[run_id].update(
+                    status="paused",
+                    current_node_id=None,
+                    error={"code": "PLAN_APPROVAL_REQUIRED", "message": "Approve the proposed research plan before execution."},
+                    research=copy.deepcopy(research),
+                )
+                self.persist()
+            except Exception:
+                self.runs[run_id] = prior_run
+                self.nodes[node_id] = prior_node
+                raise
+
     def claim_job(self, run_id: str, worker: str) -> str | None:
         with self.lock:
             job = self.jobs.get(run_id)
@@ -208,12 +238,33 @@ class MemoryStore:
                 return None
             token = self._id("attempt")
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60, "budget_reserved": 1}
+            self._recover_running_nodes_locked(run_id)
             self.persist()
             return token
 
+    def _recover_running_nodes_locked(self, run_id: str) -> None:
+        run = self.runs.get(run_id)
+        if not run:
+            return
+        for node_id in run.get("node_ids", []):
+            node = self.nodes.get(node_id)
+            if node and node.get("status") == "running":
+                node.update(status="pending", artifact_id=None, error=None)
+        run["current_node_id"] = None
+
+    def renew_job(self, run_id: str, attempt_token: str) -> bool:
+        with self.lock:
+            try:
+                self._assert_job_locked(run_id, attempt_token)
+            except JobFencedError:
+                return False
+            self.jobs[run_id]["lease_until"] = time.monotonic() + 60
+            self.persist()
+            return True
+
     def finish_job(self, run_id: str, attempt_token: str) -> None:
         with self.lock:
-            if run_id in self.jobs and self.jobs[run_id].get("attempt_token") == attempt_token:
+            if self._job_is_current_locked(run_id, attempt_token):
                 self.jobs[run_id]["status"] = "finished"
                 self.jobs[run_id]["budget_reserved"] = 0
                 self.persist()
@@ -224,7 +275,7 @@ class MemoryStore:
 
     def _job_is_current_locked(self, run_id: str, attempt_token: str) -> bool:
         job = self.jobs.get(run_id)
-        return bool(job and job.get("attempt_token") == attempt_token and job["lease_until"] > time.monotonic())
+        return bool(job and job["status"] == "running" and job.get("attempt_token") == attempt_token and job["lease_until"] > time.monotonic())
 
     def _assert_job_locked(self, run_id: str, attempt_token: str) -> None:
         if not self._job_is_current_locked(run_id, attempt_token):
@@ -238,6 +289,76 @@ class MemoryStore:
             condition = self.event_conditions.get(run_id)
             if condition:
                 condition.notify_all()
+
+    def emit_fenced(self, run_id: str, attempt_token: str, event: str, data: dict[str, Any]) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            item = {"id": len(self.events.setdefault(run_id, [])) + 1, "event": event, "at": now_iso(), "data": copy.deepcopy(data)}
+            self.events[run_id].append(item)
+            self.persist()
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def _assert_run_artifacts_ready_locked(self, run_id: str) -> None:
+        run = self.runs[run_id]
+        for node_id in run.get("node_ids", []):
+            node = self.nodes.get(node_id)
+            artifact = self.artifacts.get(node.get("artifact_id")) if node else None
+            if (
+                not node
+                or node.get("run_id") != run_id
+                or node.get("status") != "succeeded"
+                or not artifact
+                or artifact.get("run_id") != run_id
+                or artifact.get("module_id") != node.get("module_id")
+            ):
+                raise ValueError("RUN_NOT_READY")
+
+    def finalize_run_success_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        research: dict[str, Any] | None,
+        event_data: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            _remaining_finalization_seconds(deadline)
+            self._assert_run_artifacts_ready_locked(run_id)
+            prior_run = copy.deepcopy(self.runs[run_id])
+            prior_events = copy.deepcopy(self.events.get(run_id, []))
+            try:
+                _remaining_finalization_seconds(deadline)
+                changes: dict[str, Any] = {"status": "succeeded", "current_node_id": None, "error": None}
+                if research is not None:
+                    changes["research"] = copy.deepcopy(research)
+                self.runs[run_id].update(changes)
+                self.events.setdefault(run_id, []).append(
+                    {
+                        "id": len(self.events[run_id]) + 1,
+                        "event": "run.succeeded",
+                        "at": now_iso(),
+                        "data": copy.deepcopy(event_data),
+                    }
+                )
+                self.persist()
+                _remaining_finalization_seconds(deadline)
+            except Exception:
+                self.runs[run_id] = prior_run
+                self.events[run_id] = prior_events
+                raise
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def audit_event_fenced(self, run_id: str, attempt_token: str, action: str, actor: str, **details: Any) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            self.audit.append({"id": self._id("aud"), "action": action, "actor": actor, "at": now_iso(), "run_id": run_id, **details})
+            self.persist()
 
     def events_after(self, run_id: str, cursor: int = 0) -> list[dict[str, Any]]:
         with self.lock:
@@ -272,6 +393,58 @@ class MemoryStore:
             self.persist()
             return copy.deepcopy(artifact)
 
+    def artifact_for_fingerprint(self, run_id: str, module_id: str, input_fingerprint: str) -> dict[str, Any] | None:
+        with self.lock:
+            existing = next(
+                (
+                    value
+                    for value in self.artifacts.values()
+                    if value.get("run_id") == run_id
+                    and value.get("module_id") == module_id
+                    and value.get("input_fingerprint") == input_fingerprint
+                ),
+                None,
+            )
+            return copy.deepcopy(existing) if existing else None
+
+    def complete_node_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        node_id: str,
+        artifact: dict[str, Any],
+        research: dict[str, Any] | None,
+        artifact_validator: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any]:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            node = self.nodes[node_id]
+            if node.get("run_id") != run_id or artifact.get("run_id") != run_id or artifact.get("module_id") != node.get("module_id"):
+                raise JobFencedError("artifact does not match the fenced node")
+            prior_artifacts = copy.deepcopy(self.artifacts)
+            prior_node = copy.deepcopy(node)
+            prior_run = copy.deepcopy(self.runs[run_id])
+            try:
+                if artifact_validator is not None and not artifact_validator(artifact):
+                    raise ValueError("ARTIFACT_INVALID")
+                completed = self.artifact_for_fingerprint(run_id, node["module_id"], artifact["input_fingerprint"])
+                if completed is not None and artifact_validator is not None and not artifact_validator(completed):
+                    self.artifacts.pop(completed["id"], None)
+                    completed = None
+                if completed is None:
+                    self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
+                    completed = copy.deepcopy(artifact)
+                node.update(status="succeeded", artifact_id=completed["id"], error=None)
+                if research is not None:
+                    self.runs[run_id]["research"] = copy.deepcopy(research)
+                self.persist()
+                return completed
+            except Exception:
+                self.artifacts = prior_artifacts
+                self.nodes[node_id] = prior_node
+                self.runs[run_id] = prior_run
+                raise
+
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
         with self.lock:
             value = self.artifacts.get(artifact_id)
@@ -305,7 +478,7 @@ class MemoryStore:
     def versioned(self, bucket: dict[str, list[dict[str, Any]]], case_id: str) -> list[dict[str, Any]]:
         return copy.deepcopy(bucket.get(case_id, []))
 
-    def append_version(self, bucket: dict[str, list[dict[str, Any]]], case_id: str, expected_version: int, value: dict[str, Any]) -> dict[str, Any]:
+    def append_version(self, bucket: dict[str, list[dict[str, Any]]], case_id: str, expected_version: int, value: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
         with self.lock:
             versions = bucket.setdefault(case_id, [])
             current = versions[-1]["version"] if versions else 0
@@ -315,7 +488,8 @@ class MemoryStore:
             value["version"] = current + 1
             value["created_at"] = now_iso()
             versions.append(value)
-            self.persist()
+            if persist:
+                self.persist()
             return copy.deepcopy(value)
 
 
@@ -420,7 +594,7 @@ class PostgresStore(MemoryStore):
                 for subject, role in case["members"].items():
                     cursor.execute("INSERT INTO case_members(case_id, subject, role) VALUES (%s, %s, %s) ON CONFLICT (case_id, subject) DO UPDATE SET role=EXCLUDED.role", (case["id"], subject, role))
                 cursor.execute(
-                    "INSERT INTO runs(id, case_id, status, plan, accepted_snapshot_id, created_by, created_at, error) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, plan=EXCLUDED.plan, error=EXCLUDED.error",
+                    "INSERT INTO runs(id, case_id, status, plan, accepted_snapshot_id, created_by, created_at, error) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
                     (run["id"], run["case_id"], run["status"], self._jsonb(run["plan"]), run.get("accepted_snapshot_id"), run["created_by"], run["created_at"], self._jsonb(run.get("error"))),
                 )
                 cursor.execute("SELECT id, state, worker_id, attempt_token, lease_until FROM jobs WHERE run_id = %s AND state IN ('queued', 'claimed') ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1", (run_id,))
@@ -437,19 +611,88 @@ class PostgresStore(MemoryStore):
             connection.commit()
         with self.lock:
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60}
+        with self._fenced_connection(run_id, token, adopt_current=True):
+            self._recover_running_nodes_locked(run_id)
         return token
 
+    def renew_job(self, run_id: str, attempt_token: str) -> bool:
+        with self._psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE jobs SET lease_until = now() + interval '60 seconds' WHERE run_id = %s AND state = 'claimed' AND attempt_token = %s AND lease_until > now() RETURNING id",
+                    (run_id, attempt_token),
+                )
+                renewed = cursor.fetchone() is not None
+            connection.commit()
+        if renewed:
+            with self.lock:
+                job = self.jobs.get(run_id)
+                if job and job.get("attempt_token") == attempt_token:
+                    job["lease_until"] = time.monotonic() + 60
+        return renewed
+
     @contextmanager
-    def _fenced_connection(self, run_id: str, attempt_token: str) -> Iterator[Any]:
+    def _fenced_connection(
+        self,
+        run_id: str,
+        attempt_token: str,
+        *,
+        adopt_current: bool = False,
+        deadline: float | None = None,
+    ) -> Iterator[Any]:
         with self.lock:
-            with self._psycopg.connect(self._dsn) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT 1 FROM jobs WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE", (run_id, attempt_token))
-                    if cursor.fetchone() is None:
-                        raise JobFencedError("stale workflow attempt")
-                    yield connection
-                    self._persist_connection(connection)
-                connection.commit()
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            claimed_job = copy.deepcopy(self.jobs.get(run_id))
+            body_entered = False
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        remaining = None if deadline is None else deadline - time.monotonic()
+                        if remaining is not None and remaining > 0:
+                            cursor.execute(
+                                "SELECT set_config('statement_timeout', %s, true)",
+                                (f"{max(1, int(remaining * 1_000 + 0.999))}ms",),
+                            )
+                        cursor.execute("SELECT 1 FROM jobs WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE", (run_id, attempt_token))
+                        if cursor.fetchone() is None:
+                            raise JobFencedError("stale workflow attempt")
+                        _remaining_finalization_seconds(deadline)
+                        if adopt_current:
+                            cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                            row = cursor.fetchone()
+                            if row is None:
+                                raise JobFencedError("authoritative workflow state is unavailable")
+                            database_revision, database_state = row
+                            self._restore(copy.deepcopy(database_state))
+                            self._state_revision = database_revision
+                            self._base_state = self._snapshot()
+                            if claimed_job is not None:
+                                self.jobs[run_id] = claimed_job
+                        _remaining_finalization_seconds(deadline)
+                        body_entered = True
+                        yield connection
+                        remaining = _remaining_finalization_seconds(deadline)
+                        if remaining is not None:
+                            cursor.execute(
+                                "SELECT set_config('statement_timeout', %s, true)",
+                                (f"{max(1, int(remaining * 1_000 + 0.999))}ms",),
+                            )
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                        _remaining_finalization_seconds(deadline)
+                    _remaining_finalization_seconds(deadline)
+                    connection.commit()
+            except Exception as exc:
+                if body_entered:
+                    self._adopt_persisted(database_state, database_revision)
+                if isinstance(exc, (JobFencedError, TimeoutError)):
+                    raise
+                if deadline is not None and (
+                    time.monotonic() >= deadline or getattr(exc, "sqlstate", None) == "57014"
+                ):
+                    raise TimeoutError("finalization deadline exceeded") from exc
+                raise
+            self._adopt_persisted(state, revision)
 
     def update_run_fenced(self, run_id: str, attempt_token: str, **changes: Any) -> None:
         with self._fenced_connection(run_id, attempt_token):
@@ -460,6 +703,59 @@ class PostgresStore(MemoryStore):
             if self.nodes[node_id]["run_id"] != run_id:
                 raise JobFencedError("node does not belong to run")
             self.nodes[node_id].update(copy.deepcopy(changes))
+
+    def pause_research_plan_fenced(self, run_id: str, attempt_token: str, node_id: str, research: dict[str, Any]) -> None:
+        with self._fenced_connection(run_id, attempt_token):
+            if self.nodes[node_id]["run_id"] != run_id:
+                raise JobFencedError("node does not belong to run")
+            self.nodes[node_id].update(status="pending", error=None)
+            self.runs[run_id].update(
+                status="paused",
+                current_node_id=None,
+                error={"code": "PLAN_APPROVAL_REQUIRED", "message": "Approve the proposed research plan before execution."},
+                research=copy.deepcopy(research),
+            )
+
+    def emit_fenced(self, run_id: str, attempt_token: str, event: str, data: dict[str, Any]) -> None:
+        with self._fenced_connection(run_id, attempt_token):
+            item = {"id": len(self.events.setdefault(run_id, [])) + 1, "event": event, "at": now_iso(), "data": copy.deepcopy(data)}
+            self.events[run_id].append(item)
+        with self.lock:
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def finalize_run_success_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        research: dict[str, Any] | None,
+        event_data: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        with self._fenced_connection(run_id, attempt_token, deadline=deadline):
+            self._assert_run_artifacts_ready_locked(run_id)
+            changes: dict[str, Any] = {"status": "succeeded", "current_node_id": None, "error": None}
+            if research is not None:
+                changes["research"] = copy.deepcopy(research)
+            self.runs[run_id].update(changes)
+            self.events.setdefault(run_id, []).append(
+                {
+                    "id": len(self.events[run_id]) + 1,
+                    "event": "run.succeeded",
+                    "at": now_iso(),
+                    "data": copy.deepcopy(event_data),
+                }
+            )
+        with self.lock:
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def audit_event_fenced(self, run_id: str, attempt_token: str, action: str, actor: str, **details: Any) -> None:
+        with self._fenced_connection(run_id, attempt_token):
+            self.audit.append({"id": self._id("aud"), "action": action, "actor": actor, "at": now_iso(), "run_id": run_id, **details})
 
     def job_is_current(self, run_id: str, attempt_token: str) -> bool:
         with self._psycopg.connect(self._dsn) as connection:
@@ -475,10 +771,37 @@ class PostgresStore(MemoryStore):
             self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
             return copy.deepcopy(artifact)
 
+    def complete_node_fenced(
+        self,
+        run_id: str,
+        attempt_token: str,
+        node_id: str,
+        artifact: dict[str, Any],
+        research: dict[str, Any] | None,
+        artifact_validator: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any]:
+        with self._fenced_connection(run_id, attempt_token):
+            node = self.nodes[node_id]
+            if node.get("run_id") != run_id or artifact.get("run_id") != run_id or artifact.get("module_id") != node.get("module_id"):
+                raise JobFencedError("artifact does not match the fenced node")
+            if artifact_validator is not None and not artifact_validator(artifact):
+                raise ValueError("ARTIFACT_INVALID")
+            completed = self.artifact_for_fingerprint(run_id, node["module_id"], artifact["input_fingerprint"])
+            if completed is not None and artifact_validator is not None and not artifact_validator(completed):
+                self.artifacts.pop(completed["id"], None)
+                completed = None
+            if completed is None:
+                self.artifacts[artifact["id"]] = copy.deepcopy(artifact)
+                completed = copy.deepcopy(artifact)
+            node.update(status="succeeded", artifact_id=completed["id"], error=None)
+            if research is not None:
+                self.runs[run_id]["research"] = copy.deepcopy(research)
+            return completed
+
     def finish_job(self, run_id: str, attempt_token: str) -> None:
         with self._psycopg.connect(self._dsn) as connection:
             with connection.cursor() as cursor:
-                cursor.execute("UPDATE jobs SET state='succeeded', lease_until=NULL, budget_reserved=0 WHERE run_id=%s AND attempt_token=%s RETURNING id", (run_id, attempt_token))
+                cursor.execute("UPDATE jobs SET state='succeeded', lease_until=NULL, budget_reserved=0 WHERE run_id=%s AND state='claimed' AND attempt_token=%s AND lease_until > now() RETURNING id", (run_id, attempt_token))
                 finished = cursor.fetchone() is not None
             connection.commit()
         if finished:
@@ -499,11 +822,47 @@ class PostgresStore(MemoryStore):
 
     def persist(self) -> None:
         with self.lock:
-            with self._psycopg.connect(self._dsn) as connection:
-                self._persist_connection(connection)
-                connection.commit()
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    state, revision, database_state, database_revision = self._persist_connection(connection)
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
 
-    def _persist_connection(self, connection: Any) -> None:
+    def _sync_normalized_runs(self, connection: Any, state: dict[str, Any]) -> None:
+        with connection.cursor() as cursor:
+            normalized_cases: set[str] = set()
+            for run in state.get("runs", {}).values():
+                case = state.get("cases", {}).get(run["case_id"])
+                if not case:
+                    raise ValueError("run references an absent case")
+                if case["id"] not in normalized_cases:
+                    cursor.execute(
+                        "INSERT INTO cases(id, name, issuer, sector, created_by, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                        (
+                            case["id"], case["name"], case["issuer"], case["sector"],
+                            case["created_by"], case["created_at"],
+                        ),
+                    )
+                    normalized_cases.add(case["id"])
+                cursor.execute(
+                    "INSERT INTO runs(id, case_id, status, plan, accepted_snapshot_id, created_by, created_at, error) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, error=EXCLUDED.error, "
+                    "plan=EXCLUDED.plan, accepted_snapshot_id=EXCLUDED.accepted_snapshot_id",
+                    (
+                        run["id"], run["case_id"], run["status"], self._jsonb(run["plan"]),
+                        run.get("accepted_snapshot_id"), run["created_by"], run["created_at"],
+                        self._jsonb(run.get("error")),
+                    ),
+                )
+
+    def _persist_connection(self, connection: Any) -> tuple[dict[str, Any], int, dict[str, Any], int]:
         state = self._snapshot()
         with connection.cursor() as cursor:
             cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
@@ -511,11 +870,15 @@ class PostgresStore(MemoryStore):
             current_revision, current_state = row if row else (self._state_revision, state)
             if current_revision != self._state_revision:
                 state = _merge_state(self._base_state, state, current_state)
-                self._restore(state)
             next_revision = current_revision + 1
             cursor.execute("UPDATE caos_state SET revision = %s, state = %s WHERE id = true", (next_revision, self._jsonb(json.loads(json.dumps(state)))))
-            self._state_revision = next_revision
-            self._base_state = copy.deepcopy(state)
+        self._sync_normalized_runs(connection, state)
+        return state, next_revision, current_state, current_revision
+
+    def _adopt_persisted(self, state: dict[str, Any], revision: int) -> None:
+        self._restore(state)
+        self._state_revision = revision
+        self._base_state = self._snapshot()
 
     def refresh(self) -> None:
         with self.lock:
@@ -523,7 +886,7 @@ class PostgresStore(MemoryStore):
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT revision, state FROM caos_state WHERE id = true")
                     row = cursor.fetchone()
-            if row:
+            if row and row[0] != self._state_revision:
                 self._state_revision = row[0]
                 self._restore(row[1])
                 self._base_state = self._snapshot()

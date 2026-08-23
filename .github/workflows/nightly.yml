@@ -9,9 +9,10 @@ permissions:
   contents: read
 
 jobs:
-  verify:
-    name: Clean-slate regression
+  regression:
+    name: Nightly — backend and frontend regression
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       ANTHROPIC_API_KEY: ""
       GEMINI_API_KEY: ""
@@ -23,7 +24,72 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: caos/server/requirements-dev.txt
-      - run: pip install -r caos/server/requirements-dev.txt
-      - run: python -m ruff check --config ruff.toml caos/server caos/tests --exclude caos/server/caos/methodology/vendor
-      - run: python -m pytest caos/tests/test_clean_slate.py -q
-      - run: python3 "Modular OS/tools/check_module_consistency.py"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: caos/frontend/package-lock.json
+      - name: Install dependencies
+        run: |
+          pip install -r caos/server/requirements-dev.txt
+          npm ci --prefix caos/frontend
+      - name: Backend regression
+        run: python -m pytest caos/tests -q -W always
+      - name: Full lint and route security
+        run: |
+          python -m ruff check --config ruff.toml caos/server caos/tests --exclude caos/server/caos/methodology/vendor
+          python run_sec_audit.py
+      - name: Frontend regression
+        run: |
+          npm run lint --prefix caos/frontend -- --max-warnings=0
+          npm run build --prefix caos/frontend
+      - name: Frontend typecheck
+        working-directory: caos/frontend
+        run: npx tsc --noEmit
+      - name: Build and stage static frontend
+        run: bash caos/scripts/build_frontend.sh
+      - name: Install Playwright Chromium
+        working-directory: caos/frontend
+        run: npx playwright install --with-deps chromium
+      - name: Start combined app
+        run: |
+          nohup env ANTHROPIC_API_KEY="" python caos/server/run.py > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/api/health && exit 0
+            sleep 1
+          done
+          cat server.log
+          exit 1
+      - name: Workbench journey and accessibility
+        working-directory: caos/frontend
+        run: |
+          npm run test:workbench
+          npm run a11y
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-browser-server-log
+          path: server.log
+          if-no-files-found: ignore
+
+  operational:
+    name: Nightly — deployment and methodology checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Shell syntax
+        run: bash -n caos/deploy/*.sh caos/scripts/*.sh
+      - name: Compose and deployment checks
+        run: |
+          docker compose -f caos/deploy/docker-compose.yml config -q --no-interpolate
+          docker compose --env-file caos/.env.example -f caos/deploy/docker-compose.yml config -q
+          python caos/deploy/verify_image_resources.py
+          python "Modular OS/tools/check_module_consistency.py"
+      - name: Full-history secret scan
+        run: >-
+          docker run --rm -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.18.4
+          detect --source=/repo --config=/repo/.gitleaks.toml --redact --no-banner

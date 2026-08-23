@@ -44,7 +44,8 @@ def require_case(store: MemoryStore, case_id: str, identity: Identity, write: bo
     case = store.get_case(case_id)
     if not case or not store.is_member(case_id, identity.subject):
         raise HTTPException(status_code=404, detail="case not found")
-    if write and identity.role not in {"ANALYST", "APPROVER", "ADMIN"}:
+    writer_roles = {"ANALYST", "APPROVER", "ADMIN"}
+    if write and (identity.role not in writer_roles or not store.is_member(case_id, identity.subject, roles=writer_roles)):
         raise HTTPException(status_code=403, detail="analyst authority required")
     return case
 

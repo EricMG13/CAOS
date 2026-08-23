@@ -33,6 +33,7 @@ colors:
   paper-link: "#1f4fa0"
   paper-soft: "#6a6a72"
   paper-warning: "#a24310"
+  paper-success: "#166534"
   paper-watermark: "#be5410"
   paper-critical: "#b91c1c"
 typography:

@@ -3453,3 +3453,450 @@ repository guidance for the current CAOS tree.
 | ID | Objection | Impact | Status | Resolution |
 |----|-----------|--------|--------|------------|
 | RT-2026-08-19-001 | Historical review records still cite deleted `caos/docs/` briefs and old `caos/frontend/src/` files. Recreating those paths would make obsolete architecture look active. | Medium | Resolved | Obsolete audit artifacts were removed. The append-only records remain historical, and this note marks those paths as non-authoritative. Current guidance is in `README.md`, `caos/README.md`, `PRODUCT.md`, `DESIGN.md`, and `CLAUDE.md`. |
+
+## 2026-08-19 — Issuer-first source and metric refresh critic pass
+
+Decision under review: make the issuer registry the routine entry point for search, source maintenance, and explicit metric refresh while retaining cases as frozen governance boundaries.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-19-002 | Saboteur | A late or partial refresh can replace newer live metrics, mix old and new values, or leave the live pointer on an incomplete snapshot. | Critical | Resolved in design; implementation gate | Each refresh pins one immutable issuer source set. Only one refresh may run per issuer. Publication inserts the complete metric snapshot and updates the live pointer in one transaction after the route and quality gate succeed. Failed or partial work never changes the pointer. A newer uploaded source set remains visibly pending. |
+| RT-2026-08-19-003 | Analytical-authority reviewer | Immediate publication can make incomplete extraction look authoritative or silently retain stale values for metrics absent from the new source set. | Critical | Resolved in design; implementation gate | Publication requires a successful governed Full Credit Screen and its quality gate. Every catalog metric records a value or an explicit unavailable status for the pinned source set. The publisher never fills missing values from an older snapshot. The interface shows the source-set version, refresh time, quality state, and changes from the prior snapshot. |
+| RT-2026-08-19-004 | Security auditor | Moving sources above cases can expose issuer documents through search or direct object identifiers to authenticated users outside the intended authority boundary. | High | Resolved in design; implementation gate | Issuer reads stay inside the authenticated self-hosted deployment. Writes require ANALYST, APPROVER, or ADMIN. Source access resolves through an authorized issuer or case source set before returning metadata or content. Existing malware, archive, size, and vault controls remain mandatory. Case-local notes never enter the issuer library implicitly. |
+| RT-2026-08-19-005 | New hire | If issuer and case ownership overlap, future code will not know where sources, metrics, recommendations, and reports belong. | High | Resolved in design; implementation gate | The issuer owns reusable documents and live screening metrics. A case pins issuer source-set and metric-snapshot identifiers at creation, then owns its runs, artifacts, notes, assumptions, recommendations, approvals, and reports. Later issuer refreshes cannot mutate existing cases. |
+| RT-2026-08-19-006 | Identity-integrity reviewer | Search-first creation can produce duplicate issuers through ticker case, aliases, legal-name variants, or concurrent requests. | High | Resolved in design; implementation gate | Creation normalizes ticker and names, rejects an exact in-scope ticker conflict, shows likely name or alias matches before creation, and uses database constraints plus idempotent create handling. Phase 1 never auto-merges issuers. Existing cases backfill to distinct issuers to avoid accidental consolidation. |
+| RT-2026-08-19-007 | Operations reviewer | Rebuilding the legacy dictionary as a second authority can restore divergent metric definitions and provenance precedence across surfaces. | High | Resolved in design; implementation gate | Metric snapshots are projections from governed typed run outputs, not an independent write surface. One versioned catalog defines key, label, unit, polarity, basis, and extraction rule. No manual metric editing, seeded live values, or surface-specific precedence is in scope. |
+
+Decision: accept the issuer-first design subject to these implementation gates. The design restores routine issuer search and maintenance without reviving the legacy dictionary as an authority. Application work must prove atomic publication, direct-object authorization, immutable case pinning, duplicate prevention, and no stale-value carry-forward before release.
+
+## 2026-08-19 — Adversarial UX hardening critic pass
+
+Decision under review: make the existing case workspace honest under reload, narrow layouts, failed API calls, evidence deep-links, and unsaved report edits without changing the underlying authority model.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-19-008 | Saboteur | URL-derived state can diverge from server-rendered markup and silently overwrite a deep-linked run during initial case loading. | High | Resolved | Query state now hydrates after the deterministic server render, preserves an explicit run id, and mirrors state back to the URL only after hydration. A browser smoke test confirms the run query survives loading and no hydration warning is emitted. |
+| RT-2026-08-19-009 | Evidence auditor | An artifact link that only changes the client URL but has no case-authorized detail route leaves the analyst at a decorative evidence rail. | High | Resolved | Added a case-authorized artifact detail route and renders the artifact summary, lineage, evidence references, and expanded source blocks. The route returns 404 for a missing artifact and was verified with FastAPI TestClient. |
+| RT-2026-08-19-010 | Workflow reviewer | A report draft can be lost by SPA navigation or a case switch even if the browser unload warning exists. | High | Resolved | Drafts are session-scoped, visibly marked unsaved, guarded on internal links and case changes, and retained until an explicit freeze succeeds. Browser verification confirms a dismissed discard prompt keeps the current route and draft. |
+| RT-2026-08-19-011 | Accessibility reviewer | A desktop-only gate prevents keyboard, zoom, and reflow access below 900px; async failures are indistinguishable from empty data. | High | Resolved | Replaced the gate with a horizontal mobile rail and stacked panels, added explicit loading/error states, and re-ran the axe suite across all nine destinations with zero violations. |
+
+Decision: accept the hardening pass subject to continued API-backed browser testing for real accepted snapshots and report approval flows. No authority or recommendation semantics were widened by the UX changes.
+
+## 2026-08-19 — CI workflow alignment critic pass
+
+Decision under review: align the repository's pull-request and scheduled QA
+workflows with the current CAOS tree so the gates execute real checks instead of
+referencing removed suites, scripts, and lockfiles.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-19-012 | Coverage reviewer | Removing stale jobs could silently reduce validation coverage. | High | Resolved | Preserve the actual frontend lint/typecheck/build, backend pytest/ruff, security audit, deploy asset, corpus, and Docker-image checks. Remove only jobs whose inputs do not exist in this repository. |
+| RT-2026-08-19-013 | Release engineer | Without a requirements lock, CI may become non-reproducible. | Medium | Accepted | The current supported dependency contract is the two checked-in requirements files; no lockfile is present. Keep dependency ranges explicit and track lock adoption as a separate release-hardening task rather than pretending the missing lock is enforced. |
+| RT-2026-08-19-014 | Security auditor | A route audit that scans deleted modules can fail loudly but still provide no assurance about live routes. | Critical | Resolved | Point the audit at `caos/server/caos/http.py`, retain the fail-closed parser behavior, and require every live route except health to use the current identity/case authorization helpers. |
+| RT-2026-08-19-015 | Operations reviewer | Docker, image scanning, and full-history secrets cannot be proven on this workstation. | Medium | Accepted | Keep those checks in CI/nightly and record local Docker-daemon absence as an execution limitation; local equivalents cover static configuration and available application checks. |
+
+Decision: accept the alignment. No product behavior or authority boundary changes;
+the change restores trustworthy execution of the repository's existing quality
+controls and makes unverified remote-only checks explicit.
+
+## 2026-08-20 — Deep-Dive focus review critic pass
+
+Decision under review: replace persistent Deep-Dive module and evidence columns
+with a narrative-first focus canvas, compact controls, and contextual drawers
+while preserving the legacy evidence-chip interaction.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-20-001 | Evidence auditor | Hiding the evidence rail could make lineage less discoverable and encourage analysts to read unsupported prose. | High | Resolved in design | Evidence chips remain inline after every material claim; a named Sources control stays in the global header; both open the source in one interaction without permanently narrowing the canvas. |
+| RT-2026-08-20-002 | Legacy-workflow reviewer | Replacing legacy `E-xx` chips with verbose page-labelled pills would weaken scanability and lose cross-highlight behaviour. | High | Resolved in design | Preserve compact stable IDs, blue/amber severity treatments, matching-ID synchronization on hover/focus, and exact-source activation. Page and section detail moves to the drawer. |
+| RT-2026-08-20-003 | QA reviewer | Moving QA off-canvas could hide a material exception behind a favourable `passed` label. | High | Resolved in design | The header always shows the textual QA state and critical count when non-zero. Warning evidence carries an amber glyph, and the QA drawer leads with exceptions before passed checks. |
+| RT-2026-08-20-004 | Accessibility reviewer | Overlay drawers can trap focus incorrectly, lose the analyst's place, or become unusable at zoom and narrow widths. | High | Resolved in design; implementation gate | Use native dialog semantics, Escape close, focus containment and trigger restoration; drawers fit the viewport without horizontal overflow. Verify with axe, keyboard tests, narrow reflow, and zoom. |
+| RT-2026-08-20-005 | Analytical-integrity reviewer | A polished chart shell could tempt the client to invent series values that are absent from the current artifact payload. | Critical | Resolved in design; implementation gate | Render only governed values carried by an accessible visual payload. Extend the server contract where necessary; never infer or fabricate chart series in the client. |
+| RT-2026-08-20-006 | Workflow reviewer | Removing persistent module navigation can make cross-module comparison slower. | Medium | Accepted with mitigation | The module selector remains fixed immediately below the global header and exposes position in the set. Prior-snapshot comparison is one secondary action; persistent columns are not justified by the review task. |
+
+Decision: accept the focus-view design subject to exact snapshot-pinned evidence
+resolution, governed visual data, drawer focus restoration, and accessibility
+verification. The design intentionally excludes portfolio, coverage, committee,
+and authoring workflows.
+
+## 2026-08-22 — Application-wide Analyst Workbench critic pass
+
+Decision under review: reorganize CAOS around an issuer-first Analyst Workbench with workflow navigation, curated conclusion-first layouts, linked visual analysis, contextual evidence and QA, and accepted-snapshot authority.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-001 | Saboteur | A stale issuer or case selection can bind a workflow to the wrong snapshot while the shell still displays the prior context. | Critical | Resolved in design; implementation gate | Every workflow request carries explicit issuer, case, and accepted-authority identifiers. Context changes cancel or ignore stale responses and clear incompatible selections before rendering. |
+| RT-2026-08-22-002 | Analytical-integrity reviewer | Tableau-style linked highlighting can imply a relationship that the governed payload does not establish. | Critical | Resolved in design; implementation gate | Linked content requires typed relationships supplied by governed payloads. The client cannot infer links from matching labels, colours, positions, or values. |
+| RT-2026-08-22-003 | Security auditor | Universal issuer, case, and evidence search can disclose unauthorized names or direct-object identifiers before the user opens a result. | Critical | Resolved in design; implementation gate | Search applies authorization before returning result labels. Palette and drawer actions use the same authorized routes as visible actions. Direct identifiers cannot broaden access. |
+| RT-2026-08-22-004 | QA reviewer | Compact QA chrome can hide a material exception behind a favourable aggregate status. | High | Resolved in design | Critical and warning states remain visible on the resting canvas. The QA drawer lists exceptions before passed checks, and status never relies on colour alone. |
+| RT-2026-08-22-005 | Workflow reviewer | Replacing eight destinations with six workflows can break bookmarks, deep links, and user muscle memory. | High | Resolved in design; implementation gate | Existing routes redirect to workflow destinations while preserving authorized issuer, case, run, artifact, and source identifiers. Migration ships in bounded phases with explicit redirect tests. |
+| RT-2026-08-22-006 | New hire | Adding shell, palette, drawers, linked state, redirects, and workflow surfaces inside the current `Workspace.tsx` monolith will make every later change harder. | High | Resolved in design; implementation gate | The implementation plan must separate the shell, workflow surfaces, and contextual inspectors by existing responsibilities. It must avoid speculative layers and preserve current contracts. |
+| RT-2026-08-22-007 | Accessibility reviewer | A desktop-first terminal can become unusable at 200% zoom, narrow widths, or with keyboard-only navigation. | High | Resolved in design; implementation gate | Each migration phase requires 1440 px, 1024 px, 200% zoom, keyboard, reduced-motion, chart-equivalent, and axe verification before consolidation. |
+| RT-2026-08-22-008 | Performance reviewer | Cross-workflow context and large analytical surfaces can trigger redundant refetches or retain sensitive cached data after an identity change. | High | Resolved in design; implementation gate | Cache only accepted authority within its issuer, case, and identity scope. Clear scoped caches on identity or authorization changes and measure performance against the current baseline. |
+
+Decision: accept the application-wide Analyst Workbench design subject to explicit authority binding, authorized search, typed linked relationships, route compatibility, bounded component responsibilities, and phased accessibility verification.
+
+## 2026-08-22 — Analyst Workbench adversarial-fix critic pass
+
+Decision under review: close the navigation, authority-race, routing, drawer, and QA gaps found in the application-wide workbench implementation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-009 | Authority reviewer | A delayed run-creation response can attach Case A's new run after the analyst has switched to Case B. | Critical | Resolved | Run creation now captures both case identity and request generation; case changes invalidate the generation, stale success/error/finally paths are ignored, and a delayed-response browser check verifies that Case B retains its own execution. |
+| RT-2026-08-22-010 | Security reviewer | Malformed initial case/run identifiers can trigger unauthorized detail requests before the authorized case list resolves, then leave the shell loading forever. | Critical | Resolved | Case and run detail effects now require membership in the authorized case list. Case-list reconciliation consumes invalid route authority, selects an authorized fallback through the normal boundary, and clears incompatible run state. |
+| RT-2026-08-22-011 | Navigation reviewer | A persistent client shell that discards route children makes the page boundary dead code; naïvely restoring children can instead hide or duplicate destination content. | High | Resolved | The root layout owns one persistent shell, known route pages validate and return an empty boundary, unknown routes render only the not-found boundary, and browser/build checks cover both paths. |
+| RT-2026-08-22-012 | Accessibility reviewer | Drawer links can navigate while leaving the modal over the destination, and evidence links can immediately reopen the same drawer from query state. | High | Resolved | Drawer navigation uses native dialog close, evidence navigation targets the source row by fragment rather than drawer-opening query state, and browser checks verify the modal is dismissed and the target is visible. |
+| RT-2026-08-22-013 | QA reviewer | Fixed smoke fixtures make repeat runs fail on uniqueness constraints, while performance measurements that only log values cannot prevent regressions. | High | Resolved | Smoke fixtures use unique per-run identifiers, the suite passes twice against one persistent server, and DCL/FCP are enforced against positive configurable budgets. |
+
+Decision: accept the fixes. Release remains gated on the repeatable workbench smoke suite, strict frontend checks, accessibility validation, and change-scope review.
+
+## 2026-08-22 — Backup pair publication critic pass
+
+Decision under review: preserve the existing `caos.dump` / `vault.tgz` operator
+interface while preventing an interrupted or concurrent backup from being
+silently restored as a mixed pair.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-014 | Durability reviewer | Two independent file moves can expose a new dump with an old vault if the process dies or another publisher interleaves. | Critical | Resolved in design | Serialize publishers with an atomic destination lock and publish a checksum manifest last. Restore verifies the standard pair against the manifest before it creates any drill target. |
+| RT-2026-08-22-015 | Compatibility reviewer | Replacing the pair with a generation directory or new pointer path would break the documented operator interface. | High | Resolved | Keep `caos.dump` and `vault.tgz` at their existing paths; add only the companion manifest. Generic manually supplied restore pairs remain supported without a manifest. |
+| RT-2026-08-22-016 | Operations reviewer | A process killed while holding a lock can prevent the next backup indefinitely. | Medium | Accepted with mitigation | The lock fails closed with an explicit operator-review error. Automatic stale-lock removal is unsafe because a live long-running dump cannot be distinguished reliably. |
+| RT-2026-08-22-017 | Security reviewer | A checksum manifest might be mistaken for tamper-proof provenance. | Medium | Accepted | The manifest detects accidental mixed publication, not malicious backup-store modification. Access control and durable remote backup integrity remain separate operational controls. |
+
+Decision: accept the lock-plus-manifest design. It keeps the public backup paths,
+serializes writers, and turns the unavoidable multi-file crash window into a
+safe restore refusal rather than silent mixed-state recovery.
+
+## 2026-08-22 — Production-scale local dataset and full-inventory critic pass
+
+Decision under review: treat the sanitized PostgreSQL/ClamAV fixture and the
+analyst plus PM/QA route inventory as the local production-readiness baseline.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-018 | Data-integrity reviewer | A dump taken while the API or worker is still writing can disagree with the source vault even when `pg_restore` succeeds. | Critical | Resolved | Stop both application processes before the final dump, then restore the frozen custom-format dump into a fresh database and verify revision and cardinalities. The fixture README records the final checksum and sanitized vault path. |
+| RT-2026-08-22-019 | Concurrency reviewer | A merged PostgreSQL revision can be installed in memory before commit, so a failed write leaves later rollback code mutating detached objects. | Critical | Resolved | The SQL step now returns pending and database-authoritative states. Ordinary and fenced callers adopt the pending state only after commit and restore the authoritative state on failure. A revision-merge/commit-failure regression covers both paths. |
+| RT-2026-08-22-020 | Scale reviewer | Calling 218 cases and 130 sources “production scale” can hide that the current state envelope, case table, and source table are not paginated or horizontally scalable. | High | Accepted with explicit ceiling | The 24-reader burst is gated at p95 under 1.5 seconds and the dense DOM is checked for alerts, stuck loading, accessibility, and overflow. The fixture README names the single-API-process topology, multi-writer CAS, and pagination thresholds as external gates; it does not claim arbitrary scale. |
+| RT-2026-08-22-021 | QA reviewer | “Every control” can be overstated if hundreds of repeated Select buttons and source summaries are merely counted. | High | Resolved by scope definition | Inventory every visible element for both identities, exercise every distinct control behavior, and treat repeated row controls as one implementation equivalence class. Record the distinction in the handoff rather than claiming every duplicate row was clicked. |
+| RT-2026-08-22-022 | Security reviewer | Synthetic identity headers can prove application RBAC while bypassing the real OIDC redirect, MFA, and oauth2-proxy exchange. | High | Accepted external gate | Verify trusted-edge rejection, role resolution, cross-case isolation, analyst 403, admin membership, and Approver ratification locally. Keep the real IdP/step-up exchange explicitly unverified and required before deployment. |
+| RT-2026-08-22-023 | Analytical-authority reviewer | A visually complete Model Builder could conceal that official CP-MODEL authority remains unavailable. | Critical | Resolved | Preserve and test the explicit blocked state. Do not seed fabricated model output into the dataset. Signed corrected Deploy V authority remains a named external gate. |
+
+Decision: accept the local baseline within its documented topology and scale.
+The dump is frozen and restore-proven, all eight product destinations pass for
+both identities, and the remaining IdP, official-model, and horizontal-writer
+gates are explicit rather than represented as locally complete.
+
+## 2026-08-22 — Production-scale completion-audit addendum
+
+Decision under review: close the local readiness goal after the second full
+inventory pass and publish the rebuilt fixture as the reusable baseline.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-22-024 | Analytical-authority reviewer | Pathway names and accepted statuses can all be present while the accepted snapshots contain no artifacts, making a superficially complete fixture analytically empty. | Critical | Resolved | The completion audit now requires each of the six pathways to have a succeeded accepted run whose nonempty node set is entirely succeeded and artifact-bound. All six pathways were re-executed under the fixed worker, yielding 44/44 durable node artifacts; latest and visible authority point to repaired snapshots. Older empty snapshots remain explicitly labeled regression evidence rather than being silently erased. |
+| RT-2026-08-22-025 | QA reviewer | A one-off manual inventory cannot prove repeatability, and route interception can race page teardown to produce false product failures. | High | Resolved | The inventory is a checked-in runnable harness with exact URL predicates and fixture-identity assertions. It releases delayed routes, waits for network idle, and passed twice consecutively across 16 loaded combinations, 46 controlled state probes, all four role identities, and the staged load/recovery gate. |
+| RT-2026-08-22-026 | Portability reviewer | Source records contain absolute local vault paths, so restoring the dump under another checkout root does not automatically relocate source bytes. | Medium | Accepted with explicit boundary | This is a local fixture, not a portable deployment backup. Restore at the documented checkout path or rewrite the synthetic `vault_path` prefix as a deliberate local migration and re-run the 143-reference existence/hash check. No cross-host portability claim is made. |
+| RT-2026-08-22-027 | Release reviewer | A fresh Next.js build can leave the FastAPI static directory serving stale build IDs even though source lint and build pass. | High | Resolved | The final build is synchronized into the server static directory, directory parity is exact, and a live authenticated route was checked to reference only assets present in the deployed directory before the runtime was frozen. |
+
+Decision: close the local pass. The frozen revision and every restored state
+cardinality match, all 143 vault references resolve with matching hashes, the
+secret scan is clean, and no high-impact local objection remains open.
+
+## 2026-08-23 — Production-scale rerun and narrow-reflow critic pass
+
+Decision under review: close the production-like local rerun after correcting
+responsive reachability, Report Studio reflow, and scanner lifecycle failures.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-028 | Accessibility reviewer | The narrow shell hides workflow tool links, leaving Cases and Run Console unreachable even though their routes render correctly. | High | Resolved | Add only the tool-only destinations to the existing command palette, preserve case/run query authority, and verify both links for analyst and PM/QA users at 375px. |
+| RT-2026-08-23-029 | Report reviewer | A full snapshot digest can widen the light paper proof beyond the viewport and create page-level horizontal scrolling. | High | Resolved | Reuse the existing monospace wrapping utility on the snapshot digest and retain a 375px Report Studio overflow assertion in the workbench smoke test. |
+| RT-2026-08-23-030 | Operations reviewer | The mounted ClamAV configuration omits the Unix socket required by the official image lifecycle and the Compose healthcheck; TCP scanning works briefly, then the scanner exits after its socket wait. | Critical | Resolved | Restore `LocalSocket /tmp/clamd.sock` while retaining TCP 3310, add a configuration regression, and verify Compose-equivalent `clamdscan --ping` health plus application source intake. |
+| RT-2026-08-23-031 | Performance reviewer | A single 24-reader run can breach the 1.5-second p95 gate because local host scheduling queues every endpoint uniformly, obscuring whether one API route regressed. | High | Resolved by bounded diagnosis | Keep the gate unchanged, repeat the exact stage with per-endpoint timing, and require a clean complete rerun. No endpoint dominated and no request failed; the final complete runs passed at 1,105.3ms and 1,159.5ms p95 with 49.0ms and 36.6ms recovery. |
+
+Decision: close the local rerun. The final production image, corrected scanner,
+both role journeys, all 16 loaded route combinations, all 46 controlled states,
+54 rendered axe combinations, 16 narrow-touch combinations, vault hashes,
+secret scan, and staged load/recovery gate pass. Real IdP exchange, signed model
+authority, and horizontal multi-writer scale remain the existing external gates.
+
+## 2026-08-23 — Hybrid CP-DR agent runtime critic pass
+
+Decision under review: keep the governed Deploy V DAG as the sole supervisor and
+enable one bounded, source-bound CP-DR specialist agent inside its existing node.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-032 | Methodology-authority reviewer | CP-DR contains conflicting CP-0 language; treating CP-0 as optional could break the runtime catalog and invocation envelope. | Critical | Resolved in design | The pilot follows the stricter catalog/runtime/envelope contract and requires an accepted CP-0 artifact until signed authority resolves the conflict. |
+| RT-2026-08-23-033 | Research-governance reviewer | Starting research immediately would fabricate plan approval because the analyst never saw the generated 3–5 workstreams or their disconfirming tests. | Critical | Resolved in design | CP-DR generates the plan without substantive evidence access, pauses the run with the exact plan hash, and resumes only after case-authorized analyst approval. Scope changes require a new run. |
+| RT-2026-08-23-034 | Data-governance reviewer | Confidential credit documents could leave the deployment under an unapproved retention or processing arrangement. | Critical | Resolved as activation gate | Provider activation requires an approved commercial processing arrangement and ZDR configuration. The key exists only in the worker; Phase 1 excludes Files, remote MCP, managed agents, web, shell, and code execution. |
+| RT-2026-08-23-035 | Prompt-injection reviewer | Document instructions could widen tools, change methodology authority, or induce cross-case reads. | Critical | Resolved in design | Source text remains lower-authority untrusted data. One typed read-only evidence tool validates case, pinned source set, source and block IDs, and cumulative budgets; the model cannot supply authority fields. |
+| RT-2026-08-23-036 | Analytical-contract reviewer | The host's shallow typed payload and Markdown renderer do not match the vendored CP-DR canonical schema, so schema-valid provider JSON could still become a non-canonical artifact. | Critical | Resolved as Phase 0 blocker | Reconcile the CP-DR payload, YAML envelope, ordered sections, citation rules, and vendored validators before any provider-backed artifact can be persisted or accepted. |
+| RT-2026-08-23-037 | Concurrency reviewer | The current 60-second lease can expire during a normal provider call, allowing stale events or paid work that cannot persist. | High | Resolved in design | Add fenced lease renewal and fenced lifecycle events. Loss of ownership stops tools, discards the result, and emits no stale terminal event. |
+| RT-2026-08-23-038 | Cost-abuse reviewer | SDK retries, repair loops, and repeated evidence reads could multiply spend or exhaust context without a product-visible limit. | High | Resolved in design | Disable SDK retries; allow one host retry and one validation repair inside fixed turn, tool, evidence, token, wall-time, and concurrency ceilings. Record usage for every attempt. |
+| RT-2026-08-23-039 | Persistence reviewer | Raw transcripts, source excerpts, or token streaming would bloat the revisioned state envelope and expand sensitive-data retention. | High | Resolved in design | Persist only operational metadata, digests, referenced block IDs, and final canonical output. Store no hidden reasoning or duplicate source text; keep events coarse. |
+| RT-2026-08-23-040 | Quality reviewer | A technically valid research artifact can still be generic, weakly cited, or worse than the existing path. | High | Resolved as rollout gate | A 20-case blinded evaluation requires full material-claim citation coverage, zero unsupported material claims, 19/20 completion, bounded latency, complete telemetry, and 80% of outputs at 4/5 or better and above baseline. |
+| RT-2026-08-23-041 | Rollback reviewer | Falling back to the current generic CP-DR summary after provider failure would present placeholder prose as successful research. | High | Resolved in design | Provider and validation failures are explicit. Disabling or rolling back CP-DR makes the pathway visibly unavailable; it never substitutes the generic summary. |
+| RT-2026-08-23-042 | Complexity reviewer | Adding a generic agent framework or provider abstraction before one module proves value would create more architecture than product capability. | Medium | Resolved in design | Extend the existing Anthropic gateway directly and use a static CP-DR allowlist. Every provider or module expansion requires a separate design and evaluation. |
+
+Decision: accept the bounded CP-DR hybrid design subject to its Phase 0 authority
+reconciliation, analyst plan approval, provider-data activation gate, and shadow
+evaluation thresholds. No other module or provider is approved by this pass.
+
+## 2026-08-23 — Hybrid CP-DR implementation-plan critic pass
+
+Decision under review: execute the approved hybrid design through a seven-phase
+plan that keeps the feature disabled until authority, fencing, security, quality,
+and rollout gates pass.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-043 | Methodology-authority reviewer | CP-DR authority is internally inconsistent on CP-0, FULL/LITE scope, issuer/sector/theme identity, plan canonicalization, reporting period, nested row schemas, and stage-zero CP-PARSE identity. Coding through these gaps could create a host contract that cannot reproduce the signed bundle. | Critical | Resolved as Phase 0 gate | Freeze the stricter intersection before code: accepted CP-0, FULL issuer-only, supplied-only, standard budget, exact plan approval, canonical sorted-JSON hash, deterministic scope key and reporting-period mapping, strict host row schemas, and host-only CP-PARSE identity. Do not hand-edit integrity-pinned vendor files. |
+| RT-2026-08-23-044 | Authorization reviewer | `require_case(..., write=True)` checks global identity role but not the stored role on that case. Adding plan approval would inherit a privilege mismatch, and the root fix has a CRITICAL GitNexus blast radius across 33 symbols and 32 flows. | Critical | Resolved as isolated prerequisite | Phase 1 fixes the shared guard before any CP-DR endpoint and runs a complete stored-role × global-role write matrix plus route security and full server regression. Later phases cannot start until this gate passes. |
+| RT-2026-08-23-045 | Cost/reliability reviewer | Messages has no documented idempotency key. Retrying a timeout can duplicate provider cost while actual usage remains unknown, and a reclaimed in-flight run could repeat it again. | Critical | Resolved in design detail | Pre-count and reserve input/output budgets before each request, persist an in-flight digest, keep unknown timeout reservations charged, retry only inside the remaining run budget, and fail closed when reclaim finds unresolved in-flight work. |
+| RT-2026-08-23-046 | Concurrency reviewer | Run-attached research state avoids a migration, but whole-envelope PostgreSQL persistence and a long model call can still produce stale state, false events, or budget resets. | High | Resolved in phased foundation | Land renewable 60-second leases, a 20-second heartbeat, fenced worker events/audits, persisted cumulative budgets, and a real PostgreSQL takeover test before any provider integration. |
+| RT-2026-08-23-047 | Data-governance reviewer | Sharing provider configuration between the API and worker could leak the key to the public app container or make disabled deployments impossible to boot. | Critical | Resolved in deployment contract | Both services receive only feature/pilot/model settings; `ANTHROPIC_API_KEY` is optional and worker-only. Health never calls the provider or exposes pilot/key state. Live testing remains blocked on approved processing and organization-level ZDR. |
+| RT-2026-08-23-048 | Analytical-contract reviewer | The vendored CP-DR directory has no completeness validator, and the host's current generic payload/Markdown shape is incompatible with the canonical handoff. Treating the missing script as real or persisting before full validation would manufacture false completion. | Critical | Resolved in implementation sequence | Correct the design reference; add a strict host semantic-completeness gate, reuse the actual vendored confidence scorer and handoff validator, and permit fenced persistence only after canonical filename, YAML, identity, citations, six H2s, and numerical context pass. |
+| RT-2026-08-23-049 | Product/accessibility reviewer | A generic paused badge can mislabel pending plan approval as missing sources, and a long workstream/hash review can become inaccessible or unusable at the narrow desk layout. | High | Resolved in UI gate | Branch on explicit pause codes, show every plan field and full hash, use native labeled controls and semantic tables/lists, preserve text alongside status color, and add a deterministic pending-plan fixture to workbench and axe checks at 375px. |
+| RT-2026-08-23-050 | Scope reviewer | Implementing LITE, sector/theme research, web access, another provider, or additional agent modules under the same rollout would bypass unresolved methodology and evaluation gates. | High | Resolved by hard boundary | Phase 1 is FULL issuer-only CP-DR with supplied sources. All listed expansions require a new design, authority review, evaluation corpus, and red-team gate. |
+
+Decision: accept the implementation plan subject to its ordered exit gates. The
+authorization, lease/fencing, canonical-artifact, ZDR, 20-case shadow, and
+rollback gates are blocking; passing later aggregate tests cannot waive an
+earlier critical failure.
+
+## 2026-08-23 — Hybrid CP-DR Phase 3 planning and approval critic pass
+
+Decision under review: persist one deterministic CP-DR plan on the existing run,
+pause after CP-0, and resume the same run only after exact-hash case-writer
+approval.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-051 | Methodology-authority reviewer | Planning before CP-0 would approve a plan whose hash is not bound to required upstream evidence identity. | Critical | Resolved | CP-DR resolves every dependency artifact first; the complete plan and hash include the CP-0 artifact ID and digest, and missing CP-0 fails before planning. |
+| RT-2026-08-23-052 | Governance reviewer | Comparing only the submitted hash to a stored hash would approve a plan mutated after hashing. | Critical | Resolved | Approval recomputes the canonical SHA-256 digest of the current stored full plan, requires it to equal the pending hash, then compares the caller's exact hash. |
+| RT-2026-08-23-053 | Persistence reviewer | Separate node and run writes could expose a running CP-DR node on a paused run, or emit approval events for state that was never durable. | Critical | Resolved | One fenced store helper moves the node back to pending and the run to `awaiting_approval` in one persistence boundary; memory rolls back on failure and PostgreSQL reuses the fenced transaction. Plan-ready and paused events emit only afterward. |
+| RT-2026-08-23-054 | Rollback reviewer | Approval or planning failure could fall through to the generic CP-DR artifact and present placeholder text as completed research. | Critical | Resolved | Planning raises a typed pause outcome handled before generic failure; approved execution before Phase 4 fails with `CP_DR_RESEARCH_EXECUTION_UNAVAILABLE`, and no CP-DR artifact is persisted. |
+| RT-2026-08-23-055 | Authorization reviewer | Requiring a report-approver role would deny analysts, while checking only global role would let stored readers approve. | High | Resolved | The route uses the shared corrected case-write guard. Cross-case callers and stored readers are denied; every stored/global ANALYST, APPROVER, and ADMIN pairing is exercised. |
+| RT-2026-08-23-056 | Concurrency reviewer | A second API process could version the source set between request refresh and the state-envelope lock, causing the current single-process validation to approve stale identity. | High | Accepted existing topology ceiling | The deployed topology and current scale gate use one API process; within it, the store lock covers source comparison, run/audit mutation, and persistence. Horizontal API writers remain an existing external gate and must move source validation inside a database-locked approval primitive before scale-out. |
+
+Decision: accept Phase 3 for the current single-API-process topology. Planning
+and approval are exact-hash, source/version-bound, CP-0-bound, rollback-tested,
+and durable across PostgreSQL reloads; provider execution remains unavailable.
+
+## 2026-08-23 — Frontend hierarchy, recovery, and Report Studio split critic pass
+
+Decision under review: reshape the existing frontend around one dominant work
+region, split Report Studio into a dark editor plus light frozen proof, and make
+governance blockages actionable without weakening authority.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-057 | Publishing-integrity reviewer | A live paper preview can be mistaken for the governed frozen report or drift from the digest being approved. | Critical | Resolved in design | Keep the light pane read-only and frozen-output-only. Draft authoring remains on the dark desk; the proof shows status, digests, exports, and frozen Markdown only after the server creates the report. |
+| RT-2026-08-23-058 | Authority reviewer | Disabling Freeze from shell authority alone can become stale and accidentally replace the backend gate. | Critical | Resolved in design | Use the accepted snapshot only as a client preflight and routed explanation. The existing freeze endpoint remains authoritative; a raced `SNAPSHOT_REQUIRED` response is translated into actionable copy while the local draft remains intact. |
+| RT-2026-08-23-059 | Evidence-governance reviewer | A convenient evidence picker could expose cross-case IDs or silently omit manually supplied governed evidence. | Critical | Resolved in design | Populate choices only from the selected case's source list and accepted snapshot artifacts, validate selected IDs, and retain explicit paste-to-add for expert workflows. Never query a global evidence index. |
+| RT-2026-08-23-060 | Accessibility reviewer | Restoring hidden Analyse tools on narrow screens can create an unlabelled horizontal maze and undersized controls. | High | Resolved in design | Keep workflow and tool groups semantically separate, preserve visible active states, retain horizontal scrolling with an explicit edge/scroll affordance, and enforce 44px targets for coarse pointers while keeping compact desktop density. |
+| RT-2026-08-23-061 | QA-governance reviewer | Adding a PM/QA presentation switch without governed coverage data would create a cosmetic preference that implies capabilities the product does not have. | High | Accepted as a backend gate | Do not fabricate role-specific posture or coverage metrics. Improve the existing QA status drawer and recovery route only; a real Analyst/PM/QA view remains blocked on a governed summary contract. |
+| RT-2026-08-23-062 | Regression reviewer | `Workspace`, `renderDestination`, `ReportView`, and `CommandView` sit on high/critical GitNexus paths, so a local hierarchy edit can regress unrelated case, RV, admin, or snapshot flows. | High | Resolved by verification scope | Preserve component boundaries and API contracts, make the smallest prop additions, and require lint, build, workbench smoke, production inventory/report journey coverage where feasible, axe, and GitNexus `detect_changes` before completion. |
+
+Decision: accept the minimal split-and-guidance implementation. It changes
+presentation and preflight behavior without creating a second report model,
+weakening backend authority, or fabricating unavailable QA data.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 bounded execution critic pass
+
+Decision under review: execute the already approved issuer-only CP-DR plan
+through one concrete Anthropic client/tool loop, validate it under host and
+vendored authority, and persist only the canonical fenced handoff.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-063 | Lease/concurrency reviewer | A replaced claimant or an in-flight lease loss could let an old node use a new attempt's callbacks, record a stale provider result, or persist an artifact after fencing. | Critical | Resolved and verified | Attempt-local `fenced_call` and `lease_check` callbacks are passed explicitly through the node call chain; no run-ID callback map exists. The gateway rechecks the lease immediately after each SDK call and before timing, attempt recording, reconciliation, evidence use, confidence scoring, handoff recording, or persistence. Deterministic replacement and in-flight-loss tests prove the stale result is discarded. |
+| RT-2026-08-23-064 | Spend-control reviewer | Timeout ambiguity, retry, repair, malformed usage, or concurrency denial could undercharge the durable ledger or repeat unknown spend after reclaim. | Critical | Resolved and verified | Every generation is counted and durably reserves requested input/output before send; timeout keeps the exact request charged, one identical affordable retry is recorded, actual non-negative integer usage reconciles success, and a reclaimed unresolved digest fails closed. Turns, reads, bytes, tokens, active time, retry, repair, and semaphore-denial tests cover every ceiling. |
+| RT-2026-08-23-065 | Evidence-governance reviewer | Prompt injection or a plausible fabricated citation could cross cases, escape the pinned version, use withdrawn/absent evidence, or attach false locator/digest metadata to a real block ID. | Critical | Resolved and verified | System authority is separate from explicitly untrusted bounded user data. The sole evidence tool enforces case, exact pin/version, withdrawal, unique bounded block identity, byte/read/time budgets, and returns no vault path. Host validation compares every cited row with the exact returned source digest, canonical locator, extractor version, and confidence; cross-case, unpinned, withdrawn, absent, duplicate, and fabricated-metadata cases fail before artifact creation. |
+| RT-2026-08-23-066 | Methodology/QA reviewer | The provider could self-declare identity, coverage, confidence, Complete status, or a handoff that only resembles the vendored CP-DR contract. | Critical | Resolved and verified | Host identity is reproduced exactly and checked against the approved plan, current pinned source set, model, Deploy V build, brief/upstream digests, and accepted CP-0 lineage. Host arithmetic derives coverage; evidence independence and gap/conflict semantics constrain status. The actual vendored confidence `compute` and handoff `validate_text` run on canonical host-rendered Markdown with exact filename/run/period checks. |
+| RT-2026-08-23-067 | Secrecy/operations reviewer | Provider errors, repair text, evidence bodies, prompts, transcripts, or the API key could leak into attempts, events, audit rows, or failure records. | Critical | Resolved and verified | Only bounded identifiers, digests, request IDs, source/block IDs, counts, latency, stop reason, retry count, and stable terminal codes persist. Provider bodies and analytical content never enter operational metadata; node/run failures store a generic message and one of six stable codes. A forced authentication failure searches the persisted run, events, and audit records for the key, prompt authority, evidence text, and exception body and finds none. |
+| RT-2026-08-23-068 | Rollout reviewer | Enabling execution globally or using the approval actor for eligibility could bypass the issuer pilot and convert a safe default into an accidental live-provider rollout. | High | Resolved and verified | Execution defaults disabled, empty allowlists deny all, missing key is explicit, and eligibility is bound to the original run case/creator rather than approver or worker. The deterministic end-to-end flow uses a distinct approval actor to prove the binding; no live provider or external document was used. |
+| RT-2026-08-23-069 | Runtime/compatibility reviewer | Dynamic loading of the vendored dataclass validator can fail on Python 3.14 or leave a poisoned module cache, while provider SDK drift can silently change request semantics. | High | Resolved and verified | Vendored modules are registered in `sys.modules` before execution, removed on load failure, and cached by stable path-derived name. The Python 3.14 regression, exact SDK-field assertions, official 1.0.0 dependency check, vendored self-check, canonical end-to-end validation, and full PostgreSQL-backed suite all pass. |
+
+Decision: accept Phase 4 for the bounded single-worker pilot. It produces one
+canonical cited CP-DR handoff only after exact approval and host/vendored
+validation, fails closed on authority, lease, evidence, or spend ambiguity, and
+does not authorize LITE, sector/theme, web, other providers, or multi-worker
+scale-out.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 independent-rejection remediation pass
+
+Decision under review: remediate the independently rejected Phase 4 runtime at
+its shared crash, provenance, authority, budget, artifact, and telemetry
+boundaries without broadening the pilot.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-070 | Crash-recovery reviewer | A replacement could see no pending nodes, mark a stale running CP-DR run succeeded, and leave no artifact; split artifact/node/research writes also exposed irrecoverable crash windows. | Critical | Resolved and verified | Legitimate claims recover running nodes under the new lease. Memory and PostgreSQL now atomically insert/reuse the fingerprinted artifact, link/succeed the node, and mark research complete. Run completion and snapshot acceptance independently require every planned node and matching digest-bound artifact. Five deterministic crash windows, PostgreSQL rollback/reload, and idempotent retry pass. |
+| RT-2026-08-23-071 | Evidence-independence reviewer | Provider-authored lineage, authority, independence families, coverage, and QA could manufacture a perfect result from one ordinary source. | Critical | Resolved and verified | Returned blocks carry host-owned canonical-content SHA-256 origin and conservative unclassified authority. Ordinary facts require two distinct origins; one-source adequacy is limited to attributed source characterisation or provable host authority. Host code derives coverage, lineage counts, source gate, and material/critical findings; provider declarations must agree. Copied content and forged lineage fail. |
+| RT-2026-08-23-072 | Scope/citation reviewer | The prompt omitted approved brief fields, while duplicated or absent scope rows and ghost conflict citations could pass structural validation. | Critical | Resolved and verified | The complete digest-checked brief is a separate lower-authority user section. A typed ledger exactly and uniquely covers every must-answer assignment and exclusion with explicit adherence. Claims, counter-evidence, and conflict references form one exhaustive citation set whose registry rows and host metadata must match exactly; conflict identities, claims, references, and origins are checked. |
+| RT-2026-08-23-073 | Time/memory reviewer | A fixed provider timeout and eager unbounded source manifest could overrun the three-minute active budget or allocate/serialize a pathological corpus before counting. | High | Resolved and verified | Planning and each active research segment are durably charged while approval wait is excluded. Every SDK/tool call receives at most the remaining active seconds, and failed tools, validation, rendering, and final checkpoints are charged. The manifest is incrementally capped at 2,000 blocks and 256 KiB with exact-boundary tests; overflow fails before gateway construction and never stores source text. |
+| RT-2026-08-23-074 | Handoff-integrity reviewer | The artifact digest covered only provider transport JSON, leaving host confidence, filename, Markdown, plan, source, and upstream identity mutable outside snapshot authority. | Critical | Resolved and verified | CP-DR persists a strict host envelope containing validated transport, host confidence, canonical filename and raw-Markdown SHA-256, methodology/plan, source-set, upstream identities, and schema version. Artifact digest covers the envelope; fingerprint reuse and snapshot acceptance revalidate the complete envelope and unchanged rerender stability. |
+| RT-2026-08-23-075 | Failure-secrecy reviewer | Invalid output and post-provider scorer/renderer failures could lack terminal attempts or fall through to `NODE_ERROR` with raw exception text. | Critical | Resolved and verified | Gateway aborts attach a stable terminal code after interaction, updating the final bounded attempt where necessary. The CP-DR boundary maps unexpected failures to sanitized `AGENT_OUTPUT_INVALID`, preserves silent fencing, and never stores exception, prompt, body, key, or evidence sentinels. Duplicate JSON keys are rejected before typed validation. |
+| RT-2026-08-23-076 | Methodology/SDK reviewer | A hand-written authority paraphrase and fake-only SDK tests did not prove that integrity-pinned CP-DR rules or installed 1.0.0 request semantics governed execution. | Critical | Resolved and verified | The system authority is extracted from the exact integrity-verified hard rules plus required source/search, ledger, stop, output/QA, and issuer sections, with only the narrow CAOS wrapper. Tampering fails verification. The installed SDK is probed with local MockTransport for `max_retries=0`, timeout, and serialized Messages/tool/schema shape; no network provider is used. |
+
+Decision: return the remediation for fresh independent review. The corrected
+runtime passes 102 focused tests, including seven real-PostgreSQL cases, and the
+230-test real-PostgreSQL-backed backend suite. The pilot remains disabled by
+default and still excludes live-provider testing, external documents, web,
+LITE, sector/theme, other providers, and horizontal worker scale-out.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 second-rejection corrective pass
+
+Decision under review: close the second independent rejection at the shared
+database, artifact, provenance, time, telemetry, manifest, and installed-SDK
+boundaries without broadening the disabled issuer-only pilot.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-077 | Cross-process recovery reviewer | A replacement `PostgresStore` can claim an expired job while retaining a pre-claim local mirror, so recovery mutates stale state and leaves the authoritative node running. | Critical | Resolved and verified | The replacement claim now locks and adopts `caos_state` inside the same fenced transaction before recovering nodes, then reapplies only its newly claimed job identity. Rollback restores the locked authoritative state. A real two-store test constructs the replacement before the first worker persists running state, expires the database lease, and proves takeover, pending recovery, completion, and reload. |
+| RT-2026-08-23-078 | Handoff-integrity reviewer | Fingerprint reuse, run success, and snapshot acceptance can trust self-consistent but noncanonical transport/Markdown; completion can prefer an older invalid same-fingerprint artifact over a new valid one. | Critical | Resolved and verified | One bundle-backed validator independently recomputes the approved-plan hash, current input fingerprint, host identity, all pinned sources/evidence, host provenance/coverage/confidence, exact filename/Markdown/envelope, and real vendored handoff. Reuse, success, snapshot, and atomic completion all call it. Memory and PostgreSQL transactionally replace an invalid old collision with the validated new artifact. |
+| RT-2026-08-23-079 | Provenance/QA reviewer | Provider-authored `source_characterisation`, lineage, family, coverage, and confidence can make one unclassified assertion appear directly sourced and committee-ready. | Critical | Resolved and verified | Every persisted evidence family is the host canonical-content digest; evidence and claim lineage/confidence are host-canonicalized. Material adequacy requires host primary authority or two distinct host origins, regardless of provider claim type. The reproduced one-source forged-family/lineage/100-confidence attack fails host coverage and no forged metadata survives canonical transport or Markdown. |
+| RT-2026-08-23-080 | Time-budget reviewer | Exceptions in confidence, rendering, vendored validation, envelope construction, or completion can skip charging, and a run at 179 seconds can complete after crossing the ceiling. | High | Resolved and verified | Each host operation charges active wall time in a `finally` boundary, including exceptions. Fenced atomic completion is timed and charged before any run-success transition; crossing at or above three minutes persists spend and fails the CP-DR node/run. Slow and throwing scorer/renderer/validator/envelope plus 179-second render/completion cases pass. |
+| RT-2026-08-23-081 | Telemetry reviewer | `count_tokens` or `create` can return successfully and then cross the active ceiling before ordinary attempt recording, leaving no terminal interaction. | High | Resolved and verified | Every begun provider interaction routes active-time or ordinary-recording `AgentError` through a sanitized emergency terminal record. Terminal recording bypasses further budget charging, updates the last bounded attempt or creates one, preserves the 50-record cap, and stores no body, prompt, evidence, or exception text. Both count and create 179-to-181-second regressions pass. |
+| RT-2026-08-23-082 | Memory-abuse reviewer | Huge filename, media, locator, extractor, or confidence values are serialized before the aggregate byte check, allowing large derived allocation before rejection. | High | Resolved and verified | Concrete type/character/depth/container/total-node bounds run before encoding. Blocks remain capped at 2,000, manifest bytes are accumulated incrementally, and pathological fields or many short locator nodes fail `AGENT_BUDGET_EXCEEDED` before gateway construction or `json.dumps` sees them. Exact block/byte boundaries still pass. |
+| RT-2026-08-23-083 | SDK-contract reviewer | A compiler-only test does not prove the installed Anthropic SDK serializes every approved brief field into the actual request. | High | Resolved and verified | The installed 1.0.0 client is exercised through local `MockTransport`; the captured count/create request bodies contain the research question, decision context, time horizon, must-answer, and exclusion sentinels together with the expected tool and transformed output schema. No provider network call occurs. |
+
+Decision: return the second corrective pass for fresh independent review. The
+focused real-PostgreSQL matrix passes 128 tests and the full backend suite passes
+256 tests. The pilot remains disabled by default and does not authorize a live
+provider, external documents, LITE, sector/theme, web, other providers, or
+horizontal worker scale-out.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 third-review corrective pass
+
+Decision under review: close the four Important findings from the third
+independent review without weakening the now-passing Critical controls or
+broadening the disabled issuer-only pilot.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-084 | Hard-budget reviewer | The no-pending branch can spend two seconds revalidating a CP-DR artifact after 179 seconds of durable active time, then mark the run succeeded while the ledger remains below the real work performed. | High | Resolved and verified | Final strict validation and the success-state write are each timed and durably charged under the current lease. Reaching or exceeding three minutes terminalizes the CP-DR node/run with `AGENT_BUDGET_EXCEEDED` before any `run.succeeded` event. Separate fake-clock probes cover the scorer and success-write crossings. |
+| RT-2026-08-23-085 | Provider-telemetry reviewer | A transient ordinary-record failure or post-call lease/budget `AgentError` can escape after an SDK interaction without a bounded terminal attempt, while an overbroad catch could accidentally hide true fencing. | High | Resolved and verified | Post-call lease checking, active-time charging, and ordinary recording share one guarded boundary. Ordinary failures map to sanitized `AGENT_OUTPUT_INVALID`, budget failures retain their stable code, and both make a best-effort terminal record; `JobFencedError` remains silent and is re-raised unchanged. No prompt, body, evidence, key, or exception text is persisted. |
+| RT-2026-08-23-086 | Methodology-integrity reviewer | Cached scorer/renderer/validator modules can remain callable after the current vendored bundle fails integrity, allowing reuse, run success, or snapshot acceptance under stale authority. | High | Resolved and verified | The one strict CP-DR artifact validator now invokes current `bundle.verify()` before any cached methodology component. A forced integrity failure rejects the same canonical artifact at reuse, no-pending run success, and snapshot construction. |
+| RT-2026-08-23-087 | PostgreSQL-authority reviewer | Takeover can correctly adopt `caos_state` yet leave the normalized `runs` row populated from the replacement process's stale pre-claim mirror. | High | Resolved and verified | Pre-claim FK setup no longer overwrites an existing run row. Inside the fenced adoption/recovery transaction, status, bounded error, plan, and accepted-snapshot identity are rewritten from the locked authoritative run before commit. The real two-store test asserts all four normalized fields after takeover and after atomic completion. |
+
+Decision: return the third corrective pass for fresh independent review after
+the focused and full real-PostgreSQL gates. The pilot remains disabled by
+default; live-provider testing, external documents, web, LITE, sector/theme,
+other providers, and horizontal worker scale-out remain unauthorized.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 fourth-review corrective pass
+
+Decision under review: close the atomic-success, normalized-state, and provider
+terminal-boundary findings from the fourth independent review without weakening
+the earlier recovery, artifact, provenance, budget, or fencing controls.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-088 | Atomicity reviewer | Persisting `succeeded` before the final budget ledger and success event lets a later write failure leave an acceptable successful snapshot without its charged work or lifecycle event. | Critical | Resolved and verified | All fallible validation and a fixed five-second finalization reservation persist while the run is non-successful. One fenced store operation then commits terminal status, the reserved research ledger, `run.succeeded`, and PostgreSQL normalized state together; memory and PostgreSQL rollback status and event on forced persistence failure, and `accept_run` remains `RUN_NOT_READY`. |
+| RT-2026-08-23-089 | Hard-budget reviewer | A token reserve that is smaller than realistic terminal persistence time can still undercharge a successful run, especially near the 180-second ceiling. | High | Resolved with bounded operational ceiling | The host reserves five seconds before finalization, above the reviewed two-second adversarial write. Equality at 180 seconds fails before success; a fake-clock probe proves a two-second atomic finalization remains within the reservation. A ponytail comment requires increasing the fixed allowance if measured p99 exceeds four seconds; unused reserve is deliberately overcharged. |
+| RT-2026-08-23-090 | PostgreSQL-authority reviewer | Synchronizing the normalized `runs` row only during claim leaves later fenced completion, error/plan mutation, final success, or snapshot acceptance divergent from authoritative `caos_state`. | High | Resolved and verified | The shared persistence transaction upserts status, bounded error, plan, accepted-snapshot identity, and immutable required fields from the exact merged state being committed. A two-store PostgreSQL probe compares every field after takeover, recovery/completion changes, atomic finalization, and acceptance; forced terminal persistence rolls both authorities back together. |
+| RT-2026-08-23-091 | Provider-telemetry reviewer | Reconciliation, generation/retry recording, evidence handling, or final validation can throw after a real SDK interaction and escape without a stable terminal attempt, while broad conversion could hide lease loss. | High | Resolved and verified | One outer fail-closed boundary encloses the complete interaction loop. Ordinary failures become sanitized `AGENT_OUTPUT_INVALID`, `AgentError` retains its stable code, terminal recording is best-effort and one-shot, and `JobFencedError` is re-raised silently. Ten ordinary/typed operation cases plus an explicit fencing probe persist no exception, prompt, response, evidence, or key text. |
+
+Decision: return the fourth corrective pass for fresh independent review after
+the focused and full real-PostgreSQL gates. The finalization allowance is an
+explicit measured single-worker ceiling, not authorization for horizontal
+workers. The pilot remains disabled by default and still excludes live-provider
+testing, external documents, web, LITE, sector/theme, and other providers.
+
+## 2026-08-23 — Hybrid CP-DR Phase 4 fifth-review corrective pass
+
+Decision under review: enforce the already prepaid terminal allowance as an
+actual deadline and make an already-open production event stream observe worker
+process commits, without broadening the disabled issuer-only pilot.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-092 | Hard-deadline reviewer | Prepaying five seconds without enforcing it lets a ten-second terminal operation commit success at 184 seconds while the durable ledger records only 179 seconds. The p99 assertion in RT-089 did not make that safe. | Critical | Resolved and verified | After durable reservation the runtime computes an absolute monotonic deadline. Memory checks before mutation and after persistence with rollback. PostgreSQL applies the remaining transaction-local statement timeout, re-tightens it before exact-state persistence, and checks again after persistence and before commit. Outer and inner 174+10 probes on memory and real PostgreSQL leave no success event or acceptable snapshot; two-second operations still commit atomically. |
+| RT-2026-08-23-093 | Cross-process event reviewer | HTTP middleware refreshes before constructing an SSE response, but an already-open API-process stream waits only on its local condition and never observes durable worker-process events. | High | Resolved and verified | Every polling iteration refreshes before the existing one-second local wait, refreshes again afterward, and then reads strictly after the current cursor. A real two-store PostgreSQL stream opened before the run emits durable `run.running`, `node.succeeded`, and `run.succeeded` exactly once without reconnecting, then exits after terminal delivery. |
+| RT-2026-08-23-094 | Fencing reviewer | Adding a deadline check before lease validation could convert an already-stale worker into a budget failure and violate silent `JobFencedError` semantics. | High | Resolved and verified | Both stores establish fencing precedence: memory checks the current job before the deadline, and PostgreSQL checks the authoritative lease row before rejecting an already-expired deadline. Explicit memory/PostgreSQL probes prove deadline expiry never masks fencing. |
+
+Decision: return the fifth corrective pass for a decisive fresh review. The
+five-second allowance is now a hard absolute deadline, not a latency estimate or
+p99 claim. The pilot remains disabled by default and still excludes live-provider
+testing, external documents, web, LITE, sector/theme, other providers, and
+horizontal worker scale-out.
+
+## 2026-08-23 — Hybrid CP-DR Phase 5 analyst-control critic pass
+
+Decision under review: expose the disabled-by-default CP-DR pilot in the existing
+Run Console as one bounded brief, complete deterministic plan review, and
+exact-hash approval flow.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-095 | Authorization reviewer | A case-detail availability flag can become stale or be forged by the client, allowing an outside-pilot analyst to start a provider-backed run. | Critical | Resolved and verified | The actor-specific case detail is only a UI preflight. The existing start route independently rechecks feature enablement and case-or-subject allowlist membership, with empty allowlists denying all. Focused route tests cover disabled, empty, subject, case, and denied POST states. |
+| RT-2026-08-23-096 | Approval-integrity reviewer | Truncating a workstream, digest, artifact identity, or plan hash would make the analyst approve a different authority object than the one displayed. | Critical | Resolved and verified | The Run Console renders the full hash and every top-level plan identity field plus every persisted workstream field without slicing or ellipsis. The approval action posts only the complete currently displayed hash to the existing exact-hash endpoint. The deterministic fixture asserts the full long text, full hash, field inventory, and exact request body. |
+| RT-2026-08-23-097 | Case-boundary reviewer | A late approval response or refresh from Case A could replace the visible run authority after the analyst switches to Case B. | High | Resolved | Approval captures the expected case and run, reuses the existing pending-action path, and refreshes only while both still match their synchronous authority refs. Backend case-write authorization remains the final gate. |
+| RT-2026-08-23-098 | Input-boundary reviewer | A textarea can hide excessive or blank list entries, while client-only limits can be bypassed. | High | Resolved and verified | Native required/max-length/date controls bound scalar fields; list text is converted to trimmed nonblank lines and rejected when either list exceeds 10, the combined set exceeds 10, or any line exceeds 200 characters. The existing strict Pydantic contract independently enforces the same server boundary. The journey asserts the exact normalized POST body. |
+| RT-2026-08-23-099 | Accessibility reviewer | A disabled pathway with no associated explanation, color-only progress, or a wide plan grid would block keyboard and narrow-layout users. | High | Resolved and verified | The native disabled option is associated to visible server/loading copy through `aria-describedby`; all brief controls have visible labels; status and failure use text with polite status and alert semantics; workstreams use headings, definition lists, and ordinary lists. Keyboard approval, 375px page/panel overflow, reduced motion, and the rendered pending-plan axe fixture pass with zero violations. |
+| RT-2026-08-23-100 | Test-integrity reviewer | Broad route globs or unexercised fixtures could let browser checks pass against the live fallback instead of the intended pending-plan state. | High | Resolved and verified | Every case, start, run, event, and approval intercept matches parsed URL pathnames so exact and query-string forms are handled. Case/start/run/approval hit counters are mandatory, and both workbench and axe checks fail if their pending-plan fixtures are not exercised. |
+
+Decision: accept Phase 5 for the existing single-case Run Console. The UI does
+not create a second capability endpoint or read model, does not weaken backend
+authorization or exact-hash approval, and does not enable the pilot by default.
+
+## 2026-08-23 — Hybrid CP-DR Phase 5 empty-plan remediation critic pass
+
+Decision under review: close the independent-review finding that an exact
+approval plan could render empty values as blank space, without altering the
+persisted plan or the hash submitted for approval.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-101 | Approval-fidelity reviewer | Blank scalar and list cells can make an analyst approve a hashed plan without knowing whether a field is absent or merely failed to render. | High | Resolved and verified | Every top-level, artifact, scope, and workstream scalar renders a visible muted `None` marker for `null`, `undefined`, or the empty string. Empty upstream, workstream, assigned-question, evidence-need, and source-class lists render `Empty`. Zero remains visible as zero, and nonempty values are not normalized or truncated. |
+| RT-2026-08-23-102 | Repetition-integrity reviewer | Provider-plan values are not unique identities; duplicate workstream IDs or artifact/list values can collide as React keys, warn, or reconcile the wrong displayed row. | High | Resolved and verified | Immutable-plan array positions now provide stable collision-free sibling keys. Both shipped browser fixtures contain repeated IDs, artifacts, and list values; every repeated value remains visible and approval still posts the unchanged complete hash. |
+| RT-2026-08-23-103 | Test-integrity reviewer | A synthetic empty fixture could pass without exercising the renderer, or a production React build could hide duplicate-key warnings. | High | Resolved and verified | The existing mandatory case/run fixture-hit gates remain in force. Workbench assertions bind each scalar/list label to its explicit marker, count repeated values and workstreams, and reject duplicate-key console messages; the independent 375px axe fixture repeats artifact/workstream/list identities, asserts marker and row counts, rejects the same warning, and reports zero rendered violations. |
+
+Decision: return the scoped Phase 5 remediation for fresh independent review.
+The pilot remains disabled by default, exact-hash approval is unchanged, and no
+endpoint, read model, dependency, or state abstraction was added.
+
+## 2026-08-23 — Hybrid CP-DR Phase 6 deployment critic pass
+
+Decision under review: expose the existing CP-DR settings through the
+self-hosted Compose stack while keeping the pilot deny-all by default and the
+provider key confined to the worker.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-104 | Secret-boundary reviewer | Copying one shared environment block to app and worker could place the Anthropic key in the API or proxy containers, where requests or diagnostics could expose it. | Critical | Resolved and verified | Compose declares `ANTHROPIC_API_KEY` only in the worker block. Source assertions, rendered default/sentinel configurations, and live container checks prove the variable is absent from app and proxies and present only in the worker. |
+| RT-2026-08-23-105 | Safe-default reviewer | A required interpolation or eager provider validation could prevent a disabled deployment from booting with an empty key. | High | Resolved and verified | Optional empty interpolation is used for the worker key; both exact Compose config gates pass. An isolated production stack migrated and reached healthy db, ClamAV, app, and worker states with CP-DR disabled and the key empty. |
+| RT-2026-08-23-106 | Pilot-boundary reviewer | Enabling the flag with empty allowlists, or omitting an allowlist from one process, could accidentally make the provider path generally available. | Critical | Resolved and verified | App and worker receive the same existing strict flag, exact subject/case allowlists, and model settings. Empty values preserve the existing deny-all tuples. A live single-subject pilot accepted that subject, while the API continued to recheck eligibility at run start. |
+| RT-2026-08-23-107 | Failure-scope reviewer | A missing provider key could crash startup or contaminate unrelated run pathways instead of failing only an eligible approved CP-DR run. | High | Resolved and verified | Live health remained green with an empty key. A source-backed eligible CP-DR run paused for exact approval and then failed `AGENT_PROVIDER_UNAVAILABLE`; a Full Credit Screen run in the same stack succeeded afterward. |
+| RT-2026-08-23-108 | Telemetry reviewer | Provider credentials or source text could leak into container logs or bounded run/audit/job state during the missing-key path. | Critical | Resolved and verified | Bounded live app/worker logs contained neither test sentinel. The complete persisted state contained no key sentinel, and the persisted runs/events/audit/jobs subset contained no source-text sentinel. The existing Phase 4 failure-metadata tests independently reject key, provider-body, prompt, and evidence text. |
+| RT-2026-08-23-109 | Container-hardening reviewer | Editing service environments could accidentally remove the read-only filesystem, dropped capabilities, or no-new-privileges controls. | High | Resolved and verified | The Compose source test asserts all three exact hardening settings on app and worker, and the production verification ran against those services without weakening them. |
+
+Decision: accept Phase 6 for the disabled-by-default single-provider pilot. The
+change adds no parser, provider, metrics system, image variant, or secret to the
+API/proxy boundary. Enablement and rollback require only operator environment
+changes plus service recreation; the immutable image is unchanged.
+
+## 2026-08-23 — Hybrid CP-DR Phase 7 activation-readiness critic pass
+
+Decision under review: determine whether the completed disabled-by-default
+issuer-only CP-DR implementation is locally implementation-ready, without
+turning local verification into authorization for provider processing, a shadow
+evaluation, or production activation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-110 | Clean-environment reviewer | Passing in the long-lived project environment could hide an interpreter-specific or dependency-resolution failure. | High | Resolved and verified | Fresh Python 3.11.15 and 3.14.6 environments installed the current development requirements, passed `pip check`, Ruff, the route audit, and the complete 276-test backend suite with provider keys empty. The exact pip-audit 2.10.1 gate queried current advisories and found no known vulnerability. |
+| RT-2026-08-23-111 | Secret-scan reviewer | The exact CI Gitleaks gate failed on two findings re-attributed to a merge commit, so calling the branch clean would conceal a shipping gate failure. | High | Resolved and verified | Redacted metadata proved the findings were the already-documented removed local server-info blob and synthetic example cookie placeholder; the former has the exact previously allowlisted blob identity. Only the two merge-commit fingerprints were added to the narrow history allowlist. Gitleaks v8.18.4 then scanned all 68 commits with no leaks; no matched value was displayed or copied. |
+| RT-2026-08-23-112 | Image/security reviewer | A clean source tree does not prove the production image is immutable-resource complete, vulnerability-clean, unprivileged, or free of provider credentials outside the worker. | Critical | Resolved and verified | The exact current Dockerfile image passed its in-image 307-resource verifier with zero mismatches. Trivy v0.72.0 refreshed its advisory DB and reported zero fixable HIGH/CRITICAL findings under the exact CI semantics. Image config/history contain no provider-key environment or build-layer mention; rendered Compose places the optional empty key only on the worker and preserves read-only filesystems, dropped capabilities, and no-new-privileges for app and worker. |
+| RT-2026-08-23-113 | PostgreSQL/fencing reviewer | Memory-only success can conceal stale-lease writes, non-durable approval state, split terminal commits, or an invalid snapshot becoming acceptable after rollback. | Critical | Resolved and verified | A fresh database in the retained disposable PostgreSQL container passed durable pause/exact approval/resume, expired-lease refusal, takeover fencing, atomic terminal rollback, 174+10-second deadline rollback, normal two-second atomic success, and fencing-precedence probes. Failed finalizations produced no success event and remained unacceptable; the normal path committed one terminal event. |
+| RT-2026-08-23-114 | Governance/valuation reviewer | Automated local checks cannot establish ZDR/commercial-processing approval, real-provider behavior, or whether the research output improves buy-side decisions across representative cases. | Critical | Governance-gated — NOT AUTHORIZED | No live credential was requested, read, or used; no document was uploaded and the pilot remains disabled with empty allowlists. Production activation requires separate ZDR and commercial-processing approval, a controlled sanitized live-provider smoke, a blinded twenty-case analyst-scored shadow evaluation, named pilot identities/cases, and explicit opt-in approval. None is claimed passed here. |
+
+Decision: accept the implementation for local automated readiness only. All
+authorized automated, clean-environment, browser, accessibility, dependency,
+image, Compose, and real-PostgreSQL gates pass after the narrow historical
+Gitleaks correction. Live-provider smoke, shadow evaluation, and opt-in
+activation remain explicitly not authorized; the feature stays disabled and
+deny-all by default.

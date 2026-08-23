@@ -1,21 +1,121 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import math
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Iterator
 
-from ..artifacts.domain import build_snapshot_payload
+from ..artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid
 from ..config import Settings
 from ..contracts import Depth, digest
-from ..methodology.bundle import DeployVBundle
+from ..methodology.bundle import DeployVBundle, MethodologyError
+from ..methodology.cpdr import CPDRValidationError, confidence_inputs, render_cpdr_markdown, validate_cpdr_payload
+from ..methodology.prompt import compile_cpdr_prompts
 from ..sources.domain import Vault, current_source_set
-from ..store import JobFencedError, MemoryStore
+from ..store import JobFencedError, MemoryStore, now_iso
+from .provider import AgentError, AnthropicGateway, ProviderUnavailable
+
+
+HEARTBEAT_INTERVAL_SECONDS = 20
+MAX_CPDR_MANIFEST_BLOCKS = 2_000
+MAX_CPDR_MANIFEST_BYTES = 256 * 1_024
+MAX_CPDR_MANIFEST_FILENAME_CHARS = 255
+MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS = 160
+MAX_CPDR_MANIFEST_FIELD_CHARS = 160
+MAX_CPDR_MANIFEST_LOCATOR_CHARS = 500
+MAX_CPDR_MANIFEST_LOCATOR_ITEMS = 100
+MAX_CPDR_MANIFEST_LOCATOR_DEPTH = 8
+MAX_CPDR_MANIFEST_LOCATOR_NODES = 500
+# ponytail: prepaid 5s is an enforced absolute deadline; changing it requires deadline/rollback review.
+CPDR_FINALIZATION_ALLOWANCE_SECONDS = 5.0
+
+
+def _manifest_locator_is_bounded(value: Any, *, depth: int = 0, remaining: list[int] | None = None) -> bool:
+    remaining = [MAX_CPDR_MANIFEST_LOCATOR_NODES] if remaining is None else remaining
+    remaining[0] -= 1
+    if remaining[0] < 0 or depth > MAX_CPDR_MANIFEST_LOCATOR_DEPTH:
+        return False
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return not isinstance(value, float) or math.isfinite(value)
+    if isinstance(value, str):
+        return len(value) <= MAX_CPDR_MANIFEST_LOCATOR_CHARS
+    if isinstance(value, list):
+        return len(value) <= MAX_CPDR_MANIFEST_LOCATOR_ITEMS and all(
+            _manifest_locator_is_bounded(item, depth=depth + 1, remaining=remaining) for item in value
+        )
+    if isinstance(value, dict):
+        return len(value) <= MAX_CPDR_MANIFEST_LOCATOR_ITEMS and all(
+            isinstance(key, str)
+            and len(key) <= MAX_CPDR_MANIFEST_FIELD_CHARS
+            and _manifest_locator_is_bounded(item, depth=depth + 1, remaining=remaining)
+            for key, item in value.items()
+        )
+    return False
+
+
+def _manifest_text_is_bounded(value: Any, limit: int) -> bool:
+    return isinstance(value, str) and len(value) <= limit
+
+
+def _build_cpdr_envelope(
+    typed_payload: dict[str, Any],
+    confidence: dict[str, Any],
+    filename: str,
+    markdown: str,
+    build_id: str,
+    approved_plan_hash: str,
+    source_set: dict[str, Any],
+    upstream_artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "caos.cpdr.artifact.v1",
+        "module_id": "CP-DR",
+        "transport": typed_payload,
+        "host_confidence": copy.deepcopy(confidence),
+        "canonical_output": {
+            "filename": filename,
+            "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+        },
+        "methodology": {"build_id": build_id, "approved_plan_hash": approved_plan_hash},
+        "source_set": {
+            "id": source_set["id"],
+            "version": source_set["version"],
+            "digest": digest(source_set),
+        },
+        "upstream_artifacts": upstream_artifacts,
+    }
+
+
+class _LeaseFence:
+    def __init__(self) -> None:
+        self.lost = threading.Event()
+        self.lock = threading.Lock()
+
+    def call(self, method: Any, *args: Any, **kwargs: Any) -> Any:
+        with self.lock:
+            if self.lost.is_set():
+                raise JobFencedError("lost workflow lease")
+            return method(*args, **kwargs)
+
+    def lose(self) -> None:
+        with self.lock:
+            self.lost.set()
 
 
 class WorkflowError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class _PlanningPause(Exception):
+    research: dict[str, Any]
 
 
 class WorkflowRuntime:
@@ -27,29 +127,60 @@ class WorkflowRuntime:
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="caos-worker")
         # ponytail: process-local cap; add a DB reservation when multi-worker capacity needs a measured global budget.
         self._node_slots = threading.BoundedSemaphore(4)
+        # ponytail: process-local cap; add a durable global reservation before running more than one worker process.
+        self._cpdr_provider_slots = threading.BoundedSemaphore(2)
         self._futures: dict[str, Future[Any]] = {}
         self._futures_lock = threading.Lock()
 
     def close(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
-    def start_run(self, case_id: str, actor: str, pathway: str, depth: Depth, focus_questions: list[str], upgraded_from_run_id: str | None = None) -> dict[str, Any]:
+    def start_run(self, case_id: str, actor: str, pathway: str, depth: Depth, focus_questions: list[str], research_brief: dict[str, Any] | None = None, upgraded_from_run_id: str | None = None) -> dict[str, Any]:
         source_set = current_source_set(self.store, case_id)
         plan = self.bundle.compile(pathway, depth, source_set["id"] if source_set else None, focus_questions, source_set["version"] if source_set else None)
         run = self.store.create_run(case_id, actor, plan, [], upgraded_from_run_id)
+        if pathway == "DEEP_RESEARCH":
+            case = self.store.get_case(case_id)
+            if not case or research_brief is None:
+                raise WorkflowError("RESEARCH_BRIEF_REQUIRED")
+            brief = {
+                **copy.deepcopy(research_brief),
+                "scope_type": "issuer",
+                "scope_key": case_id.replace("_", "-"),
+                "subject_name": case["issuer"],
+                "source_mode": "supplied_only",
+                "research_budget": "standard",
+                "plan_approval": "required",
+            }
+            budget_limits = {"turns": 8, "evidence_reads": 12, "evidence_bytes": 1024 * 1024, "input_tokens": 100_000, "output_tokens": 8_000, "active_minutes": 3, "provider_retries": 1, "repairs": 1}
+            self.store.update_run(run["id"], research={
+                "brief": brief,
+                "phase": "planning",
+                "proposed_plan": None,
+                "proposed_plan_hash": None,
+                "approved_plan_hash": None,
+                "approved_by": None,
+                "approved_at": None,
+                "model": self.settings.anthropic_model,
+                "budget_limits": budget_limits,
+                "budget_used": {key: 0 for key in budget_limits},
+                "inflight_request_digest": None,
+                "attempts": [],
+            })
         node_records = []
         logical_ids: dict[str, str] = {}
         for plan_node in plan["nodes"]:
             node = self.store.add_node(run["id"], case_id, plan_node["module_id"], plan_node["dependencies"], plan_node["stage"])
             node_records.append(node)
             logical_ids[plan_node["module_id"]] = node["id"]
-        self.store.update_run(run["id"], node_ids=[node["id"] for node in node_records])
+        runnable = bool(source_set and source_set["source_ids"])
+        empty_source_error = None if runnable else {"code": "SOURCE_SET_EMPTY", "message": "Upload and version source material before execution."}
+        self.store.update_run(run["id"], node_ids=[node["id"] for node in node_records], status="queued" if runnable else "paused", error=empty_source_error)
         with self.store.lock:
             self.store.cases[case_id]["current_execution_id"] = run["id"]
             self.store.persist()
         self.store.emit(run["id"], "run.created", {"run_id": run["id"], "plan_digest": plan["plan_digest"], "profile_id": plan["profile_id"], "selection_id": plan["selection_id"]})
-        if not source_set or not source_set["source_ids"]:
-            self.store.update_run(run["id"], status="paused", error={"code": "SOURCE_SET_EMPTY", "message": "Upload and version source material before execution."})
+        if not runnable:
             self.store.emit(run["id"], "run.paused", {"code": "SOURCE_SET_EMPTY"})
         elif self.settings.environment != "production":
             future = self.executor.submit(self._execute, run["id"], actor)
@@ -62,57 +193,266 @@ class WorkflowRuntime:
         attempt_token = self.store.claim_job(run_id, worker)
         if not attempt_token:
             return
+        heartbeat_stop = threading.Event()
+        lease_fence = _LeaseFence()
+
+        def fenced_call(method: Any, *args: Any, **kwargs: Any) -> Any:
+            return lease_fence.call(method, run_id, attempt_token, *args, **kwargs)
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(HEARTBEAT_INTERVAL_SECONDS):
+                try:
+                    if self.store.renew_job(run_id, attempt_token):
+                        continue
+                except Exception:
+                    pass
+                lease_fence.lose()
+                return
+
+        def lease_check() -> None:
+            if lease_fence.lost.is_set() or not self.store.job_is_current(run_id, attempt_token):
+                raise JobFencedError("lost workflow lease")
+
+        def charge_final_cpdr_work(elapsed: float) -> tuple[dict[str, Any], bool]:
+            current = self.store.get_run(run_id) or {}
+            research = copy.deepcopy(current.get("research") or {})
+            used = research.get("budget_used") or {}
+            limit = (research.get("budget_limits") or {}).get("active_minutes", 3)
+            used["active_minutes"] = used.get("active_minutes", 0) + max(0.0, elapsed) / 60
+            research["budget_used"] = used
+            fenced_call(self.store.update_run_fenced, research=research)
+            return research, used["active_minutes"] >= limit
+
+        def reserve_cpdr_finalization() -> tuple[dict[str, Any], bool]:
+            current = self.store.get_run(run_id) or {}
+            research = copy.deepcopy(current.get("research") or {})
+            used = research.get("budget_used") or {}
+            limit = (research.get("budget_limits") or {}).get("active_minutes", 3)
+            used["active_minutes"] = used.get("active_minutes", 0) + CPDR_FINALIZATION_ALLOWANCE_SECONDS / 60
+            research["budget_used"] = used
+            fenced_call(self.store.update_run_fenced, research=research)
+            return research, used["active_minutes"] >= limit
+
+        def fail_final_cpdr(node: dict[str, Any], research: dict[str, Any], code: str) -> None:
+            research["phase"] = "failed"
+            if research.get("attempts"):
+                research["attempts"][-1]["terminal_code"] = code
+            error = {
+                "code": code,
+                "module_id": "CP-DR",
+                "message": "CP-DR agent execution failed.",
+            }
+            fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
+            fenced_call(
+                self.store.update_run_fenced,
+                status="failed",
+                current_node_id=None,
+                error=error,
+                research=research,
+            )
+            fenced_call(
+                self.store.emit_fenced,
+                "node.failed",
+                {"node_id": node["id"], "module_id": "CP-DR", "code": code},
+            )
+            fenced_call(
+                self.store.emit_fenced,
+                "run.failed",
+                {"code": code, "module_id": "CP-DR"},
+            )
+
+        heartbeat_thread = threading.Thread(target=heartbeat, name=f"{worker}-heartbeat", daemon=True)
+        heartbeat_thread.start()
         try:
-            self.store.update_run_fenced(run_id, attempt_token, status="running", error=None)
-            self.store.emit(run_id, "run.running", {"run_id": run_id, "worker": worker})
+            fenced_call(self.store.update_run_fenced, status="running", error=None)
+            fenced_call(self.store.emit_fenced, "run.running", {"run_id": run_id, "worker": worker})
             while True:
-                if not self.store.job_is_current(run_id, attempt_token):
+                if lease_fence.lost.is_set() or not self.store.job_is_current(run_id, attempt_token):
                     return
                 run = self.store.get_run(run_id)
-                if not run:
+                if lease_fence.lost.is_set() or not run:
                     return
                 pending = [node for node in run["nodes"] if node["status"] in {"pending", "ready"}]
                 completed = {node["module_id"] for node in run["nodes"] if node["status"] == "succeeded"}
                 if not pending:
-                    self.store.update_run_fenced(run_id, attempt_token, status="succeeded", current_node_id=None)
-                    self.store.emit(run_id, "run.succeeded", {"run_id": run_id})
+                    blocked = False
+                    cpdr_node = None
+                    for node in run["nodes"]:
+                        artifact_id = node.get("artifact_id")
+                        artifact = self.store.get_artifact(artifact_id) if artifact_id else None
+                        if (
+                            node.get("status") != "succeeded"
+                            or not artifact
+                            or artifact.get("run_id") != run_id
+                            or artifact.get("module_id") != node.get("module_id")
+                        ):
+                            blocked = True
+                            continue
+                        if node.get("module_id") == "CP-DR":
+                            cpdr_node = node
+                            validation_started = time.monotonic()
+                            valid = cpdr_artifact_is_valid(self.store, run, node, artifact, self.bundle)
+                            research, exceeded = charge_final_cpdr_work(time.monotonic() - validation_started)
+                            run["research"] = research
+                            if exceeded:
+                                fail_final_cpdr(node, research, "AGENT_BUDGET_EXCEEDED")
+                                return
+                            blocked = blocked or not valid
+                    if blocked:
+                        fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "Planned nodes are incomplete or missing artifacts."})
+                        fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
+                        return
+                    if cpdr_node is not None:
+                        finalization_deadline = None
+                        try:
+                            research, exceeded = reserve_cpdr_finalization()
+                        except JobFencedError:
+                            raise
+                        except AgentError as exc:
+                            fail_final_cpdr(cpdr_node, copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {}), exc.code)
+                            return
+                        except Exception:
+                            fail_final_cpdr(
+                                cpdr_node,
+                                copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {}),
+                                "AGENT_OUTPUT_INVALID",
+                            )
+                            return
+                        if exceeded:
+                            fail_final_cpdr(cpdr_node, research, "AGENT_BUDGET_EXCEEDED")
+                            return
+                        finalization_deadline = time.monotonic() + CPDR_FINALIZATION_ALLOWANCE_SECONDS
+                    else:
+                        research = None
+                        finalization_deadline = None
+                    try:
+                        fenced_call(
+                            self.store.finalize_run_success_fenced,
+                            research,
+                            {"run_id": run_id},
+                            **({"deadline": finalization_deadline} if finalization_deadline is not None else {}),
+                        )
+                    except JobFencedError:
+                        raise
+                    except TimeoutError:
+                        if cpdr_node is not None:
+                            fail_final_cpdr(cpdr_node, research or {}, "AGENT_BUDGET_EXCEEDED")
+                            return
+                        raise
+                    except AgentError as exc:
+                        if cpdr_node is not None:
+                            fail_final_cpdr(cpdr_node, research or {}, exc.code)
+                            return
+                        raise
+                    except Exception:
+                        if cpdr_node is not None:
+                            fail_final_cpdr(cpdr_node, research or {}, "AGENT_OUTPUT_INVALID")
+                            return
+                        raise
                     return
                 ready = [node for node in pending if set(node["dependencies"]).issubset(completed)]
                 if not ready:
-                    self.store.update_run_fenced(run_id, attempt_token, status="failed", error={"code": "DAG_BLOCKED", "message": "No dependency-safe ready nodes remain."})
-                    self.store.emit(run_id, "run.failed", {"code": "DAG_BLOCKED"})
+                    fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "No dependency-safe ready nodes remain."})
+                    fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
                     return
                 for node in ready:
-                    self.store.update_node_fenced(run_id, attempt_token, node["id"], status="running", attempt=node["attempt"] + 1)
-                    self.store.emit(run_id, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
+                    fenced_call(self.store.update_node_fenced, node["id"], status="running", attempt=node["attempt"] + 1)
+                    fenced_call(self.store.emit_fenced, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
                 with ThreadPoolExecutor(max_workers=min(4, len(ready)), thread_name_prefix="caos-node") as pool:
-                    futures = {pool.submit(self._build_artifact_with_slot, run, node, actor): node for node in ready}
+                    futures = {pool.submit(self._build_artifact_with_slot, run, node, actor, fenced_call, lease_check): node for node in ready}
                     for future, node in ((future, futures[future]) for future in futures):
                         try:
-                            artifact = self.store.put_artifact_fenced(run_id, attempt_token, future.result())
+                            artifact_data = future.result()
+                            completion_active_time = artifact_data.pop("_completion_active_time", None)
+                            if lease_fence.lost.is_set():
+                                return
+                            completion_research = None
+                            if node["module_id"] == "CP-DR":
+                                completion_research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                                completion_research["phase"] = "complete"
+                            artifact_validator = None
+                            if node["module_id"] == "CP-DR":
+                                def artifact_validator(candidate: dict[str, Any]) -> bool:
+                                    return cpdr_artifact_is_valid(self.store, run, node, candidate, self.bundle)
+                            completion_started = time.monotonic()
+                            try:
+                                artifact = fenced_call(
+                                    self.store.complete_node_fenced,
+                                    node["id"],
+                                    artifact_data,
+                                    completion_research,
+                                    artifact_validator,
+                                )
+                            finally:
+                                if completion_active_time is not None:
+                                    completion_active_time(max(0.0, time.monotonic() - completion_started))
                         except JobFencedError:
                             return
-                        except Exception as exc:
+                        except _PlanningPause as outcome:
+                            if lease_fence.lost.is_set():
+                                return
                             try:
-                                self.store.update_node_fenced(run_id, attempt_token, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
-                                self.store.update_run_fenced(run_id, attempt_token, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
+                                fenced_call(self.store.pause_research_plan_fenced, node["id"], outcome.research)
+                                fenced_call(self.store.emit_fenced, "research.plan_ready", {"plan_hash": outcome.research["proposed_plan_hash"]})
+                                fenced_call(self.store.emit_fenced, "run.paused", {"code": "PLAN_APPROVAL_REQUIRED"})
                             except JobFencedError:
                                 return
-                            self.store.emit(run_id, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
-                            self.store.emit(run_id, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
                             return
-                        self.store.update_node_fenced(run_id, attempt_token, node["id"], status="succeeded", artifact_id=artifact["id"], error=None)
-                        self.store.emit(run_id, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
+                        except AgentError as exc:
+                            if lease_fence.lost.is_set():
+                                return
+                            research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                            research["phase"] = "failed"
+                            if node["module_id"] == "CP-DR" and research.get("attempts"):
+                                research["attempts"][-1]["terminal_code"] = exc.code
+                            error = {"code": exc.code, "module_id": node["module_id"], "message": "CP-DR agent execution failed."}
+                            try:
+                                fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
+                                fenced_call(self.store.update_run_fenced, status="failed", error=error, research=research)
+                                fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "code": exc.code})
+                                fenced_call(self.store.emit_fenced, "run.failed", {"code": exc.code, "module_id": node["module_id"]})
+                            except JobFencedError:
+                                return
+                            return
+                        except Exception as exc:
+                            if lease_fence.lost.is_set():
+                                return
+                            if node["module_id"] == "CP-DR":
+                                research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                                research["phase"] = "failed"
+                                if research.get("attempts"):
+                                    research["attempts"][-1]["terminal_code"] = "AGENT_OUTPUT_INVALID"
+                                error = {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR", "message": "CP-DR agent execution failed."}
+                                try:
+                                    fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
+                                    fenced_call(self.store.update_run_fenced, status="failed", error=error, research=research)
+                                    fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": "CP-DR", "code": "AGENT_OUTPUT_INVALID"})
+                                    fenced_call(self.store.emit_fenced, "run.failed", {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR"})
+                                except JobFencedError:
+                                    return
+                                return
+                            try:
+                                fenced_call(self.store.update_node_fenced, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
+                                fenced_call(self.store.update_run_fenced, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
+                            except JobFencedError:
+                                return
+                            fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
+                            fenced_call(self.store.emit_fenced, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
+                            return
+                        fenced_call(self.store.emit_fenced, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
         except JobFencedError:
             return
         finally:
-            self.store.finish_job(run_id, attempt_token)
+            heartbeat_stop.set()
+            heartbeat_thread.join()
+            if not lease_fence.lost.is_set():
+                self.store.finish_job(run_id, attempt_token)
 
-    def _build_artifact_with_slot(self, run: dict[str, Any], node: dict[str, Any], actor: str) -> dict[str, Any]:
+    def _build_artifact_with_slot(self, run: dict[str, Any], node: dict[str, Any], actor: str, fenced_call: Any | None = None, lease_check: Any | None = None) -> dict[str, Any]:
         with self._node_slots:
-            return self._build_artifact(run, node, actor)
+            return self._build_artifact(run, node, actor, fenced_call, lease_check)
 
-    def _build_artifact(self, run: dict[str, Any], node: dict[str, Any], actor: str) -> dict[str, Any]:
+    def _build_artifact(self, run: dict[str, Any], node: dict[str, Any], actor: str, fenced_call: Any | None = None, lease_check: Any | None = None) -> dict[str, Any]:
         plan = run["plan"]
         source_set = self.store.source_set_by_id(plan.get("source_set_id"))
         if not source_set:
@@ -126,6 +466,51 @@ class WorkflowRuntime:
                 raise WorkflowError("UPSTREAM_ARTIFACT_MISSING")
             upstream_artifacts.append({"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]})
         input_fingerprint = digest({"plan": plan["plan_digest"], "module": node["module_id"], "source_set": source_set, "source_ids": source_ids, "upstream_artifacts": upstream_artifacts})
+        if node["module_id"] == "CP-DR":
+            research = copy.deepcopy(run.get("research"))
+            if not research:
+                raise WorkflowError("RESEARCH_BRIEF_REQUIRED")
+
+            def charge_reuse_time(elapsed: float) -> None:
+                if fenced_call is None or lease_check is None:
+                    return
+                lease_check()
+                latest = self.store.get_run(run["id"])
+                latest_research = copy.deepcopy((latest or {}).get("research") or research)
+                used = latest_research["budget_used"]
+                used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
+                fenced_call(self.store.update_run_fenced, research=latest_research)
+                if used["active_minutes"] >= latest_research["budget_limits"]["active_minutes"]:
+                    raise AgentError("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+            existing = self.store.artifact_for_fingerprint(run["id"], node["module_id"], input_fingerprint)
+            existing_valid = False
+            if existing and research.get("phase") in {"approved", "researching", "complete"}:
+                validation_started = time.monotonic()
+                try:
+                    existing_valid = cpdr_artifact_is_valid(self.store, run, node, existing, self.bundle)
+                finally:
+                    charge_reuse_time(max(0.0, time.monotonic() - validation_started))
+            if existing_valid:
+                recovered = copy.deepcopy(existing)
+                recovered["_completion_active_time"] = charge_reuse_time
+                return recovered
+            if research.get("phase") == "planning":
+                planning_started = time.monotonic()
+                proposed_plan, proposed_plan_hash = self.bundle.plan_research(research["brief"], source_set["id"], source_set["version"], upstream_artifacts)
+                used = research["budget_used"]
+                used["active_minutes"] += (time.monotonic() - planning_started) / 60
+                if used["active_minutes"] > research["budget_limits"]["active_minutes"]:
+                    if fenced_call is not None:
+                        fenced_call(self.store.update_run_fenced, research=research)
+                    raise AgentError("AGENT_BUDGET_EXCEEDED", "active worker time exhausted during planning")
+                research.update(phase="awaiting_approval", proposed_plan=proposed_plan, proposed_plan_hash=proposed_plan_hash)
+                raise _PlanningPause(research)
+            if research.get("phase") in {"approved", "researching"}:
+                if fenced_call is None or lease_check is None:
+                    raise JobFencedError("missing fenced CP-DR execution context")
+                return self._execute_cpdr(run, node, actor, source_set, source_ids, upstream_artifacts, input_fingerprint, research, fenced_call, lease_check)
+            raise WorkflowError("CP_DR_RESEARCH_PHASE_INVALID")
         model_blocked = node["module_id"] in {"CP-2G", "CP-MODEL"}
         visual_kind = {
             "CP-L10": "variance_bridge",
@@ -180,6 +565,460 @@ class WorkflowRuntime:
         }
         return artifact
 
+    def _execute_cpdr(
+        self,
+        run: dict[str, Any],
+        node: dict[str, Any],
+        actor: str,
+        source_set: dict[str, Any],
+        source_ids: list[str],
+        upstream_artifacts: list[dict[str, Any]],
+        input_fingerprint: str,
+        research: dict[str, Any],
+        fenced_call: Any,
+        lease_check: Any,
+    ) -> dict[str, Any]:
+        active_checkpoint = time.monotonic()
+
+        def persist_research() -> None:
+            lease_check()
+            fenced_call(self.store.update_run_fenced, research=copy.deepcopy(research))
+
+        def fail(code: str, message: str) -> None:
+            raise AgentError(code, message)
+
+        try:
+            self.bundle.verify()
+        except MethodologyError as exc:
+            raise AgentError("AGENT_AUTHORITY_MISMATCH", "Deploy V integrity failure") from exc
+        if not self.settings.cpdr_agent_enabled:
+            fail("AGENT_PROVIDER_UNAVAILABLE", "CP-DR agent is disabled")
+        if run["case_id"] not in self.settings.cpdr_pilot_case_ids and run["created_by"] not in self.settings.cpdr_pilot_subjects:
+            fail("AGENT_PROVIDER_UNAVAILABLE", "CP-DR run is outside the pilot allowlist")
+        if not self.settings.anthropic_api_key:
+            fail("AGENT_PROVIDER_UNAVAILABLE", "ANTHROPIC_API_KEY is not configured")
+        if research.get("inflight_request_digest"):
+            fail("AGENT_BUDGET_EXCEEDED", "unresolved provider request from a prior lease")
+        approved_plan = research.get("proposed_plan")
+        approved_hash = research.get("approved_plan_hash")
+        if not isinstance(approved_plan, dict) or approved_hash != f"sha256:{digest(approved_plan)}" or approved_hash != research.get("proposed_plan_hash"):
+            fail("AGENT_AUTHORITY_MISMATCH", "approved plan hash mismatch")
+        expected_upstream = [
+            {"module_id": item["module_id"], "artifact_id": item["artifact_id"], "digest": item["digest"]}
+            for item in upstream_artifacts
+        ]
+        expected_scope = {
+            "type": research["brief"].get("scope_type"),
+            "key": research["brief"].get("scope_key"),
+            "source_mode": research["brief"].get("source_mode"),
+        }
+        if (
+            approved_plan.get("methodology_build_id") != self.bundle.build_id
+            or approved_plan.get("brief_digest") != digest(research["brief"])
+            or approved_plan.get("scope") != expected_scope
+            or approved_plan.get("upstream_artifacts") != expected_upstream
+        ):
+            fail("AGENT_AUTHORITY_MISMATCH", "approved plan authority changed")
+        if research.get("model") != self.settings.anthropic_model:
+            fail("AGENT_AUTHORITY_MISMATCH", "model identity mismatch")
+        current = current_source_set(self.store, run["case_id"])
+        planned_source = approved_plan.get("source_set")
+        if not current or not isinstance(planned_source, dict) or (current.get("id"), current.get("version")) != (source_set.get("id"), source_set.get("version")) or (source_set.get("id"), source_set.get("version")) != (planned_source.get("id"), planned_source.get("version")):
+            fail("AGENT_AUTHORITY_MISMATCH", "source-set identity mismatch")
+        cp0 = next((item for item in upstream_artifacts if item["module_id"] == "CP-0"), None)
+        cp0_artifact = self.store.get_artifact(cp0["artifact_id"]) if cp0 else None
+        cp0_payload = (cp0_artifact or {}).get("payload") or {}
+        cp0_lineage = cp0_payload.get("lineage") or {}
+        if not cp0_artifact or cp0_payload.get("status") != "COMPLETE" or cp0_lineage.get("run_id") != run["id"] or cp0_lineage.get("source_set_id") != source_set["id"]:
+            fail("AGENT_AUTHORITY_MISMATCH", "accepted CP-0 lineage is missing or mismatched")
+
+        limits = research["budget_limits"]
+        used = research["budget_used"]
+        returned_evidence: dict[tuple[str, str], dict[str, str]] = {}
+        authority_digest = ""
+        prompt_digest = ""
+
+        def check_budget() -> None:
+            lease_check()
+            if used.get("active_minutes", 0) >= limits["active_minutes"]:
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+        def add_active_time(elapsed: float) -> None:
+            nonlocal active_checkpoint
+            lease_check()
+            used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
+            active_checkpoint = time.monotonic()
+            persist_research()
+            if used["active_minutes"] >= limits["active_minutes"]:
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+        def run_host_operation(operation: Any) -> Any:
+            started = time.monotonic()
+            try:
+                return operation()
+            finally:
+                add_active_time(max(0.0, time.monotonic() - started))
+
+        def charge_active_checkpoint() -> None:
+            nonlocal active_checkpoint
+            current = time.monotonic()
+            elapsed = max(0.0, current - active_checkpoint)
+            active_checkpoint = current
+            if elapsed:
+                used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
+                persist_research()
+            if used["active_minutes"] >= limits["active_minutes"]:
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+        def remaining_active_time() -> float:
+            charge_active_checkpoint()
+            remaining = limits["active_minutes"] * 60 - used["active_minutes"] * 60
+            if remaining <= 0:
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+            return min(float(self.settings.anthropic_timeout_seconds), remaining)
+
+        base_attempt = {
+            "run_id": run["id"],
+            "node_id": node["id"],
+            "attempt": node["attempt"] + 1,
+            "model": research["model"],
+            "approved_plan_hash": approved_hash,
+            "authority_digest": authority_digest,
+            "prompt_digest": prompt_digest,
+            "source_set_digest": digest(source_set),
+            "upstream_digest": digest([item["digest"] for item in upstream_artifacts]),
+        }
+
+        def record(kind: str, **details: Any) -> None:
+            allowed: dict[str, Any] = {}
+            for key, value in details.items():
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    allowed[key] = value[:200] if isinstance(value, str) else value
+                elif isinstance(value, list) and len(value) <= 50 and all(isinstance(item, str) and len(item) <= 160 for item in value):
+                    allowed[key] = list(value)
+            if kind == "terminal":
+                if research["attempts"]:
+                    research["attempts"][-1].update(allowed)
+                else:
+                    research["attempts"].append({**base_attempt, "kind": "terminal", **allowed})
+                persist_research()
+                return
+            check_budget()
+            if kind == "provider_retry":
+                if used["provider_retries"] + 1 > limits["provider_retries"]:
+                    fail("AGENT_BUDGET_EXCEEDED", "provider retry budget exhausted")
+                used["provider_retries"] += 1
+            if kind == "repair_reserve":
+                if used["repairs"] + 1 > limits["repairs"]:
+                    fail("AGENT_BUDGET_EXCEEDED", "repair budget exhausted")
+                used["repairs"] += 1
+            if len(research["attempts"]) >= 50:
+                fail("AGENT_BUDGET_EXCEEDED", "attempt metadata budget exhausted")
+            research["attempts"].append({**base_attempt, "kind": kind[:40], **allowed})
+            persist_research()
+
+        def reserve(request_digest: str, input_tokens: int, output_tokens: int, retry: bool) -> None:
+            charge_active_checkpoint()
+            check_budget()
+            inflight = research.get("inflight_request_digest")
+            if inflight and (not retry or inflight != request_digest):
+                fail("AGENT_BUDGET_EXCEEDED", "unresolved or changed in-flight request")
+            for key, amount in (("turns", 1), ("input_tokens", input_tokens), ("output_tokens", output_tokens)):
+                if used[key] + amount > limits[key]:
+                    fail("AGENT_BUDGET_EXCEEDED", f"{key} budget exhausted")
+            used["turns"] += 1
+            used["input_tokens"] += input_tokens
+            used["output_tokens"] += output_tokens
+            research["inflight_request_digest"] = request_digest
+            persist_research()
+
+        def reconcile(request_digest: str, reserved_input: int, reserved_output: int, actual_input: int, actual_output: int) -> None:
+            lease_check()
+            if research.get("inflight_request_digest") != request_digest:
+                fail("AGENT_AUTHORITY_MISMATCH", "in-flight request digest mismatch")
+            used["input_tokens"] += actual_input - reserved_input
+            used["output_tokens"] += actual_output - reserved_output
+            research["inflight_request_digest"] = None
+            persist_research()
+            if used["input_tokens"] > limits["input_tokens"] or used["output_tokens"] > limits["output_tokens"]:
+                fail("AGENT_BUDGET_EXCEEDED", "actual token usage exceeded the run budget")
+
+        source_manifest: list[dict[str, Any]] = []
+        manifest_bytes = 2
+        manifest_blocks = 0
+        with self.store.lock:
+            for source_id in source_ids:
+                source = self.store.sources.get(source_id)
+                if not source or source.get("case_id") != run["case_id"] or source.get("withdrawn"):
+                    fail("AGENT_AUTHORITY_MISMATCH", "pinned source is unavailable")
+                blocks = source.get("blocks") or []
+                source_digest = source.get("sha256")
+                if (
+                    not isinstance(source_digest, str)
+                    or len(source_digest) != 64
+                    or any(character not in "0123456789abcdef" for character in source_digest)
+                ):
+                    fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
+                filename = source.get("filename", source_id)
+                media_type = source.get("media_type", "application/octet-stream")
+                if (
+                    not _manifest_text_is_bounded(source_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                    or not _manifest_text_is_bounded(filename, MAX_CPDR_MANIFEST_FILENAME_CHARS)
+                    or not _manifest_text_is_bounded(media_type, MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS)
+                ):
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
+                manifest_source = {
+                    "source_id": source_id,
+                    "digest": source_digest,
+                    "filename": filename,
+                    "media_type": media_type,
+                    "blocks": [],
+                }
+                encoded_empty_source = json.dumps(manifest_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                source_bytes = len(encoded_empty_source.encode("utf-8"))
+                for block in blocks:
+                    manifest_blocks += 1
+                    if manifest_blocks > MAX_CPDR_MANIFEST_BLOCKS:
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest block ceiling exceeded")
+                    if not isinstance(block, dict):
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest block is invalid")
+                    block_id = block.get("block_id")
+                    locator = block.get("locator")
+                    extractor_version = block.get("extractor_version")
+                    confidence = block.get("confidence")
+                    if (
+                        not _manifest_text_is_bounded(block_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                        or not _manifest_locator_is_bounded(locator)
+                        or not _manifest_text_is_bounded(extractor_version, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                        or not _manifest_text_is_bounded(confidence, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                    ):
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
+                    manifest_block = {
+                        "block_id": block_id,
+                        "locator": locator,
+                        "extractor_version": extractor_version,
+                        "confidence": confidence,
+                    }
+                    encoded_block = json.dumps(manifest_block, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                    source_bytes += len(encoded_block.encode("utf-8")) + (1 if manifest_source["blocks"] else 0)
+                    if manifest_bytes + source_bytes + (1 if source_manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
+                        fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
+                    manifest_source["blocks"].append(manifest_block)
+                if manifest_bytes + source_bytes + (1 if source_manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
+                manifest_bytes += source_bytes + (1 if source_manifest else 0)
+                source_manifest.append(manifest_source)
+        charge_active_checkpoint()
+
+        def read_evidence(source_id: str, block_ids: list[str]) -> list[dict[str, Any]]:
+            check_budget()
+            if not block_ids or len(block_ids) > 50 or len(block_ids) != len(set(block_ids)):
+                fail("AGENT_OUTPUT_INVALID", "evidence block IDs must be unique and bounded")
+            if used["evidence_reads"] + 1 > limits["evidence_reads"]:
+                fail("AGENT_BUDGET_EXCEEDED", "evidence read budget exhausted")
+            with self.store.lock:
+                pinned = self.store.source_set_by_id(source_set["id"])
+                source = self.store.sources.get(source_id)
+                if not pinned or source_id not in pinned["source_ids"]:
+                    fail("AGENT_AUTHORITY_MISMATCH", "source is not pinned to this run")
+                if not source or source.get("case_id") != run["case_id"]:
+                    fail("AGENT_AUTHORITY_MISMATCH", "cross-case evidence read")
+                if source.get("withdrawn"):
+                    fail("AGENT_AUTHORITY_MISMATCH", "withdrawn evidence source")
+                source_blocks = source.get("blocks") or []
+                by_id = {block.get("block_id"): block for block in source_blocks}
+                if len(by_id) != len(source_blocks) or any(block_id not in by_id for block_id in block_ids):
+                    fail("AGENT_OUTPUT_INVALID", "evidence block is absent")
+                source_digest = source.get("sha256")
+                if (
+                    not isinstance(source_digest, str)
+                    or len(source_digest) != 64
+                    or any(character not in "0123456789abcdef" for character in source_digest)
+                ):
+                    fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
+                result = [
+                    {
+                        "source_id": source_id,
+                        "source_digest": source_digest,
+                        "origin_family": source_digest,
+                        "authority_class": "unclassified",
+                        "block_id": block_id,
+                        "locator": by_id[block_id].get("locator"),
+                        "extractor_version": by_id[block_id].get("extractor_version"),
+                        "confidence": by_id[block_id].get("confidence"),
+                        "text": by_id[block_id].get("text", ""),
+                    }
+                    for block_id in block_ids
+                ]
+            returned_bytes = len(json.dumps(result, sort_keys=True).encode("utf-8"))
+            if used["evidence_bytes"] + returned_bytes > limits["evidence_bytes"]:
+                fail("AGENT_BUDGET_EXCEEDED", "evidence byte budget exhausted")
+            used["evidence_reads"] += 1
+            used["evidence_bytes"] += returned_bytes
+            returned_evidence.update(
+                {
+                    (source_id, item["block_id"]): {
+                        "source_digest": source_digest,
+                        "origin_family": source_digest,
+                        "authority_class": "unclassified",
+                        "locator": json.dumps(item["locator"], sort_keys=True, separators=(",", ":")),
+                        "extractor_version": str(item["extractor_version"]),
+                        "confidence": str(item["confidence"]),
+                    }
+                    for item in result
+                }
+            )
+            persist_research()
+            record("evidence", tool_name="read_evidence", source_id=source_id, block_ids=block_ids)
+            return result
+
+        host_identity = {
+            "module_id": "CP-DR",
+            "run_id": run["id"],
+            "case_id": run["case_id"],
+            "profile_id": run["plan"]["profile_id"],
+            "selection_id": run["plan"]["selection_id"],
+            "source_set_id": source_set["id"],
+            "source_set_version": source_set["version"],
+            "approved_plan_hash": approved_hash,
+            "upstream_digests": [item["digest"] for item in upstream_artifacts],
+            "scope_type": research["brief"]["scope_type"],
+            "scope_key": research["brief"]["scope_key"],
+            "subject_name": research["brief"]["subject_name"],
+            "research_question": research["brief"]["research_question"],
+            "reporting_period": research["brief"]["as_of_date"],
+            "source_mode": "supplied_only",
+        }
+        if approved_plan.get("brief_digest") != digest(research["brief"]):
+            fail("AGENT_AUTHORITY_MISMATCH", "approved brief changed before prompt compilation")
+        system, user = compile_cpdr_prompts(
+            self.bundle.cpdr_authority(),
+            host_identity,
+            research["brief"],
+            approved_plan,
+            source_manifest,
+            upstream_artifacts,
+        )
+        charge_active_checkpoint()
+        authority_digest = digest(system)
+        prompt_digest = digest(user)
+        base_attempt["authority_digest"] = authority_digest
+        base_attempt["prompt_digest"] = prompt_digest
+        approved_workstreams = {item["id"] for item in approved_plan["workstreams"]}
+
+        def validate(value: dict[str, Any]) -> Any:
+            try:
+                return validate_cpdr_payload(
+                    value,
+                    host_identity,
+                    approved_workstreams,
+                    returned_evidence,
+                    approved_plan,
+                    research["brief"],
+                )
+            except CPDRValidationError as exc:
+                if str(exc).startswith("host identity mismatch"):
+                    raise AgentError("AGENT_AUTHORITY_MISMATCH", "provider identity mismatch") from exc
+                raise
+
+        research["phase"] = "researching"
+        persist_research()
+        try:
+            gateway = AnthropicGateway(
+                self.settings.anthropic_api_key,
+                self.settings.anthropic_model,
+                self.settings.anthropic_timeout_seconds,
+            )
+        except ProviderUnavailable:
+            raise
+        payload = gateway.run(
+            system=system,
+            user=user,
+            read_evidence=read_evidence,
+            validate=validate,
+            lease_check=check_budget,
+            reserve=reserve,
+            reconcile=reconcile,
+            record=record,
+            active_time=add_active_time,
+            semaphore=self._cpdr_provider_slots,
+            remaining_time=remaining_active_time,
+        )
+        confidence = run_host_operation(lambda: self.bundle.cpdr_confidence(confidence_inputs(payload, returned_evidence)))
+        filename, markdown = run_host_operation(
+            lambda: render_cpdr_markdown(payload, confidence, run["created_at"][:10], upstream_artifacts)
+        )
+        validation = run_host_operation(
+            lambda: self.bundle.validate_cpdr_handoff(markdown, filename, run["id"], research["brief"]["as_of_date"])
+        )
+        if validation.identity_mismatches:
+            fail("AGENT_AUTHORITY_MISMATCH", "canonical handoff identity mismatch")
+        if validation.errors or validation.exit_code != 0:
+            fail("AGENT_OUTPUT_INVALID", "canonical handoff validation failed")
+        typed_payload = payload.model_dump(mode="json")
+        envelope = run_host_operation(
+            lambda: _build_cpdr_envelope(
+                typed_payload,
+                confidence,
+                filename,
+                markdown,
+                self.bundle.build_id,
+                approved_hash,
+                source_set,
+                expected_upstream,
+            )
+        )
+        record("handoff", output_digest=digest(envelope), filename=filename, confidence_score=confidence["confidence_score"])
+        charge_active_checkpoint()
+        research["phase"] = "complete"
+        return {
+            "id": self.store._id("art"),
+            "case_id": run["case_id"],
+            "run_id": run["id"],
+            "module_id": "CP-DR",
+            "created_by": actor,
+            "payload": envelope,
+            "markdown": markdown,
+            "filename": filename,
+            "digest": digest(envelope),
+            "input_fingerprint": input_fingerprint,
+            "created_at": run["created_at"],
+            "_completion_active_time": add_active_time,
+        }
+
+    def approve_research_plan(self, run_id: str, actor: str, plan_hash: str) -> dict[str, Any]:
+        with self.store.lock:
+            run = self.store.runs.get(run_id)
+            if not run:
+                raise WorkflowError("RUN_NOT_FOUND")
+            research = run.get("research")
+            if not research or research.get("phase") != "awaiting_approval" or (run.get("error") or {}).get("code") != "PLAN_APPROVAL_REQUIRED":
+                raise WorkflowError("PLAN_APPROVAL_NOT_AVAILABLE")
+            pending_hash = research.get("proposed_plan_hash")
+            if pending_hash != f"sha256:{digest(research.get('proposed_plan'))}" or plan_hash != pending_hash:
+                raise WorkflowError("PLAN_HASH_MISMATCH")
+            current = self.store.source_sets.get(run["case_id"])
+            pinned = research["proposed_plan"]["source_set"]
+            if not current or (current["id"], current["version"]) != (pinned["id"], pinned["version"]):
+                raise WorkflowError("SOURCE_SET_CHANGED")
+            prior_run = copy.deepcopy(run)
+            audit_start = len(self.store.audit)
+            research.update(approved_plan_hash=plan_hash, approved_by=actor, approved_at=now_iso(), phase="approved")
+            run.update(status="queued", error=None)
+            self.store.audit_event("research.plan_approved", actor, case_id=run["case_id"], run_id=run_id, plan_hash=plan_hash)
+            try:
+                self.store.persist()
+            except Exception:
+                self.store.runs[run_id] = prior_run
+                del self.store.audit[audit_start:]
+                raise
+        self.store.emit(run_id, "research.plan_approved", {"plan_hash": plan_hash, "approved_by": actor})
+        if self.settings.environment != "production":
+            future = self.executor.submit(self._execute, run_id, actor)
+            with self._futures_lock:
+                self._futures[run_id] = future
+        return self.store.get_run(run_id) or copy.deepcopy(run)
+
     def accept_run(self, case_id: str, run_id: str, actor: str) -> dict[str, Any]:
         with self.store.lock:
             run = self.store.runs.get(run_id)
@@ -192,7 +1031,7 @@ class WorkflowRuntime:
             full_run = self.store.get_run(run_id)
             assert full_run is not None
             try:
-                payload = build_snapshot_payload(self.store, full_run)
+                payload = build_snapshot_payload(self.store, full_run, self.bundle)
             except ValueError as exc:
                 raise WorkflowError(str(exc)) from exc
             snapshot = {
@@ -214,7 +1053,10 @@ class WorkflowRuntime:
 
     def stream_events(self, run_id: str, cursor: int = 0) -> Iterator[str]:
         while True:
-            events = self.store.wait_for_events(run_id, cursor, timeout=1.0)
+            self.store.refresh()
+            self.store.wait_for_events(run_id, cursor, timeout=1.0)
+            self.store.refresh()
+            events = self.store.events_after(run_id, cursor)
             if not events:
                 run = self.store.get_run(run_id)
                 if run and run["status"] in {"paused", "succeeded", "failed"}:
