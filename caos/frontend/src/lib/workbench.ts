@@ -67,7 +67,12 @@ export function workflowFor(destination: Destination): Workflow {
 }
 
 export function withQuery(path: string, values: Record<string, string | undefined>) {
-  const [pathname, rawQuery] = path.split("?");
+  const [route, rawQuery] = path.split("?");
+  // `trailingSlash: true` + `output: "export"` writes each route's client payload to
+  // `<route>/index.txt`. The router only requests that file when the pathname it holds
+  // ends in a slash; otherwise it requests `<route>.txt`, gets a 404, and degrades the
+  // transition into a full document load after it has already pushed the history entry.
+  const pathname = `${route.replace(/\/$/, "")}/`;
   const query = new URLSearchParams(rawQuery);
   for (const [key, value] of Object.entries(values)) {
     if (value) query.set(key, value);
