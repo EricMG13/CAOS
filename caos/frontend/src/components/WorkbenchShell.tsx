@@ -267,7 +267,7 @@ export default function WorkbenchShell({
               <option value="">Select case</option>
               {cases.map((item) => <option key={item.id} value={item.id}>{item.issuer} — {item.name}</option>)}
             </select>
-            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{!selectedCase ? "Sources" : authorityPending ? "Sources loading" : authorityStatus === "error" || selectedCase.source_count == null ? "Sources unavailable" : `${selectedCase.source_count} sources`}</button>
+            <button className="button small" type="button" disabled={!selectedCase} aria-controls="context-drawer" aria-expanded={drawer?.kind === "sources"} onClick={() => onDrawerChange({ kind: "sources" })}>{!selectedCase ? "Sources" : authorityPending ? "Sources loading" : authorityStatus === "error" || selectedCase.source_count == null ? "Sources unavailable" : `${selectedCase.source_count} ${selectedCase.source_count === 1 ? "source" : "sources"}`}</button>
             <button className="button small" type="button" disabled={!selectedCase} aria-label="QA unavailable — open QA status" aria-controls="context-drawer" aria-expanded={drawer?.kind === "qa"} onClick={() => onDrawerChange({ kind: "qa" })}>QA status</button>
             <button ref={triggerRef} className="button small" type="button" aria-label="Open command palette" onClick={openPalette}>Command <span className="shortcut">⌘K</span></button>
           </div>

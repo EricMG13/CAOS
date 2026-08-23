@@ -144,7 +144,7 @@ try {
   await page.keyboard.press("Escape");
   releaseAuthorityDetail();
   await page.getByRole("region", { name: "Accepted authority" }).getByText(/Source set v1/).waitFor();
-  const resolvedSourcesTrigger = page.getByRole("button", { name: "1 sources" });
+  const resolvedSourcesTrigger = page.getByRole("button", { name: "1 source", exact: true });
   await resolvedSourcesTrigger.click();
   await sourceDrawer.getByText("Current source count").waitFor();
   await page.getByRole("combobox", { name: "Select case" }).evaluate((element) => {
@@ -314,33 +314,7 @@ try {
     "evidence rail lists no artifacts for an accepted snapshot",
   );
 
-  await page.goto(`${baseURL}/cases/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
-  const registerMeta = page.locator(".cases-register .panel-meta");
-  const caseSearch = page.getByRole("searchbox", { name: "Search cases" });
-  await caseSearch.fill("zzzz-no-such-issuer");
-  await page.getByText("No cases match this search and filter.", { exact: true }).waitFor();
-  assert.ok(
-    (await registerMeta.innerText()).startsWith("0 of "),
-    "case register count did not follow the search filter",
-  );
-  await caseSearch.fill("");
-  const snapshotFilter = page.getByRole("combobox", { name: "Snapshot" });
-  await snapshotFilter.selectOption("accepted");
-  await page.locator(".cases-register tbody tr").first().waitFor();
-  await snapshotFilter.selectOption("all");
 
-  await page.goto(`${baseURL}/deep-dive/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
-  const caseContext = page.locator(".case-context");
-  await page.setViewportSize({ width: 720, height: 900 });
-  await caseContext.locator(".optional").waitFor({ state: "visible" });
-  await caseContext.locator(".mono").first().waitFor({ state: "visible" });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await caseContext.locator(".mono").first().waitFor({ state: "visible" });
-  assert.ok(
-    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    "topbar overflows horizontally at 390px",
-  );
-  await page.setViewportSize({ width: 1280, height: 720 });
 
   const commandQuestion = "Which evidence changes the downside case?";
   await page.evaluate(({ caseId, question }) => {
@@ -486,7 +460,12 @@ try {
   await page.evaluate((caseId) => window.sessionStorage.setItem(`caos-report-draft:${caseId}`, JSON.stringify({ evidenceIds: 17 })), caseRecord.id);
   await page.goto(`${baseURL}/report-studio/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Compose" }).waitFor();
-  await page.getByRole("heading", { name: "Paper proof" }).waitFor();
+  await page.getByRole("heading", { name: `${caseRecord.issuer} — ${caseRecord.name}` }).waitFor();
+  assert.equal(
+    await page.getByRole("heading", { name: "Paper proof", exact: true }).count(),
+    0,
+    "the filed sheet is still titled by the panel name rather than the case",
+  );
   assert.equal(await page.locator(".evidence-option", { hasText: "earnings.txt" }).count(), 1, "Report Studio omitted a case source from the evidence picker");
   assert.equal(await page.evaluate((caseId) => window.sessionStorage.getItem(`caos-report-draft:${caseId}`), caseRecord.id), null, "Report Studio retained an invalid local draft");
 
@@ -494,6 +473,24 @@ try {
   let freezePayload;
   const reportInputsPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/report-inputs`;
   const reportFreezePath = (url) => url.pathname === `/api/cases/${caseRecord.id}/reports/freeze`;
+  const reportsGetPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/reports`;
+  const frozenReportFixture = {
+    status: "PENDING_APPROVAL",
+    digest: "f3f75eb17981f75a3109fde54e2ad4e277928607e40421e633dc0af2e037dfe2",
+    snapshot_digest: "af8ea7238bea6e8472430ab7c711b0d33a87f078ec8a04a8aac740ad73a4c868",
+    markdown: [
+      "# CAOS Credit Snapshot",
+      "",
+      "Snapshot digest: `af8ea7238bea6e84`",
+      "",
+      "## Recommendation matrix",
+      "",
+      "| Instrument | Recommendation | Primary |",
+      "| --- | --- | --- |",
+      "| Northstar 1L 2029 | MARKET WEIGHT | Yes |",
+      "",
+    ].join("\n"),
+  };
   await page.route(reportInputsPath, async (route) => {
     reportInputPayload = route.request().postDataJSON();
     await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ thesis: { version: 101 }, recommendations: { version: 202 } }) });
@@ -501,6 +498,9 @@ try {
   await page.route(reportFreezePath, async (route) => {
     freezePayload = route.request().postDataJSON();
     await route.fulfill({ status: 201, contentType: "application/json", body: "{}" });
+  });
+  await page.route(reportsGetPath, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(frozenReportFixture) });
   });
   await page.getByRole("textbox", { name: "Core thesis" }).fill("Defensible test thesis");
   await page.getByRole("textbox", { name: "Primary instrument" }).fill("Northstar 1L 2029");
@@ -519,6 +519,7 @@ try {
   assert.deepEqual(freezePayload, { thesis_version: 101, recommendation_version: 202, include_model: false });
   await page.unroute(reportInputsPath);
   await page.unroute(reportFreezePath);
+  await page.unroute(reportsGetPath);
 
   const reportSourcesPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/sources`;
   await page.route(reportSourcesPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: "not-json" }));
@@ -582,6 +583,34 @@ try {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   assert.equal(overflow, false, "workbench causes page-level horizontal overflow at reflow width");
   assert.deepEqual(errors, []);
+
+  await page.goto(`${baseURL}/cases/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  const registerMeta = page.locator(".cases-register .panel-meta");
+  const caseSearch = page.getByRole("searchbox", { name: "Search cases" });
+  await caseSearch.fill("zzzz-no-such-issuer");
+  await page.getByText("No cases match this search and filter.", { exact: true }).waitFor();
+  assert.ok(
+    (await registerMeta.innerText()).startsWith("0 of "),
+    "case register count did not follow the search filter",
+  );
+  await caseSearch.fill("");
+  const snapshotFilter = page.getByRole("combobox", { name: "Snapshot" });
+  await snapshotFilter.selectOption("accepted");
+  await page.locator(".cases-register tbody tr").first().waitFor();
+  await snapshotFilter.selectOption("all");
+
+  await page.goto(`${baseURL}/deep-dive/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  const caseContext = page.locator(".case-context");
+  await page.setViewportSize({ width: 720, height: 900 });
+  await caseContext.locator(".optional").waitFor({ state: "visible" });
+  await caseContext.locator(".mono").first().waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await caseContext.locator(".mono").first().waitFor({ state: "visible" });
+  assert.ok(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    "topbar overflows horizontally at 390px",
+  );
+  await page.setViewportSize({ width: 1280, height: 720 });
   await context.close();
 
   const reduced = await browser.newContext({
@@ -619,6 +648,8 @@ try {
     && url.searchParams.get("run") === nextRun.id);
   await narrowPage.goto(`${baseURL}/report-studio/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
   assert.equal(await narrowPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, "Report Studio causes page-level horizontal overflow at 375px");
+
+
   await narrow.close();
 } finally {
   await browser.close();
