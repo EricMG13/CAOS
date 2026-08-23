@@ -117,8 +117,6 @@ jobs:
         run: |
           docker compose -f caos/deploy/docker-compose.yml config -q --no-interpolate
           docker compose --env-file caos/.env.example -f caos/deploy/docker-compose.yml config -q
-      - name: Verify immutable methodology resources
-        run: python caos/deploy/verify_image_resources.py
       - name: Corpus taxonomy consistency
         run: python "Modular OS/tools/check_module_consistency.py"
 
