@@ -37,6 +37,8 @@ export type CaseRecord = {
   accepted_snapshot?: Snapshot | null;
   pathway_fit?: { fit: string; message: string };
   current_execution_id?: string | null;
+  deep_research_available?: boolean;
+  deep_research_unavailable_reason?: string | null;
 };
 
 export type Workflow = {

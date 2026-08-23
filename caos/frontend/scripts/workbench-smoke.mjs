@@ -96,6 +96,40 @@ assert.equal(acceptedResponse.status(), 200);
 const accepted = await acceptedResponse.json();
 const artifact = accepted.artifacts.find((item) => item.module_id === "CP-0");
 assert.ok(artifact);
+const researchPlanHash = `sha256:${"a".repeat(64)}`;
+const researchPlanLongText = "The supplied evidence must resolve the complete refinancing perimeter without truncating this deliberately long committee-review sentence.";
+const proposedResearchPlan = {
+  methodology_build_id: "deploy-v-fixture-build",
+  brief_digest: "fixture-brief-digest",
+  source_set: { id: "set_fixture", version: 7 },
+  upstream_artifacts: [{ module_id: "CP-0", artifact_id: artifact.id, digest: artifact.digest }],
+  scope: { type: "issuer", key: caseRecord.id.replaceAll("_", "-"), source_mode: "supplied_only" },
+  workstreams: [{
+    id: "WS-1",
+    kind: "topical",
+    question: researchPlanLongText,
+    assigned_questions: ["Liquidity runway?", "Downside breach?"],
+    perspective: "Buy-side credit analyst",
+    hypothesis: "Refinancing is feasible if liquidity remains durable.",
+    evidence_needs: ["Debt maturity schedule", "Liquidity sources and uses"],
+    source_classes: ["supplied_case_sources"],
+    disconfirming_test: "Identify supplied evidence that contradicts the refinancing case.",
+    completion_test: "Answer each assigned question with source locators or record the evidence gap.",
+    effort_cap: "Within the fixed standard research budget.",
+  }],
+};
+const pendingResearchRun = {
+  id: `run_plan_${fixtureSuffix}`,
+  case_id: caseRecord.id,
+  status: "paused",
+  plan: { pathway: "DEEP_RESEARCH", depth: "full", profile_id: "DEEP_RESEARCH_FULL", selection_id: "fixture-selection" },
+  nodes: [
+    { id: "node-cp0", module_id: "CP-0", status: "succeeded", artifact_id: artifact.id },
+    { id: "node-cpdr", module_id: "CP-DR", status: "pending", artifact_id: null },
+  ],
+  error: { code: "PLAN_APPROVAL_REQUIRED", message: "Approve the exact deterministic research plan before agent execution." },
+  research: { phase: "awaiting_approval", proposed_plan_hash: researchPlanHash, proposed_plan: proposedResearchPlan },
+};
 
 const browser = await chromium.launch({ headless: true });
 const errors = [];
@@ -373,6 +407,104 @@ try {
   await assert.doesNotReject(() => paletteTrigger.evaluate((element) => {
     if (document.activeElement !== element) throw new Error("focus did not return to the palette trigger");
   }));
+
+  await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  const deepResearchOption = page.locator('#pathway option[value="DEEP_RESEARCH"]');
+  assert.equal(await deepResearchOption.isDisabled(), true, "Deep Research was enabled before actor-specific availability resolved");
+  await page.getByText("Deep Research is disabled for this deployment.", { exact: true }).waitFor();
+
+  let caseDetailFixtureHits = 0;
+  let startFixtureHits = 0;
+  let runFixtureHits = 0;
+  let approvalFixtureHits = 0;
+  let approvedResearchPlan = false;
+  let researchBriefPayload;
+  let approvalPayload;
+  const caseDetailFixturePath = (url) => url.pathname === `/api/cases/${caseRecord.id}`;
+  const startResearchFixturePath = (url) => url.pathname === `/api/cases/${caseRecord.id}/runs`;
+  const researchRunFixturePath = (url) => url.pathname === `/api/runs/${pendingResearchRun.id}`;
+  const researchEventsFixturePath = (url) => url.pathname === `/api/runs/${pendingResearchRun.id}/events`;
+  const approveResearchFixturePath = (url) => url.pathname === `/api/runs/${pendingResearchRun.id}/research-plan/approve`;
+  await page.route(caseDetailFixturePath, async (route) => {
+    caseDetailFixtureHits += 1;
+    const response = await route.fetch();
+    const detail = await response.json();
+    await route.fulfill({ response, json: { ...detail, deep_research_available: true, deep_research_unavailable_reason: null } });
+  });
+  await page.route(startResearchFixturePath, async (route) => {
+    startFixtureHits += 1;
+    researchBriefPayload = route.request().postDataJSON();
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify(pendingResearchRun) });
+  });
+  await page.route(researchRunFixturePath, async (route) => {
+    runFixtureHits += 1;
+    const fixture = approvedResearchPlan
+      ? { ...pendingResearchRun, status: "queued", error: null, research: { ...pendingResearchRun.research, phase: "approved", approved_plan_hash: researchPlanHash } }
+      : pendingResearchRun;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture) });
+  });
+  await page.route(researchEventsFixturePath, (route) => route.fulfill({ status: 200, contentType: "text/event-stream", body: "retry: 60000\n\n" }));
+  await page.route(approveResearchFixturePath, async (route) => {
+    approvalFixtureHits += 1;
+    approvalPayload = route.request().postDataJSON();
+    approvedResearchPlan = true;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...pendingResearchRun, status: "queued", error: null }) });
+  });
+  await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}&fixture=pending-plan`, { waitUntil: "networkidle" });
+  await page.getByRole("combobox", { name: "Purpose" }).selectOption("DEEP_RESEARCH");
+  const depth = page.getByRole("combobox", { name: "Depth" });
+  assert.equal(await depth.inputValue(), "full", "Deep Research did not force full depth");
+  assert.equal(await depth.locator('option[value="screen"]').isDisabled(), true, "Deep Research left Screen selectable");
+  await page.getByRole("textbox", { name: "Research question" }).fill("Can Northstar refinance its 2028 maturities?");
+  await page.getByRole("textbox", { name: "Decision context" }).fill("Underwrite a first-lien position.");
+  await page.getByLabel("As-of date").fill("2026-08-23");
+  await page.getByRole("textbox", { name: "Time horizon" }).fill("Through 2029");
+  await page.getByRole("textbox", { name: "Must-answer lines" }).fill(Array.from({ length: 11 }, (_, index) => `Question ${index + 1}`).join("\n"));
+  await page.getByRole("button", { name: "Compile and run" }).click();
+  await page.getByRole("alert").getByText("Research brief lists allow at most 10 nonblank lines combined, and each line is limited to 200 characters.", { exact: true }).waitFor();
+  assert.equal(startFixtureHits, 0, "an over-limit research brief reached the start route");
+  await page.getByRole("textbox", { name: "Must-answer lines" }).fill(" Liquidity runway? \n\n Downside breach? ");
+  await page.getByRole("textbox", { name: "Exclusion lines" }).fill(" Equity valuation \n");
+  await page.getByRole("button", { name: "Compile and run" }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { name: "Proposed research plan" }).waitFor();
+  assert.deepEqual(researchBriefPayload, {
+    pathway: "DEEP_RESEARCH",
+    depth: "full",
+    focus_questions: [],
+    research_brief: {
+      research_question: "Can Northstar refinance its 2028 maturities?",
+      decision_context: "Underwrite a first-lien position.",
+      as_of_date: "2026-08-23",
+      time_horizon: "Through 2029",
+      must_answer: ["Liquidity runway?", "Downside breach?"],
+      exclusions: ["Equity valuation"],
+    },
+  });
+  const researchPlan = page.locator(".research-plan");
+  await researchPlan.getByText(researchPlanHash, { exact: true }).waitFor();
+  await researchPlan.getByText(researchPlanLongText, { exact: true }).waitFor();
+  for (const label of ["Methodology build", "Brief digest", "Source set", "Upstream artifacts", "Scope", "ID", "Kind", "Question", "Assigned questions", "Perspective", "Hypothesis", "Evidence needs", "Source classes", "Disconfirming test", "Completion test", "Effort cap"]) {
+    assert.ok(await researchPlan.getByText(label, { exact: true }).count(), `pending plan omitted ${label}`);
+  }
+  await page.setViewportSize({ width: 375, height: 812 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, "pending research plan causes page overflow at 375px");
+  assert.ok(await researchPlan.evaluate((element) => element.scrollWidth <= element.clientWidth), "pending research plan content overflows its panel");
+  const approveResearchPlan = page.getByRole("button", { name: "Approve research plan" });
+  await approveResearchPlan.focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("status").getByText("queued", { exact: true }).waitFor();
+  assert.deepEqual(approvalPayload, { plan_hash: researchPlanHash });
+  assert.ok(caseDetailFixtureHits > 0, "pending-plan case detail fixture was not exercised");
+  assert.ok(startFixtureHits > 0, "pending-plan start fixture was not exercised");
+  assert.ok(runFixtureHits > 0, "pending-plan run fixture was not exercised");
+  assert.ok(approvalFixtureHits > 0, "pending-plan approval fixture was not exercised");
+  await page.unroute(caseDetailFixturePath);
+  await page.unroute(startResearchFixturePath);
+  await page.unroute(researchRunFixturePath);
+  await page.unroute(researchEventsFixturePath);
+  await page.unroute(approveResearchFixturePath);
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.goto(`${baseURL}/run-console/?case=${caseRecord.id}&run=${run.id}`, { waitUntil: "networkidle" });
   let markStartRunIntercepted;

@@ -10,7 +10,9 @@ const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
 import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, routeDestinations, withQuery } from "../lib/workbench";
 
-type RunRecord = { id: string; case_id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { message?: string } | null };
+type ResearchWorkstream = { id: string; kind: string; question: string; assigned_questions?: string[]; perspective: string; hypothesis: string; evidence_needs: string[]; source_classes: string[]; disconfirming_test: string; completion_test: string; effort_cap: string };
+type ResearchPlan = { methodology_build_id: string; brief_digest: string; source_set: { id: string; version: number }; upstream_artifacts: { module_id: string; artifact_id: string; digest: string }[]; scope: { type?: string | null; key?: string | null; source_mode?: string | null }; workstreams: ResearchWorkstream[] };
+type RunRecord = { id: string; case_id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { code?: string; message?: string } | null; research?: { phase?: string; proposed_plan_hash?: string | null; approved_plan_hash?: string | null; proposed_plan?: ResearchPlan | null } | null };
 type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
 type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
 type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
@@ -299,7 +301,7 @@ export default function Workspace({ destination, children }: { destination?: Des
     if (!runId || !run || run.id !== runId || run.case_id !== caseId) return;
     const source = new EventSource(`/api/runs/${runId}/events`);
     const refresh = () => void refreshRun();
-    ["run.running", "node.running", "node.succeeded", "node.failed", "run.succeeded", "run.failed", "run.paused", "snapshot.accepted"].forEach((name) => source.addEventListener(name, refresh));
+    ["run.running", "node.running", "node.succeeded", "node.failed", "run.succeeded", "run.failed", "run.paused", "research.plan_ready", "research.plan_approved", "snapshot.accepted"].forEach((name) => source.addEventListener(name, refresh));
     const timer = window.setInterval(refresh, 1200);
     return () => { source.close(); window.clearInterval(timer); };
     // Event updates only begin after the run has passed its case authority check.
@@ -332,11 +334,27 @@ export default function Workspace({ destination, children }: { destination?: Des
   const startRun = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!caseId) return; setError("");
     const form = new FormData(event.currentTarget);
+    const pathway = String(form.get("pathway") || "");
+    const depth = String(form.get("depth") || "");
+    const mustAnswer = String(form.get("must_answer") || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const exclusions = String(form.get("exclusions") || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (pathway === "DEEP_RESEARCH" && (mustAnswer.length > 10 || exclusions.length > 10 || mustAnswer.length + exclusions.length > 10 || [...mustAnswer, ...exclusions].some((line) => line.length > 200))) {
+      setError("Research brief lists allow at most 10 nonblank lines combined, and each line is limited to 200 characters.");
+      return;
+    }
+    const researchBrief = pathway === "DEEP_RESEARCH" ? {
+      research_question: String(form.get("research_question") || "").trim(),
+      decision_context: String(form.get("decision_context") || "").trim(),
+      as_of_date: String(form.get("as_of_date") || ""),
+      time_horizon: String(form.get("time_horizon") || "").trim(),
+      must_answer: mustAnswer,
+      exclusions,
+    } : undefined;
     const expectedCaseId = caseIdRef.current;
     const requestId = ++startRunRequest.current;
     setPendingAction("start-run");
     try {
-      const created = await request<RunRecord>(`/api/cases/${expectedCaseId}/runs`, { method: "POST", body: JSON.stringify({ pathway: form.get("pathway"), depth: form.get("depth"), focus_questions: [] }) });
+      const created = await request<RunRecord>(`/api/cases/${expectedCaseId}/runs`, { method: "POST", body: JSON.stringify({ pathway, depth, focus_questions: [], ...(researchBrief ? { research_brief: researchBrief } : {}) }) });
       if (requestId !== startRunRequest.current || expectedCaseId !== caseIdRef.current) return;
       if (created.case_id !== expectedCaseId) {
         const message = "Started run does not belong to the selected case.";
@@ -364,12 +382,28 @@ export default function Workspace({ destination, children }: { destination?: Des
     finally { setPendingAction(""); }
   };
 
+  const approveResearchPlan = async (planHash: string) => {
+    if (!runId || !run || run.id !== runId || run.case_id !== caseId) return;
+    const expectedCaseId = caseId;
+    const expectedRunId = runId;
+    setError("");
+    setPendingAction("approve-research-plan");
+    try {
+      await request(`/api/runs/${expectedRunId}/research-plan/approve`, { method: "POST", body: JSON.stringify({ plan_hash: planHash }) });
+      if (expectedCaseId === caseIdRef.current && expectedRunId === runIdRef.current) await refreshRun(expectedRunId);
+    } catch (caught) {
+      if (expectedCaseId === caseIdRef.current && expectedRunId === runIdRef.current) setError(caught instanceof Error ? caught.message : "Unable to approve research plan");
+    } finally {
+      setPendingAction((current) => current === "approve-research-plan" ? "" : current);
+    }
+  };
+
   const renderDestination = () => {
     if (!selectedCase && active !== "Cases" && active !== "Admin Studio") return <EmptyState text="Create or select a case before entering an analytical workspace." action="Open Cases" href="/cases" />;
     switch (active) {
       case "Cases": return <CasesView cases={cases} casesLoading={casesLoading} selectedCase={selectedCase} caseId={caseId} setCaseId={selectCase} createCase={createCase} upload={upload} pendingAction={pendingAction} />;
       case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} sourceId={routeSourceId} upload={upload} pendingAction={pendingAction} onOpenEvidence={(evidenceId, source) => setDrawer({ kind: "evidence", evidenceId, source })} />;
-      case "Run Console": return <RunConsole caseId={caseId} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} pendingAction={pendingAction} />;
+      case "Run Console": return <RunConsole caseId={caseId} selectedCase={selectedCase} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} approveResearchPlan={approveResearchPlan} pendingAction={pendingAction} />;
       case "Deep-Dive": return <DeepDive selectedCase={selectedCase} question={routeQuestion} />;
       case "RV Screener": return <RVView caseId={caseId} />;
       case "Command Center": return <CommandView caseId={caseId} question={routeQuestion} />;
@@ -484,8 +518,90 @@ function SourcesView({ selectedCase, artifactId, sourceId, upload, pendingAction
   </div>;
 }
 
-function RunConsole({ caseId, run, runLoading, runError, startRun, acceptRun, pendingAction }: { caseId: string; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void; pendingAction: string }) {
-  return <div className="grid"><section className="panel span-4"><div className="panel-header"><h2>Compile route</h2><span className="panel-meta">Immutable plan</span></div><div className="panel-body flow"><form onSubmit={startRun}><div className="field"><label htmlFor="pathway">Purpose</label><select id="pathway" name="pathway" defaultValue="EARNINGS_UPDATE">{pathways.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></div><div className="field"><label htmlFor="depth">Depth</label><select id="depth" name="depth" defaultValue="screen"><option value="screen">Screen</option><option value="full">Full</option></select></div><button className="button primary" type="submit" disabled={!caseId || pendingAction === "start-run"}>{pendingAction === "start-run" ? "Compiling…" : "Compile and run"}</button></form><div className="callout">Every route begins by parsing your sources; the readiness check then runs against that exact parse.</div></div></section><section className="panel span-8"><div className="panel-header"><h2>Persisted DAG</h2>{run && <span role="status" aria-live="polite" aria-atomic="true" className={`status ${run.status === "succeeded" ? "success" : run.status === "failed" ? "critical" : "warning"}`}>{run.status}</span>}</div><div className="panel-body flow">{run ? <><div className="dag">{run.nodes.map((node, index) => <div className="dag-step" key={node.id}>{index > 0 && <span className="dag-edge" aria-hidden="true">→</span>}<div className={`dag-node ${node.status}`}><strong>{node.module_id}</strong><div className="muted">{node.status}</div></div></div>)}</div>{run.error && <p className="error" role="alert">{run.error.message || "Run exception"}</p>}{run.status === "succeeded" && <button className="button primary" disabled={pendingAction === "accept-run"} onClick={acceptRun}>{pendingAction === "accept-run" ? "Accepting…" : "Accept analytical snapshot"}</button>}{run.status === "paused" && <div className="callout warning">Material exception: upload governed source material before execution.</div>}</> : <LoadState loading={runLoading} error={runError} empty="No current execution. Select a purpose and depth to create an immutable plan." />}</div></section></div>;
+function RunConsole({ caseId, selectedCase, run, runLoading, runError, startRun, acceptRun, approveResearchPlan, pendingAction }: { caseId: string; selectedCase: CaseRecord | null; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void; approveResearchPlan: (planHash: string) => void; pendingAction: string }) {
+  const [pathway, setPathway] = useState("EARNINGS_UPDATE");
+  const [depth, setDepth] = useState("screen");
+  const deepResearchAvailable = selectedCase?.deep_research_available === true;
+  const deepResearchReason = selectedCase?.deep_research_unavailable_reason || "Checking Deep Research availability…";
+  const approvalPlan = run?.status === "paused" && run.error?.code === "PLAN_APPROVAL_REQUIRED" ? run.research?.proposed_plan : null;
+  const approvalHash = run?.status === "paused" && run.error?.code === "PLAN_APPROVAL_REQUIRED" ? run.research?.proposed_plan_hash : null;
+  return <div className="grid">
+    <section className="panel span-4">
+      <div className="panel-header"><h2>Compile route</h2><span className="panel-meta">Immutable plan</span></div>
+      <div className="panel-body flow">
+        <form onSubmit={startRun}>
+          <div className="field">
+            <label htmlFor="pathway">Purpose</label>
+            <select id="pathway" name="pathway" value={pathway} aria-describedby={!deepResearchAvailable ? "deep-research-availability" : undefined} onChange={(event) => { setPathway(event.target.value); if (event.target.value === "DEEP_RESEARCH") setDepth("full"); }}>
+              {pathways.map(([value, label]) => <option value={value} disabled={value === "DEEP_RESEARCH" && !deepResearchAvailable} key={value}>{label}</option>)}
+            </select>
+          </div>
+          {!deepResearchAvailable && <p className="muted" id="deep-research-availability">{deepResearchReason}</p>}
+          <div className="field">
+            <label htmlFor="depth">Depth</label>
+            <select id="depth" name="depth" value={depth} onChange={(event) => setDepth(event.target.value)}><option value="screen" disabled={pathway === "DEEP_RESEARCH"}>Screen</option><option value="full">Full</option></select>
+          </div>
+          {pathway === "DEEP_RESEARCH" && <fieldset className="research-brief">
+            <legend>Bounded research brief</legend>
+            <div className="field"><label htmlFor="research-question">Research question</label><textarea id="research-question" name="research_question" maxLength={400} required /></div>
+            <div className="field"><label htmlFor="decision-context">Decision context</label><textarea id="decision-context" name="decision_context" maxLength={400} required /></div>
+            <div className="field"><label htmlFor="as-of-date">As-of date</label><input id="as-of-date" name="as_of_date" type="date" required /></div>
+            <div className="field"><label htmlFor="time-horizon">Time horizon</label><input id="time-horizon" name="time_horizon" maxLength={200} required /></div>
+            <div className="field"><label htmlFor="must-answer">Must-answer lines</label><textarea id="must-answer" name="must_answer" maxLength={2009} aria-describedby="research-list-bounds" /></div>
+            <div className="field"><label htmlFor="exclusions">Exclusion lines</label><textarea id="exclusions" name="exclusions" maxLength={2009} aria-describedby="research-list-bounds" /></div>
+            <p className="muted" id="research-list-bounds">One item per line; 10 items combined, 200 characters per item.</p>
+          </fieldset>}
+          <button className="button primary" type="submit" disabled={!caseId || pendingAction === "start-run"}>{pendingAction === "start-run" ? "Compiling…" : "Compile and run"}</button>
+        </form>
+        <div className="callout">Every route begins by parsing your sources; the readiness check then runs against that exact parse.</div>
+      </div>
+    </section>
+    <section className="panel span-8">
+      <div className="panel-header"><h2>Persisted DAG</h2><span role="status" aria-live="polite" aria-atomic="true" className={run ? `status ${run.status === "succeeded" ? "success" : run.status === "failed" ? "critical" : "warning"}` : "sr-only"}>{run?.error?.code === "PLAN_APPROVAL_REQUIRED" ? "Pending approval" : run?.status || ""}</span></div>
+      <div className="panel-body flow">{run ? <>
+        <div className="dag">{run.nodes.map((node, index) => <div className="dag-step" key={node.id}>{index > 0 && <span className="dag-edge" aria-hidden="true">→</span>}<div className={`dag-node ${node.status}`}><strong>{node.module_id}</strong><div className="muted">{node.status}</div></div></div>)}</div>
+        {run.status === "failed" && run.error && <p className="error" role="alert">{run.error.code ? `${run.error.code}: ` : ""}{run.error.message || "Run exception"}</p>}
+        {run.status === "succeeded" && <button className="button primary" disabled={pendingAction === "accept-run"} onClick={acceptRun}>{pendingAction === "accept-run" ? "Accepting…" : "Accept analytical snapshot"}</button>}
+        {run.status === "paused" && run.error?.code === "SOURCE_SET_EMPTY" && <div className="callout warning" role="status" aria-live="polite">Material exception: upload governed source material before execution.</div>}
+        {run.status === "paused" && run.error?.code === "PLAN_APPROVAL_REQUIRED" && approvalPlan && approvalHash && <ResearchPlanView plan={approvalPlan} planHash={approvalHash} approving={pendingAction === "approve-research-plan"} onApprove={approveResearchPlan} />}
+        {run.status === "paused" && run.error?.code === "PLAN_APPROVAL_REQUIRED" && (!approvalPlan || !approvalHash) && <div className="callout warning" role="status" aria-live="polite"><strong>PLAN_APPROVAL_REQUIRED</strong><p>The persisted approval plan is unavailable; approval remains blocked.</p></div>}
+        {run.status === "paused" && !["SOURCE_SET_EMPTY", "PLAN_APPROVAL_REQUIRED"].includes(run.error?.code || "") && <div className="callout warning" role="status" aria-live="polite"><strong>{run.error?.code || "RUN_PAUSED"}</strong><p>{run.error?.message || "Run paused."}</p></div>}
+      </> : <LoadState loading={runLoading} error={runError} empty="No current execution. Select a purpose and depth to create an immutable plan." />}</div>
+    </section>
+  </div>;
+}
+
+function ResearchPlanView({ plan, planHash, approving, onApprove }: { plan: ResearchPlan; planHash: string; approving: boolean; onApprove: (planHash: string) => void }) {
+  return <section className="research-plan" role="region" aria-labelledby="research-plan-heading">
+    <h3 id="research-plan-heading">Proposed research plan</h3>
+    <p>Review the complete deterministic plan. Approval binds execution to the exact hash shown here.</p>
+    <dl className="research-plan-facts">
+      <dt>Plan hash</dt><dd className="mono">{planHash}</dd>
+      <dt>Methodology build</dt><dd className="mono">{plan.methodology_build_id}</dd>
+      <dt>Brief digest</dt><dd className="mono">{plan.brief_digest}</dd>
+      <dt>Source set</dt><dd><span className="mono">{plan.source_set.id}</span> · version {plan.source_set.version}</dd>
+      <dt>Upstream artifacts</dt><dd><ul>{plan.upstream_artifacts.map((artifact) => <li key={`${artifact.module_id}:${artifact.artifact_id}`}><strong>{artifact.module_id}</strong> · <span className="mono">{artifact.artifact_id}</span> · <span className="mono">{artifact.digest}</span></li>)}</ul></dd>
+      <dt>Scope</dt><dd>Type {plan.scope.type || "—"} · key <span className="mono">{plan.scope.key || "—"}</span> · source mode {plan.scope.source_mode || "—"}</dd>
+    </dl>
+    <h4>Workstreams</h4>
+    <ol className="research-workstreams">{plan.workstreams.map((workstream) => <li key={workstream.id}>
+      <h5>{workstream.id} · {workstream.kind}</h5>
+      <dl className="research-plan-facts">
+        <dt>ID</dt><dd className="mono">{workstream.id}</dd>
+        <dt>Kind</dt><dd>{workstream.kind}</dd>
+        <dt>Question</dt><dd>{workstream.question}</dd>
+        <dt>Assigned questions</dt><dd>{workstream.assigned_questions?.length ? <ul>{workstream.assigned_questions.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul> : <span className="muted">None</span>}</dd>
+        <dt>Perspective</dt><dd>{workstream.perspective}</dd>
+        <dt>Hypothesis</dt><dd>{workstream.hypothesis}</dd>
+        <dt>Evidence needs</dt><dd><ul>{workstream.evidence_needs.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul></dd>
+        <dt>Source classes</dt><dd><ul>{workstream.source_classes.map((item, index) => <li className="mono" key={`${index}:${item}`}>{item}</li>)}</ul></dd>
+        <dt>Disconfirming test</dt><dd>{workstream.disconfirming_test}</dd>
+        <dt>Completion test</dt><dd>{workstream.completion_test}</dd>
+        <dt>Effort cap</dt><dd>{workstream.effort_cap}</dd>
+      </dl>
+    </li>)}</ol>
+    <button className="button primary" type="button" disabled={approving} onClick={() => onApprove(planHash)}>{approving ? "Approving…" : "Approve research plan"}</button>
+  </section>;
 }
 
 function DeepDive({ selectedCase, question }: { selectedCase: CaseRecord | null; question: string }) {

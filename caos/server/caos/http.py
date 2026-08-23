@@ -134,7 +134,13 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         who = identity(request)
         case = require_case(store, case_id, who)
         latest = store.latest_run_for_case(case_id)
-        return {**case, "source_set": current_source_set(store, case_id), "source_count": len(list_sources(store, case_id)), "pathway_fit": pathway_fit(store, case_id), "accepted_snapshot": accepted_snapshot(store, case_id), "latest_run": store.get_run(latest["id"]) if latest else None}
+        deep_research_available = settings.cpdr_agent_enabled and (case_id in settings.cpdr_pilot_case_ids or who.subject in settings.cpdr_pilot_subjects)
+        deep_research_unavailable_reason = None if deep_research_available else (
+            "Deep Research is disabled for this deployment."
+            if not settings.cpdr_agent_enabled
+            else "Deep Research is outside the pilot allowlist."
+        )
+        return {**case, "source_set": current_source_set(store, case_id), "source_count": len(list_sources(store, case_id)), "pathway_fit": pathway_fit(store, case_id), "accepted_snapshot": accepted_snapshot(store, case_id), "latest_run": store.get_run(latest["id"]) if latest else None, "deep_research_available": deep_research_available, "deep_research_unavailable_reason": deep_research_unavailable_reason}
 
     @app.post("/api/cases/{case_id}/members", status_code=201)
     def add_member(case_id: str, payload: MemberRequest, request: Request) -> dict[str, Any]:
@@ -233,6 +239,11 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     def start_run(case_id: str, payload: StartRunRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
+        if payload.pathway == "DEEP_RESEARCH":
+            if not settings.cpdr_agent_enabled:
+                raise HTTPException(status_code=403, detail="Deep Research is disabled for this deployment.")
+            if case_id not in settings.cpdr_pilot_case_ids and who.subject not in settings.cpdr_pilot_subjects:
+                raise HTTPException(status_code=403, detail="Deep Research is outside the pilot allowlist.")
         try:
             research_brief = payload.research_brief.model_dump(mode="json") if payload.research_brief else None
             return runtime.start_run(case_id, who.subject, payload.pathway, payload.depth, payload.focus_questions, research_brief)

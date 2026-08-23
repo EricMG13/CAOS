@@ -450,7 +450,14 @@ def test_postgres_research_pause_and_approval_survive_reload() -> None:
     assert {key: durable_approval["research"][key] for key in durable_identity} == durable_identity
 
 
-def _production_client(tmp_path: Path, store: MemoryStore) -> TestClient:
+def _production_client(
+    tmp_path: Path,
+    store: MemoryStore,
+    *,
+    cpdr_agent_enabled: bool = False,
+    cpdr_pilot_case_ids: tuple[str, ...] = (),
+    cpdr_pilot_subjects: tuple[str, ...] = (),
+) -> TestClient:
     settings = Settings(
         environment="production",
         database_url="postgresql://unused/test",
@@ -459,6 +466,9 @@ def _production_client(tmp_path: Path, store: MemoryStore) -> TestClient:
         clamav_host="clamav",
         storage_dir=tmp_path / "vault",
         deploy_v_root=DEPLOY_V,
+        cpdr_agent_enabled=cpdr_agent_enabled,
+        cpdr_pilot_case_ids=cpdr_pilot_case_ids,
+        cpdr_pilot_subjects=cpdr_pilot_subjects,
     )
     return TestClient(create_app(settings, store))
 
@@ -556,9 +566,39 @@ def test_all_case_writer_role_combinations_can_approve_research_plan(tmp_path: P
 def test_deep_research_start_route_passes_validated_brief_to_runtime(tmp_path: Path) -> None:
     store = MemoryStore()
     case = _case_with_source(store, "Start route")
-    with _production_client(tmp_path, store) as client:
+    with _production_client(tmp_path, store, cpdr_agent_enabled=True, cpdr_pilot_subjects=("owner",)) as client:
         response = client.post(f"/api/cases/{case['id']}/runs", headers=_headers("owner", "ANALYST"), json={"pathway": "DEEP_RESEARCH", "depth": "full", "research_brief": BRIEF})
         assert response.status_code == 202, response.text
         research = response.json()["research"]
         assert research["brief"]["subject_name"] == "Northstar"
         assert research["phase"] == "planning"
+
+
+def test_deep_research_availability_and_start_recheck(tmp_path: Path) -> None:
+    store = MemoryStore()
+    case = _case_with_source(store, "Availability")
+    next(source for source in store.sources.values() if source["case_id"] == case["id"])["filename"] = "availability.txt"
+    headers = _headers("owner", "ANALYST")
+
+    with _production_client(tmp_path, store) as client:
+        detail = client.get(f"/api/cases/{case['id']}", headers=headers).json()
+        assert detail["deep_research_available"] is False
+        assert detail["deep_research_unavailable_reason"] == "Deep Research is disabled for this deployment."
+
+    with _production_client(tmp_path, store, cpdr_agent_enabled=True) as client:
+        detail = client.get(f"/api/cases/{case['id']}", headers=headers).json()
+        assert detail["deep_research_available"] is False
+        assert detail["deep_research_unavailable_reason"] == "Deep Research is outside the pilot allowlist."
+        denied = client.post(f"/api/cases/{case['id']}/runs", headers=headers, json={"pathway": "DEEP_RESEARCH", "depth": "full", "research_brief": BRIEF})
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == detail["deep_research_unavailable_reason"]
+
+    with _production_client(tmp_path, store, cpdr_agent_enabled=True, cpdr_pilot_subjects=("owner",)) as client:
+        detail = client.get(f"/api/cases/{case['id']}", headers=headers).json()
+        assert detail["deep_research_available"] is True
+        assert detail["deep_research_unavailable_reason"] is None
+
+    with _production_client(tmp_path, store, cpdr_agent_enabled=True, cpdr_pilot_case_ids=(case["id"],)) as client:
+        detail = client.get(f"/api/cases/{case['id']}", headers=headers).json()
+        assert detail["deep_research_available"] is True
+        assert detail["deep_research_unavailable_reason"] is None

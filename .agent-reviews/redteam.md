@@ -3823,3 +3823,22 @@ five-second allowance is now a hard absolute deadline, not a latency estimate or
 p99 claim. The pilot remains disabled by default and still excludes live-provider
 testing, external documents, web, LITE, sector/theme, other providers, and
 horizontal worker scale-out.
+
+## 2026-08-23 — Hybrid CP-DR Phase 5 analyst-control critic pass
+
+Decision under review: expose the disabled-by-default CP-DR pilot in the existing
+Run Console as one bounded brief, complete deterministic plan review, and
+exact-hash approval flow.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-095 | Authorization reviewer | A case-detail availability flag can become stale or be forged by the client, allowing an outside-pilot analyst to start a provider-backed run. | Critical | Resolved and verified | The actor-specific case detail is only a UI preflight. The existing start route independently rechecks feature enablement and case-or-subject allowlist membership, with empty allowlists denying all. Focused route tests cover disabled, empty, subject, case, and denied POST states. |
+| RT-2026-08-23-096 | Approval-integrity reviewer | Truncating a workstream, digest, artifact identity, or plan hash would make the analyst approve a different authority object than the one displayed. | Critical | Resolved and verified | The Run Console renders the full hash and every top-level plan identity field plus every persisted workstream field without slicing or ellipsis. The approval action posts only the complete currently displayed hash to the existing exact-hash endpoint. The deterministic fixture asserts the full long text, full hash, field inventory, and exact request body. |
+| RT-2026-08-23-097 | Case-boundary reviewer | A late approval response or refresh from Case A could replace the visible run authority after the analyst switches to Case B. | High | Resolved | Approval captures the expected case and run, reuses the existing pending-action path, and refreshes only while both still match their synchronous authority refs. Backend case-write authorization remains the final gate. |
+| RT-2026-08-23-098 | Input-boundary reviewer | A textarea can hide excessive or blank list entries, while client-only limits can be bypassed. | High | Resolved and verified | Native required/max-length/date controls bound scalar fields; list text is converted to trimmed nonblank lines and rejected when either list exceeds 10, the combined set exceeds 10, or any line exceeds 200 characters. The existing strict Pydantic contract independently enforces the same server boundary. The journey asserts the exact normalized POST body. |
+| RT-2026-08-23-099 | Accessibility reviewer | A disabled pathway with no associated explanation, color-only progress, or a wide plan grid would block keyboard and narrow-layout users. | High | Resolved and verified | The native disabled option is associated to visible server/loading copy through `aria-describedby`; all brief controls have visible labels; status and failure use text with polite status and alert semantics; workstreams use headings, definition lists, and ordinary lists. Keyboard approval, 375px page/panel overflow, reduced motion, and the rendered pending-plan axe fixture pass with zero violations. |
+| RT-2026-08-23-100 | Test-integrity reviewer | Broad route globs or unexercised fixtures could let browser checks pass against the live fallback instead of the intended pending-plan state. | High | Resolved and verified | Every case, start, run, event, and approval intercept matches parsed URL pathnames so exact and query-string forms are handled. Case/start/run/approval hit counters are mandatory, and both workbench and axe checks fail if their pending-plan fixtures are not exercised. |
+
+Decision: accept Phase 5 for the existing single-case Run Console. The UI does
+not create a second capability endpoint or read model, does not weaken backend
+authorization or exact-hash approval, and does not enable the pilot by default.

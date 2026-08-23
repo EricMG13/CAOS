@@ -266,3 +266,15 @@ dialog:not(.context-drawer) { width: min(680px, calc(100% - 32px)); max-width: 6
 .worklist-toolbar .field { margin: 0; flex: 1 1 180px; }
 .dag-step { display: flex; align-items: center; gap: var(--space-sm); }
 .dag-edge { color: var(--caos-muted); font: 12px/1 var(--font-mono), ui-monospace, monospace; }
+.research-brief { min-width: 0; margin: 0 0 var(--space-md); border: 1px solid var(--caos-border); border-radius: 6px; padding: var(--space-md); }
+.research-brief legend { color: var(--caos-muted); font-weight: 700; letter-spacing: .06em; }
+.research-plan { min-width: 0; display: grid; gap: var(--space-md); overflow-wrap: anywhere; }
+.research-plan > :where(h3, h4, p) { margin: 0; }
+.research-plan-facts { min-width: 0; display: grid; grid-template-columns: minmax(120px, auto) minmax(0, 1fr); gap: var(--space-sm) var(--space-lg); margin: 0; }
+.research-plan-facts dt { color: var(--caos-muted); font-weight: 700; }
+.research-plan-facts dd { min-width: 0; margin: 0; }
+.research-plan-facts ul { margin: 0; padding-left: var(--space-lg); }
+.research-workstreams { min-width: 0; display: grid; gap: var(--space-lg); margin: 0; padding-left: var(--space-xl); }
+.research-workstreams > li { min-width: 0; border-top: 1px solid var(--caos-border); padding-top: var(--space-md); }
+.research-workstreams h5 { margin: 0 0 var(--space-md); font-size: 12px; }
+@media (max-width: 520px) { .research-plan-facts { grid-template-columns: 1fr; gap: var(--space-xs); } .research-plan-facts dd + dt { margin-top: var(--space-sm); } }
