@@ -99,24 +99,39 @@ assert.ok(artifact);
 const researchPlanHash = `sha256:${"a".repeat(64)}`;
 const researchPlanLongText = "The supplied evidence must resolve the complete refinancing perimeter without truncating this deliberately long committee-review sentence.";
 const proposedResearchPlan = {
-  methodology_build_id: "deploy-v-fixture-build",
-  brief_digest: "fixture-brief-digest",
-  source_set: { id: "set_fixture", version: 7 },
-  upstream_artifacts: [{ module_id: "CP-0", artifact_id: artifact.id, digest: artifact.digest }],
-  scope: { type: "issuer", key: caseRecord.id.replaceAll("_", "-"), source_mode: "supplied_only" },
-  workstreams: [{
-    id: "WS-1",
-    kind: "topical",
-    question: researchPlanLongText,
-    assigned_questions: ["Liquidity runway?", "Downside breach?"],
-    perspective: "Buy-side credit analyst",
-    hypothesis: "Refinancing is feasible if liquidity remains durable.",
-    evidence_needs: ["Debt maturity schedule", "Liquidity sources and uses"],
-    source_classes: ["supplied_case_sources"],
-    disconfirming_test: "Identify supplied evidence that contradicts the refinancing case.",
-    completion_test: "Answer each assigned question with source locators or record the evidence gap.",
-    effort_cap: "Within the fixed standard research budget.",
-  }],
+  methodology_build_id: "",
+  brief_digest: "",
+  source_set: { id: "", version: 7 },
+  upstream_artifacts: [],
+  scope: { type: "", key: "", source_mode: "" },
+  workstreams: [
+    {
+      id: "",
+      kind: "topical",
+      question: researchPlanLongText,
+      assigned_questions: ["Liquidity runway?", "Liquidity runway?", ""],
+      perspective: "Buy-side credit analyst",
+      hypothesis: "Refinancing is feasible if liquidity remains durable.",
+      evidence_needs: ["Debt maturity schedule", "Debt maturity schedule", ""],
+      source_classes: ["supplied_case_sources", "supplied_case_sources", ""],
+      disconfirming_test: "Identify supplied evidence that contradicts the refinancing case.",
+      completion_test: "Answer each assigned question with source locators or record the evidence gap.",
+      effort_cap: "Within the fixed standard research budget.",
+    },
+    {
+      id: "",
+      kind: "",
+      question: "",
+      assigned_questions: [],
+      perspective: "",
+      hypothesis: "",
+      evidence_needs: [],
+      source_classes: [],
+      disconfirming_test: "",
+      completion_test: "",
+      effort_cap: "",
+    },
+  ],
 };
 const pendingResearchRun = {
   id: `run_plan_${fixtureSuffix}`,
@@ -487,6 +502,26 @@ try {
   for (const label of ["Methodology build", "Brief digest", "Source set", "Upstream artifacts", "Scope", "ID", "Kind", "Question", "Assigned questions", "Perspective", "Hypothesis", "Evidence needs", "Source classes", "Disconfirming test", "Completion test", "Effort cap"]) {
     assert.ok(await researchPlan.getByText(label, { exact: true }).count(), `pending plan omitted ${label}`);
   }
+  const definitionValue = (container, label) => container.locator("dt").filter({ hasText: new RegExp(`^${label}$`) }).locator("xpath=following-sibling::dd[1]");
+  const topLevelFacts = researchPlan.locator(":scope > .research-plan-facts");
+  for (const label of ["Methodology build", "Brief digest", "Source set"]) {
+    assert.equal(await definitionValue(topLevelFacts, label).getByText("None", { exact: true }).count(), 1, `${label} did not expose its empty scalar`);
+  }
+  assert.equal(await definitionValue(topLevelFacts, "Upstream artifacts").getByText("Empty", { exact: true }).count(), 1, "empty upstream artifacts were rendered as blank space");
+  assert.equal(await definitionValue(topLevelFacts, "Scope").getByText("None", { exact: true }).count(), 3, "empty scope scalars were not explicit");
+  const workstreams = researchPlan.locator(".research-workstreams > li");
+  assert.equal(await workstreams.count(), 2, "pending plan did not render every repeated-ID workstream");
+  for (const [label, value] of [["Assigned questions", "Liquidity runway?"], ["Evidence needs", "Debt maturity schedule"], ["Source classes", "supplied_case_sources"]]) {
+    assert.equal(await definitionValue(workstreams.first(), label).getByText(value, { exact: true }).count(), 2, `${label} did not preserve repeated plan values`);
+    assert.equal(await definitionValue(workstreams.first(), label).getByText("None", { exact: true }).count(), 1, `${label} rendered an empty list value as blank space`);
+  }
+  for (const label of ["ID", "Kind", "Question", "Perspective", "Hypothesis", "Disconfirming test", "Completion test", "Effort cap"]) {
+    assert.equal(await definitionValue(workstreams.nth(1), label).getByText("None", { exact: true }).count(), 1, `${label} did not expose its empty scalar`);
+  }
+  for (const label of ["Assigned questions", "Evidence needs", "Source classes"]) {
+    assert.equal(await definitionValue(workstreams.nth(1), label).getByText("Empty", { exact: true }).count(), 1, `${label} did not expose its empty list`);
+  }
+  assert.equal(errors.some((message) => /children with the same key|duplicate key/i.test(message)), false, "repeated exact-plan values emitted a React duplicate-key warning");
   await page.setViewportSize({ width: 375, height: 812 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, "pending research plan causes page overflow at 375px");
   assert.ok(await researchPlan.evaluate((element) => element.scrollWidth <= element.clientWidth), "pending research plan content overflows its panel");

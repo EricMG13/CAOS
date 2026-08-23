@@ -572,34 +572,35 @@ function RunConsole({ caseId, selectedCase, run, runLoading, runError, startRun,
 }
 
 function ResearchPlanView({ plan, planHash, approving, onApprove }: { plan: ResearchPlan; planHash: string; approving: boolean; onApprove: (planHash: string) => void }) {
+  const scalar = (value: string | number | null | undefined) => value === "" || value == null ? <span className="muted">None</span> : value;
   return <section className="research-plan" role="region" aria-labelledby="research-plan-heading">
     <h3 id="research-plan-heading">Proposed research plan</h3>
     <p>Review the complete deterministic plan. Approval binds execution to the exact hash shown here.</p>
     <dl className="research-plan-facts">
       <dt>Plan hash</dt><dd className="mono">{planHash}</dd>
-      <dt>Methodology build</dt><dd className="mono">{plan.methodology_build_id}</dd>
-      <dt>Brief digest</dt><dd className="mono">{plan.brief_digest}</dd>
-      <dt>Source set</dt><dd><span className="mono">{plan.source_set.id}</span> · version {plan.source_set.version}</dd>
-      <dt>Upstream artifacts</dt><dd><ul>{plan.upstream_artifacts.map((artifact) => <li key={`${artifact.module_id}:${artifact.artifact_id}`}><strong>{artifact.module_id}</strong> · <span className="mono">{artifact.artifact_id}</span> · <span className="mono">{artifact.digest}</span></li>)}</ul></dd>
-      <dt>Scope</dt><dd>Type {plan.scope.type || "—"} · key <span className="mono">{plan.scope.key || "—"}</span> · source mode {plan.scope.source_mode || "—"}</dd>
+      <dt>Methodology build</dt><dd className="mono">{scalar(plan.methodology_build_id)}</dd>
+      <dt>Brief digest</dt><dd className="mono">{scalar(plan.brief_digest)}</dd>
+      <dt>Source set</dt><dd><span className="mono">{scalar(plan.source_set.id)}</span> · version {scalar(plan.source_set.version)}</dd>
+      <dt>Upstream artifacts</dt><dd>{plan.upstream_artifacts.length ? <ul>{plan.upstream_artifacts.map((artifact, artifactIndex) => <li key={`upstream:${artifactIndex}`}><strong>{scalar(artifact.module_id)}</strong> · <span className="mono">{scalar(artifact.artifact_id)}</span> · <span className="mono">{scalar(artifact.digest)}</span></li>)}</ul> : <span className="muted">Empty</span>}</dd>
+      <dt>Scope</dt><dd>Type {scalar(plan.scope.type)} · key <span className="mono">{scalar(plan.scope.key)}</span> · source mode {scalar(plan.scope.source_mode)}</dd>
     </dl>
     <h4>Workstreams</h4>
-    <ol className="research-workstreams">{plan.workstreams.map((workstream) => <li key={workstream.id}>
-      <h5>{workstream.id} · {workstream.kind}</h5>
+    {plan.workstreams.length ? <ol className="research-workstreams">{plan.workstreams.map((workstream, workstreamIndex) => <li key={`workstream:${workstreamIndex}`}>
+      <h5>{scalar(workstream.id)} · {scalar(workstream.kind)}</h5>
       <dl className="research-plan-facts">
-        <dt>ID</dt><dd className="mono">{workstream.id}</dd>
-        <dt>Kind</dt><dd>{workstream.kind}</dd>
-        <dt>Question</dt><dd>{workstream.question}</dd>
-        <dt>Assigned questions</dt><dd>{workstream.assigned_questions?.length ? <ul>{workstream.assigned_questions.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul> : <span className="muted">None</span>}</dd>
-        <dt>Perspective</dt><dd>{workstream.perspective}</dd>
-        <dt>Hypothesis</dt><dd>{workstream.hypothesis}</dd>
-        <dt>Evidence needs</dt><dd><ul>{workstream.evidence_needs.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul></dd>
-        <dt>Source classes</dt><dd><ul>{workstream.source_classes.map((item, index) => <li className="mono" key={`${index}:${item}`}>{item}</li>)}</ul></dd>
-        <dt>Disconfirming test</dt><dd>{workstream.disconfirming_test}</dd>
-        <dt>Completion test</dt><dd>{workstream.completion_test}</dd>
-        <dt>Effort cap</dt><dd>{workstream.effort_cap}</dd>
+        <dt>ID</dt><dd className="mono">{scalar(workstream.id)}</dd>
+        <dt>Kind</dt><dd>{scalar(workstream.kind)}</dd>
+        <dt>Question</dt><dd>{scalar(workstream.question)}</dd>
+        <dt>Assigned questions</dt><dd>{workstream.assigned_questions?.length ? <ul>{workstream.assigned_questions.map((item, index) => <li key={`assigned:${index}`}>{scalar(item)}</li>)}</ul> : <span className="muted">Empty</span>}</dd>
+        <dt>Perspective</dt><dd>{scalar(workstream.perspective)}</dd>
+        <dt>Hypothesis</dt><dd>{scalar(workstream.hypothesis)}</dd>
+        <dt>Evidence needs</dt><dd>{workstream.evidence_needs.length ? <ul>{workstream.evidence_needs.map((item, index) => <li key={`evidence:${index}`}>{scalar(item)}</li>)}</ul> : <span className="muted">Empty</span>}</dd>
+        <dt>Source classes</dt><dd>{workstream.source_classes.length ? <ul>{workstream.source_classes.map((item, index) => <li className="mono" key={`source:${index}`}>{scalar(item)}</li>)}</ul> : <span className="muted">Empty</span>}</dd>
+        <dt>Disconfirming test</dt><dd>{scalar(workstream.disconfirming_test)}</dd>
+        <dt>Completion test</dt><dd>{scalar(workstream.completion_test)}</dd>
+        <dt>Effort cap</dt><dd>{scalar(workstream.effort_cap)}</dd>
       </dl>
-    </li>)}</ol>
+    </li>)}</ol> : <p className="muted">Empty</p>}
     <button className="button primary" type="button" disabled={approving} onClick={() => onApprove(planHash)}>{approving ? "Approving…" : "Approve research plan"}</button>
   </section>;
 }

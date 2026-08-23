@@ -3842,3 +3842,19 @@ exact-hash approval flow.
 Decision: accept Phase 5 for the existing single-case Run Console. The UI does
 not create a second capability endpoint or read model, does not weaken backend
 authorization or exact-hash approval, and does not enable the pilot by default.
+
+## 2026-08-23 — Hybrid CP-DR Phase 5 empty-plan remediation critic pass
+
+Decision under review: close the independent-review finding that an exact
+approval plan could render empty values as blank space, without altering the
+persisted plan or the hash submitted for approval.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-101 | Approval-fidelity reviewer | Blank scalar and list cells can make an analyst approve a hashed plan without knowing whether a field is absent or merely failed to render. | High | Resolved and verified | Every top-level, artifact, scope, and workstream scalar renders a visible muted `None` marker for `null`, `undefined`, or the empty string. Empty upstream, workstream, assigned-question, evidence-need, and source-class lists render `Empty`. Zero remains visible as zero, and nonempty values are not normalized or truncated. |
+| RT-2026-08-23-102 | Repetition-integrity reviewer | Provider-plan values are not unique identities; duplicate workstream IDs or artifact/list values can collide as React keys, warn, or reconcile the wrong displayed row. | High | Resolved and verified | Immutable-plan array positions now provide stable collision-free sibling keys. Both shipped browser fixtures contain repeated IDs, artifacts, and list values; every repeated value remains visible and approval still posts the unchanged complete hash. |
+| RT-2026-08-23-103 | Test-integrity reviewer | A synthetic empty fixture could pass without exercising the renderer, or a production React build could hide duplicate-key warnings. | High | Resolved and verified | The existing mandatory case/run fixture-hit gates remain in force. Workbench assertions bind each scalar/list label to its explicit marker, count repeated values and workstreams, and reject duplicate-key console messages; the independent 375px axe fixture repeats artifact/workstream/list identities, asserts marker and row counts, rejects the same warning, and reports zero rendered violations. |
+
+Decision: return the scoped Phase 5 remediation for fresh independent review.
+The pilot remains disabled by default, exact-hash approval is unchanged, and no
+endpoint, read model, dependency, or state abstraction was added.
