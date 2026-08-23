@@ -3878,3 +3878,25 @@ Decision: accept Phase 6 for the disabled-by-default single-provider pilot. The
 change adds no parser, provider, metrics system, image variant, or secret to the
 API/proxy boundary. Enablement and rollback require only operator environment
 changes plus service recreation; the immutable image is unchanged.
+
+## 2026-08-23 — Hybrid CP-DR Phase 7 activation-readiness critic pass
+
+Decision under review: determine whether the completed disabled-by-default
+issuer-only CP-DR implementation is locally implementation-ready, without
+turning local verification into authorization for provider processing, a shadow
+evaluation, or production activation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-23-110 | Clean-environment reviewer | Passing in the long-lived project environment could hide an interpreter-specific or dependency-resolution failure. | High | Resolved and verified | Fresh Python 3.11.15 and 3.14.6 environments installed the current development requirements, passed `pip check`, Ruff, the route audit, and the complete 276-test backend suite with provider keys empty. The exact pip-audit 2.10.1 gate queried current advisories and found no known vulnerability. |
+| RT-2026-08-23-111 | Secret-scan reviewer | The exact CI Gitleaks gate failed on two findings re-attributed to a merge commit, so calling the branch clean would conceal a shipping gate failure. | High | Resolved and verified | Redacted metadata proved the findings were the already-documented removed local server-info blob and synthetic example cookie placeholder; the former has the exact previously allowlisted blob identity. Only the two merge-commit fingerprints were added to the narrow history allowlist. Gitleaks v8.18.4 then scanned all 68 commits with no leaks; no matched value was displayed or copied. |
+| RT-2026-08-23-112 | Image/security reviewer | A clean source tree does not prove the production image is immutable-resource complete, vulnerability-clean, unprivileged, or free of provider credentials outside the worker. | Critical | Resolved and verified | The exact current Dockerfile image passed its in-image 307-resource verifier with zero mismatches. Trivy v0.72.0 refreshed its advisory DB and reported zero fixable HIGH/CRITICAL findings under the exact CI semantics. Image config/history contain no provider-key environment or build-layer mention; rendered Compose places the optional empty key only on the worker and preserves read-only filesystems, dropped capabilities, and no-new-privileges for app and worker. |
+| RT-2026-08-23-113 | PostgreSQL/fencing reviewer | Memory-only success can conceal stale-lease writes, non-durable approval state, split terminal commits, or an invalid snapshot becoming acceptable after rollback. | Critical | Resolved and verified | A fresh database in the retained disposable PostgreSQL container passed durable pause/exact approval/resume, expired-lease refusal, takeover fencing, atomic terminal rollback, 174+10-second deadline rollback, normal two-second atomic success, and fencing-precedence probes. Failed finalizations produced no success event and remained unacceptable; the normal path committed one terminal event. |
+| RT-2026-08-23-114 | Governance/valuation reviewer | Automated local checks cannot establish ZDR/commercial-processing approval, real-provider behavior, or whether the research output improves buy-side decisions across representative cases. | Critical | Governance-gated — NOT AUTHORIZED | No live credential was requested, read, or used; no document was uploaded and the pilot remains disabled with empty allowlists. Production activation requires separate ZDR and commercial-processing approval, a controlled sanitized live-provider smoke, a blinded twenty-case analyst-scored shadow evaluation, named pilot identities/cases, and explicit opt-in approval. None is claimed passed here. |
+
+Decision: accept the implementation for local automated readiness only. All
+authorized automated, clean-environment, browser, accessibility, dependency,
+image, Compose, and real-PostgreSQL gates pass after the narrow historical
+Gitleaks correction. Live-provider smoke, shadow evaluation, and opt-in
+activation remain explicitly not authorized; the feature stays disabled and
+deny-all by default.

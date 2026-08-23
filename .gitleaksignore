@@ -7,3 +7,7 @@
 # the already-pushed PR history. Both are removed/replaced in the current tree.
 3df7c7ba86081f49dd871d4b15a8f59745f8899c:.superpowers/brainstorm/66798-1787255668/state/server-info:generic-api-key:1
 3df7c7ba86081f49dd871d4b15a8f59745f8899c:caos/.env.example:generic-api-key:13
+# The merge commit re-attributed the same removed local metadata and synthetic
+# example placeholder; pin those exact historical fingerprints as well.
+01ae37731bf6489641e457e4f7acdb34357a56cd:.superpowers/brainstorm/66798-1787255668/state/server-info:generic-api-key:1
+01ae37731bf6489641e457e4f7acdb34357a56cd:caos/.env.example:generic-api-key:13
