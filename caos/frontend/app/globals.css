@@ -46,7 +46,10 @@ a:not(.button, .nav-link, .wordmark):hover { color: var(--caos-accent); }
 .rail > nav + nav { border-top: 1px solid var(--caos-border); padding-top: 10px; }
 .rail > nav + nav .nav-link { padding-block: 6px; padding-left: 18px; color: var(--caos-muted); font-size: 11px; }
 .nav-link { display: flex; justify-content: space-between; gap: var(--space-sm); padding: var(--space-sm); border: 1px solid transparent; border-radius: 6px; text-decoration: none; background: transparent; color: var(--caos-text); text-align: left; cursor: pointer; transition: border-color 160ms ease-out, background-color 160ms ease-out, color 160ms ease-out; }
-.nav-link:hover, .nav-link.active, .nav-link[aria-selected="true"] { border-color: var(--caos-border); background: var(--caos-elevated); color: var(--caos-accent); }
+.nav-link:hover { border-color: var(--caos-accent); background: var(--caos-elevated); color: var(--caos-text); }
+.nav-link[aria-selected="true"] { border-color: var(--caos-border); background: var(--caos-elevated); color: var(--caos-accent); }
+.rail .nav-link.active, .rail .nav-link[aria-current="page"] { border-color: var(--caos-accent); background: var(--caos-accent); color: var(--caos-bg); }
+.rail .nav-link.active .shortcut, .rail .nav-link[aria-current="page"] .shortcut { color: var(--caos-bg); }
 .nav-link .shortcut { color: var(--caos-muted); font: 10px var(--font-mono), ui-monospace, monospace; }
 .workspace { min-width: 0; }
 .topbar { min-height: 56px; border-bottom: 1px solid var(--caos-border); display: flex; align-items: center; justify-content: space-between; padding: 0 var(--space-lg); gap: var(--space-lg); }
@@ -120,7 +123,7 @@ th { color: var(--caos-muted); font-size: 10px; letter-spacing: .09em; text-tran
 .state-block dd { min-width: 0; margin: 0; }
 .paper { background: var(--caos-paper); color: var(--caos-ink); border-color: var(--caos-paper-rule); }
 .paper .muted, .paper .eyebrow, .paper .empty { color: var(--caos-paper-meta); }
-.paper .button { background: transparent; color: var(--caos-paper-link); border-color: var(--caos-paper-rule); }
+.paper .button { background: transparent; color: var(--caos-paper-link); border-color: var(--caos-paper-rule-strong); }
 .paper .button.primary { background: var(--caos-paper-link); color: var(--caos-paper); border-color: var(--caos-paper-link); }
 .paper .error { color: var(--caos-paper-critical); }
 .paper .status.success { color: var(--caos-paper-success); }
