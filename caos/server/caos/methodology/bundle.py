@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ class DeployVBundle:
         self.retrieval = self._read("CP_DEPLOY_V_RETRIEVAL_INDEX_v1.json")
         self.profiles = self._read("CP_DEPLOY_V_EXECUTION_PROFILES_v1.json")
         self.catalog = self._read("skills/cp-os-credit-os/references/CREDIT_OS_V_MODULE_CATALOG_v2.json")
+        self._cpdr_scripts: dict[str, Any] = {}
 
     def _read(self, name: str) -> dict[str, Any]:
         path = self.root / name
@@ -187,3 +190,52 @@ class DeployVBundle:
 
     def route_golden_cases(self) -> list[tuple[str, Depth]]:
         return [(pathway, depth) for pathway in INTERNAL_PATHWAYS for depth in (Depth.FULL, Depth.SCREEN)]
+
+    def _load_cpdr_script(self, name: str) -> Any:
+        cached = self._cpdr_scripts.get(name)
+        if cached is not None:
+            return cached
+        path = self.root / "skills" / "cp-dr-deep-research" / "scripts" / f"{name}.py"
+        module_name = f"caos_deploy_v_cpdr_{name}_{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
+        registered = sys.modules.get(module_name)
+        if registered is not None:
+            self._cpdr_scripts[name] = registered
+            return registered
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise MethodologyError(f"cannot load CP-DR authority script: {name}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(module_name, None)
+            raise
+        self._cpdr_scripts[name] = module
+        return module
+
+    def cpdr_confidence(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        module = self._load_cpdr_script("confidence_score")
+        return module.compute(
+            inputs["lineage_counts"],
+            inputs["fields_present"],
+            inputs["fields_total"],
+            inputs["source_gate"],
+            inputs["findings"],
+        )
+
+    def validate_cpdr_handoff(
+        self,
+        text: str,
+        filename: str,
+        run_id: str,
+        reporting_period: str,
+    ) -> Any:
+        module = self._load_cpdr_script("validate_handoff")
+        return module.validate_text(
+            text,
+            filename=filename,
+            expected_module="CP-DR",
+            expected_run_id=run_id,
+            expected_period=reporting_period,
+        )

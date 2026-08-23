@@ -258,7 +258,18 @@ def test_runtime_emits_no_plan_events_when_pause_persistence_fails() -> None:
 
 def test_exact_plan_approval_preserves_identity_and_phase4_fails_closed() -> None:
     store = MemoryStore()
-    runtime = _runtime(store)
+    runtime = WorkflowRuntime(
+        store,
+        DeployVBundle(DEPLOY_V),
+        Settings(
+            environment="production",
+            storage_dir=Path("/tmp/caos-cp-dr-planning"),
+            deploy_v_root=DEPLOY_V,
+            anthropic_api_key="test-only-key",
+            cpdr_agent_enabled=True,
+            cpdr_pilot_subjects=("analyst",),
+        ),
+    )
     try:
         paused, _ = _pause_research(runtime)
         store.runs[paused["id"]]["research"]["budget_used"]["turns"] = 2
@@ -301,7 +312,7 @@ def test_exact_plan_approval_preserves_identity_and_phase4_fails_closed() -> Non
         failed = store.get_run(paused["id"])
         assert failed is not None
         assert failed["status"] == "failed"
-        assert failed["error"]["message"] == "CP_DR_RESEARCH_EXECUTION_UNAVAILABLE"
+        assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert not any(artifact["module_id"] == "CP-DR" for artifact in store.artifacts.values())
     finally:
         runtime.close()

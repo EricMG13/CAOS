@@ -40,3 +40,32 @@ def test_run_launcher_honors_port_environment(monkeypatch) -> None:
 
     assert calls[0][1]["host"] == "0.0.0.0"
     assert calls[0][1]["port"] == 8011
+
+
+def test_cpdr_settings_are_disabled_and_deny_all_by_default(monkeypatch) -> None:
+    for name in ("ANTHROPIC_API_KEY", "CPDR_AGENT_ENABLED", "CPDR_PILOT_CASE_IDS", "CPDR_PILOT_SUBJECTS"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings.from_env()
+    assert settings.anthropic_api_key == ""
+    assert settings.cpdr_agent_enabled is False
+    assert settings.cpdr_pilot_case_ids == ()
+    assert settings.cpdr_pilot_subjects == ()
+
+
+def test_cpdr_settings_parse_strict_flag_and_bounded_exact_allowlists(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setenv("CPDR_AGENT_ENABLED", "true")
+    monkeypatch.setenv("CPDR_PILOT_CASE_IDS", "case-1, case-2,case-1")
+    monkeypatch.setenv("CPDR_PILOT_SUBJECTS", "analyst@example.com")
+    settings = Settings.from_env()
+    assert settings.anthropic_api_key == "secret"
+    assert settings.cpdr_agent_enabled is True
+    assert settings.cpdr_pilot_case_ids == ("case-1", "case-2")
+    assert settings.cpdr_pilot_subjects == ("analyst@example.com",)
+
+
+@pytest.mark.parametrize("value", ["1", "TRUE", "yes", "False"])
+def test_cpdr_settings_reject_noncanonical_boolean(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("CPDR_AGENT_ENABLED", value)
+    with pytest.raises(ValueError, match="CPDR_AGENT_ENABLED must be true or false"):
+        Settings.from_env()
