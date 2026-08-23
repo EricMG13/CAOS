@@ -467,6 +467,14 @@ try {
   await page.getByRole("textbox", { name: "Evidence IDs" }).fill(secondAccepted.id);
   await page.getByRole("button", { name: "Freeze report snapshot" }).click();
   await page.getByRole("status").getByText("Frozen report pending Approver ratification.").waitFor();
+
+  const proof = page.locator(".report-proof-stage");
+  await proof.locator("table.filed-table th", { hasText: "Instrument" }).waitFor();
+  assert.equal(await proof.locator("pre").count(), 0, "filed proof still renders a raw <pre> dump");
+  const proofText = await proof.locator(".filed-body").innerText();
+  assert.ok(!proofText.includes("| --- |"), "filed proof still contains raw markdown table syntax");
+  assert.ok(!/(^|\n)#{1,3}\s/.test(proofText), "filed proof still contains a raw markdown heading");
+  assert.ok(!proofText.includes("`"), "filed proof still contains raw markdown code fences");
   assert.deepEqual(reportInputPayload.thesis.evidence_ids, [secondAccepted.id], "a valid case snapshot outside the visible picker was rejected client-side");
   assert.deepEqual(freezePayload, { thesis_version: 101, recommendation_version: 202, include_model: false });
   await page.unroute(reportInputsPath);

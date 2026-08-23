@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EvidenceChip from "./EvidenceChip";
+import FiledProof from "./FiledProof";
 import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
 import { type CaseRecord, type Destination, type Snapshot, type SnapshotView, destinationFromSlug, routeDestinations, withQuery } from "../lib/workbench";
 
@@ -371,7 +372,7 @@ export default function Workspace({ destination, children }: { destination?: Des
       case "RV Screener": return <RVView caseId={caseId} />;
       case "Command Center": return <CommandView caseId={caseId} question={routeQuestion} />;
       case "Model Builder": return <ModelView caseId={caseId} />;
-      case "Report Studio": return <ReportView acceptedSnapshot={authority?.accepted ?? null} caseId={caseId} role={role} />;
+      case "Report Studio": return <ReportView acceptedSnapshot={authority?.accepted ?? null} caseId={caseId} role={role} selectedCase={selectedCase} />;
       case "Admin Studio": return <AdminView />;
     }
   };
@@ -565,7 +566,7 @@ function AdminView() {
   return <div className="grid"><section className="panel span-4"><div className="panel-header"><h2>Step-up</h2><span className="eyebrow">ADMIN ONLY</span></div><div className="panel-body"><form onSubmit={(event) => { event.preventDefault(); void load(); }}><div className="field"><label htmlFor="step-up">OIDC step-up token</label><input id="step-up" name="step-up" autoComplete="one-time-code" type="password" value={stepUp} onChange={(event) => setStepUp(event.target.value)} required /></div><button className="button primary" type="submit" disabled={pending}>{pending ? "Verifying…" : "Verify authority"}</button>{message && <p className="error" role="alert">{message}</p>}</form></div></section><section className="panel span-8"><div className="panel-header"><h2>Bundle integrity</h2><span className="eyebrow">DEPLOY V</span></div><div className="panel-body">{bundle ? <><p className="mono">Build {bundle.build_id}</p><p className="status success">{bundle.integrity.checked} files verified · {bundle.integrity.mismatches} mismatches</p></> : <div className="empty">Step up to inspect the signed methodology bundle and audit trail.</div>}</div></section><section className="panel span-12"><div className="panel-header"><h2>Audit trail</h2><span className="eyebrow">IMMUTABLE EVENTS</span></div><div className="panel-body table-wrap"><table><thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th></tr></thead><tbody>{audit.map((event, index) => <tr key={`${event.at}-${index}`}><td className="mono">{formatDate(event.at)}</td><td>{event.actor}</td><td className="mono">{event.action}</td></tr>)}</tbody></table>{!audit.length && <div className="empty">No audit events loaded.</div>}</div></section></div>;
 }
 
-function ReportView({ acceptedSnapshot, caseId, role }: { acceptedSnapshot: Snapshot | null; caseId: string; role: string }) {
+function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { acceptedSnapshot: Snapshot | null; caseId: string; role: string; selectedCase: CaseRecord | null }) {
   type DraftState = Required<ReportDraft> & { dirty: boolean };
   const [report, setReport] = useState<{ id?: string; status: string; digest: string; preview_digest?: string; input_fingerprint?: string; snapshot_digest: string; markdown: string } | null>(null);
   const [versions, setVersions] = useState({ thesis: 0, recommendation: 0 });
@@ -679,8 +680,8 @@ function ReportView({ acceptedSnapshot, caseId, role }: { acceptedSnapshot: Snap
     </section>
     <section className="report-proof-stage" aria-labelledby="paper-proof-title">
       <article className="paper report-paper">
-        <header className="report-paper-header"><div><span className="paper-kicker">CAOS · filed proof</span><h2 id="paper-proof-title">Paper proof</h2></div>{report && <span className={`status ${report.status === "APPROVED" ? "success" : "warning"}`}>{report.status}</span>}</header>
-        <div className="report-paper-body">{loading ? <LoadState loading /> : report ? <div className="flow"><p className="mono">{report.digest}</p><p className="muted mono">Snapshot {report.snapshot_digest}</p>{report.status === "PENDING_APPROVAL" && (role === "APPROVER" || role === "ADMIN") && <button className="button primary" type="button" onClick={approve} disabled={pending === "approve"}>{pending === "approve" ? "Approving…" : "Approve frozen report"}</button>}{report.status === "APPROVED" && <div className="proof-actions"><a className="button small" href={`/api/cases/${caseId}/reports/export/md`}>Markdown</a><a className="button small" href={`/api/cases/${caseId}/reports/export/pdf`}>PDF</a><a className="button small" href={`/api/cases/${caseId}/reports/export/xlsx`}>XLSX</a></div>}<pre className="mono report-preview">{report.markdown}</pre></div> : <div className="empty">No frozen report for this case.</div>}</div>
+        <header className="report-paper-header"><div><span className="paper-kicker">CAOS · filed proof</span><h2 id="paper-proof-title">{selectedCase ? `${selectedCase.issuer} — ${selectedCase.name}` : "Filed proof"}</h2></div>{report && <span className={`status ${report.status === "APPROVED" ? "success" : "warning"}`}>{report.status}</span>}</header>
+        <div className="report-paper-body">{loading ? <LoadState loading /> : report ? <div className="flow"><p className="mono">{report.digest}</p><p className="muted mono">Snapshot {report.snapshot_digest}</p>{report.status === "PENDING_APPROVAL" && (role === "APPROVER" || role === "ADMIN") && <button className="button primary" type="button" onClick={approve} disabled={pending === "approve"}>{pending === "approve" ? "Approving…" : "Approve frozen report"}</button>}{report.status === "APPROVED" && <div className="proof-actions"><a className="button small" href={`/api/cases/${caseId}/reports/export/md`}>Markdown</a><a className="button small" href={`/api/cases/${caseId}/reports/export/pdf`}>PDF</a><a className="button small" href={`/api/cases/${caseId}/reports/export/xlsx`}>XLSX</a></div>}<FiledProof markdown={report.markdown} /></div> : <div className="empty">No frozen report for this case.</div>}</div>
       </article>
     </section>
   </div>;
