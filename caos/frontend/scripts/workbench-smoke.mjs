@@ -827,6 +827,13 @@ try {
   });
   const narrowPage = await narrow.newPage();
   await narrowPage.goto(`${baseURL}/deep-dive/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  // A palette route whose client payload 404s degrades into a full document load, but only
+  // after the router has pushed the destination URL. `waitForURL` then resolves on that
+  // pushed entry and the following `goto` races the fallback load, which cancels it.
+  const narrowDocumentLoads = [];
+  narrowPage.on("request", (requestValue) => {
+    if (requestValue.isNavigationRequest()) narrowDocumentLoads.push(requestValue.url());
+  });
   await narrowPage.getByRole("button", { name: "Open command palette" }).click();
   const narrowPalette = narrowPage.getByRole("dialog", { name: "Command palette" });
   await narrowPalette.getByRole("combobox", { name: "Search commands" }).fill("Case register");
@@ -838,6 +845,7 @@ try {
   await narrowPage.waitForURL((url) => url.pathname.replace(/\/$/, "") === "/run-console"
     && url.searchParams.get("case") === caseRecord.id
     && url.searchParams.get("run") === nextRun.id);
+  assert.deepEqual(narrowDocumentLoads, [], "command palette navigation fell back to a full document load");
   await narrowPage.goto(`${baseURL}/report-studio/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
   assert.equal(await narrowPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, "Report Studio causes page-level horizontal overflow at 375px");
 

@@ -1,3 +1,8 @@
+// CAOS_URL must point at the combined app — the static export served by FastAPI,
+// as caos/scripts/build_frontend.sh + caos/server/run.py produce and CI runs. The
+// pending-plan fixture below drives client routing that only behaves correctly
+// against that build; pointing this at `next dev` fails on the "Proposed research
+// plan" wait, which looks like a product defect but is a harness mismatch.
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import AxeBuilder from "@axe-core/playwright";
