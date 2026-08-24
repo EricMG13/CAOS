@@ -245,6 +245,7 @@ class FreezeReportRequest(StrictModel):
     thesis_version: int = Field(ge=1)
     recommendation_version: int = Field(ge=1)
     model_build_id: str | None = Field(default=None, min_length=1, max_length=120)
+    include_model_export: bool = False
     include_model: Literal[False] = False
 
 

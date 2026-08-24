@@ -630,6 +630,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 thesis_value,
                 recommendation_value,
                 model_build,
+                include_model_export=payload.include_model_export,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

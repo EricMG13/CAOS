@@ -4007,6 +4007,26 @@ Decision: accept the implementation. The in-app worksheet is the primary model,
 LibreOffice remains optional and worker-only, and no signed-authority blocker
 remains in live runtime or product documentation.
 
+## 2026-08-24 — CP-MODEL adversarial remediation gate
+
+Decision under review: repair the provider budget, persisted model boundary,
+requester attribution, report-export consent, case-switch isolation, and
+worksheet keyboard contract before deployment.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-150 | Provider-runtime reviewer | A nominal per-module turn allowance still fails if evidence reads and final responses draw from one run-wide budget. | Critical | Resolved in target boundary | The turn ceiling is derived from the complete bounded interaction surface: all permitted evidence reads, one terminal response per canonical module, and the single repair allowance. A regression asserts that invariant rather than a brittle magic number. |
+| RT-2026-08-24-151 | Model-integrity reviewer | Validating only that a digest looks hexadecimal lets arbitrary or incomplete worker output become a `READY` model. | Critical | Resolved in target boundary | The shared store completion boundary accepts an exact calculation-result contract, requires the worksheet and QA shapes, and recomputes the canonical payload digest before changing status. The restore drill recomputes the same digest from every ready payload. |
+| RT-2026-08-24-152 | Audit reviewer | Reading the model creator at execution time misattributes an export requested by another authorized case member, especially after a lease takeover. | High | Resolved in target boundary | Each model job persists its requesting actor in authoritative state; retry updates it, Postgres claim/finalization preserve it, and the worker dispatches with that actor. Legacy jobs alone fall back to the model creator. |
+| RT-2026-08-24-153 | Report-governance reviewer | A single model checkbox can silently bind a ready XLSX binary even when the analyst selected only the analytical model. | High | Resolved in interface contract | The freeze request defaults export inclusion to false. Report Studio exposes a separate export checkbox only for a ready selected model, and approval continues to recompute the exact frozen choice. |
+| RT-2026-08-24-154 | Browser-concurrency reviewer | A late Report Studio response from the previous case can overwrite the selected case or carry model consent across the boundary. | High | Resolved in target boundary | Report refreshes use abort plus generation fencing, case changes clear model/export selections, and stale continuations cannot mutate visible state. The browser journey exercises a delayed prior-case request. |
+| RT-2026-08-24-155 | Accessibility reviewer | A scrollable worksheet region and focusable lineage links do not provide row/column keyboard navigation across ordinary cells. | High | Resolved in interface contract | The read-only table uses one roving cell stop with bounded arrow-key movement and Enter/Space lineage activation. Existing native table semantics, source buttons, and visible global focus treatment remain intact. |
+
+Decision: proceed with the six root-cause remediations. Do not add editable
+worksheets, a second model format, custom grid virtualization, or a new job
+abstraction; the existing bounded snapshot, store, and table remain the
+authoritative surfaces.
+
 ## 2026-08-24 — Leveraged-loan RV workbook ingestion implementation gate
 
 Decision under review: ship the fixed-template, loan-only workbook importer,

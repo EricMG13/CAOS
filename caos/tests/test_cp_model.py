@@ -14,7 +14,12 @@ from caos.config import Settings
 from caos.contracts import digest
 from caos.http import create_app
 from caos.methodology.bundle import DeployVBundle
-from caos.methodology.canonical import CanonicalModuleRunner, CanonicalValidationError
+from caos.methodology.canonical import (
+    CANONICAL_MODULES,
+    CanonicalModuleRunner,
+    CanonicalValidationError,
+    canonical_generation_state,
+)
 from caos.models import CpModelBundle, ModelInputError, project_cp2b
 from caos.models import runtime as model_runtime
 from caos.models.runtime import (
@@ -327,6 +332,14 @@ def test_canonical_runner_rejects_unreturned_model_table_source() -> None:
         _canonicalize_fixture(runner, "CP-1", markdown=markdown)
 
 
+def test_canonical_turn_budget_covers_all_bounded_interactions() -> None:
+    limits = canonical_generation_state("test-model", "2026-08-24")["budget_limits"]
+
+    assert limits["turns"] >= (
+        limits["evidence_reads"] + len(CANONICAL_MODULES) + limits["repairs"]
+    )
+
+
 def _canonical_runtime_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, object]]:
     store = MemoryStore()
     runtime = WorkflowRuntime(
@@ -539,6 +552,17 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
                     "analytical_dependency_ids": [],
                 },
             ).json()
+            model_only = client.post(
+                f"/api/cases/{case['id']}/reports/freeze",
+                headers=analyst,
+                json={
+                    "thesis_version": thesis["version"],
+                    "recommendation_version": recommendations["version"],
+                    "model_build_id": ready["id"],
+                },
+            )
+            assert model_only.status_code == 201
+            assert "export" not in model_only.json()["content"]["model"]
             frozen = client.post(
                 f"/api/cases/{case['id']}/reports/freeze",
                 headers=analyst,
@@ -546,6 +570,7 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
                     "thesis_version": thesis["version"],
                     "recommendation_version": recommendations["version"],
                     "model_build_id": ready["id"],
+                    "include_model_export": True,
                 },
             )
             assert frozen.status_code == 201

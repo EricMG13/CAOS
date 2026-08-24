@@ -23,7 +23,7 @@ def main() -> None:
             model_jobs = [
                 (
                     job["build_id"],
-                    store.model_builds[job["build_id"]]["created_by"],
+                    job.get("actor") or store.model_builds[job["build_id"]]["created_by"],
                     job.get("kind"),
                 )
                 for job in getattr(store, "model_jobs", {}).values()

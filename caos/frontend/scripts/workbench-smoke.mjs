@@ -650,6 +650,7 @@ try {
   }));
 
   const modelBuildId = `model_${fixtureSuffix}`;
+  let inventoryModelBuildId = modelBuildId;
   const modelRequirements = ["CP-1", "CP-1A", "CP-1B", "CP-2", "CP-2A", "CP-2B"].map((module_id) => ({ module_id, status: "READY", digest: "a".repeat(64) }));
   let modelState = "READY_TO_BUILD";
   let modelExportState = "NOT_REQUESTED";
@@ -661,7 +662,7 @@ try {
   let modelGetsInFlight = 0;
   let maxModelGetsInFlight = 0;
   let modelLoadFails = false;
-  const modelBuild = () => ({ id: modelBuildId, case_id: caseRecord.id, accepted_run_id: run.id, accepted_snapshot_id: accepted.id, source_set_id: "set-model", input_fingerprint: "b".repeat(64), status: modelState, queued_at: "2026-08-24T12:00:00Z", started_at: null, completed_at: modelState === "READY" ? "2026-08-24T12:01:00Z" : null, error: modelState === "FAILED" ? { code: "MODEL_CALCULATION_FAILED", detail: "The model calculation did not complete." } : null, export: { status: modelExportState, error: modelExportState === "FAILED" ? { code: "MODEL_EXPORT_FAILED", detail: "The XLSX export did not complete." } : null }, qa: modelState === "READY" ? { status: "PASS", semantic_check_count: 20, formula_count: 4, worksheet_cell_count: 12 } : undefined, payload_digest: modelState === "READY" ? "c".repeat(64) : undefined });
+  const modelBuild = () => ({ id: inventoryModelBuildId, case_id: caseRecord.id, accepted_run_id: run.id, accepted_snapshot_id: accepted.id, source_set_id: "set-model", input_fingerprint: "b".repeat(64), status: modelState, queued_at: "2026-08-24T12:00:00Z", started_at: null, completed_at: modelState === "READY" ? "2026-08-24T12:01:00Z" : null, error: modelState === "FAILED" ? { code: "MODEL_CALCULATION_FAILED", detail: "The model calculation did not complete." } : null, export: { status: modelExportState, error: modelExportState === "FAILED" ? { code: "MODEL_EXPORT_FAILED", detail: "The XLSX export did not complete." } : null }, qa: modelState === "READY" ? { status: "PASS", semantic_check_count: 20, formula_count: 4, worksheet_cell_count: 12 } : undefined, payload_digest: modelState === "READY" ? "c".repeat(64) : undefined });
   const modelInventory = () => ({
     readiness: {
       status: modelState,
@@ -737,6 +738,14 @@ try {
   const terminalGets = modelGets;
   await page.waitForTimeout(1800);
   assert.equal(modelGets, terminalGets, "Model Builder kept polling after READY");
+  const firstGridCell = page.locator('td[data-address="A1"]');
+  await firstGridCell.focus();
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-address")), "A2", "worksheet ArrowDown did not move one row");
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-address")), "B2", "worksheet ArrowRight did not move one column");
+  await page.keyboard.press("Enter");
+  await page.locator("#model-cell-lineage").getByText("=A2/276", { exact: true }).waitFor();
   const sourceCell = page.getByRole("button", { name: /Show lineage for account::revenue/ });
   await sourceCell.click();
   await page.locator("#model-cell-lineage").getByText(/SRC-1 \| page 42/).waitFor();
@@ -779,6 +788,9 @@ try {
   await page.unroute(worksheetPath);
   await page.unroute(exportPath);
 
+  modelState = "READY"; modelExportState = "READY";
+  await page.route(modelsPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(modelInventory()) }));
+
   await page.evaluate((caseId) => window.sessionStorage.setItem(`caos-report-draft:${caseId}`, JSON.stringify({ evidenceIds: 17 })), caseRecord.id);
   await page.goto(`${baseURL}/report-studio/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Compose" }).waitFor();
@@ -790,6 +802,13 @@ try {
   );
   assert.equal(await page.locator(".evidence-option", { hasText: "earnings.txt" }).count(), 1, "Report Studio omitted a case source from the evidence picker");
   assert.equal(await page.evaluate((caseId) => window.sessionStorage.getItem(`caos-report-draft:${caseId}`), caseRecord.id), null, "Report Studio retained an invalid local draft");
+  const includeReadyModel = page.getByRole("checkbox", { name: /Include ready model/ });
+  const includeReadyExport = page.getByRole("checkbox", { name: /Include ready XLSX export/ });
+  assert.equal(await includeReadyExport.isDisabled(), true, "Report Studio enabled export attachment before model selection");
+  await includeReadyModel.check();
+  assert.equal(await includeReadyExport.isDisabled(), false, "Report Studio did not expose the selected model's ready export");
+  assert.equal(await includeReadyExport.isChecked(), false, "Report Studio silently selected the ready export");
+  await includeReadyExport.check();
 
   let reportInputPayload;
   let freezePayload;
@@ -819,6 +838,7 @@ try {
   });
   await page.route(reportFreezePath, async (route) => {
     freezePayload = route.request().postDataJSON();
+    inventoryModelBuildId = `model_replacement_${fixtureSuffix}`;
     await route.fulfill({ status: 201, contentType: "application/json", body: "{}" });
   });
   await page.route(reportsGetPath, async (route) => {
@@ -829,6 +849,8 @@ try {
   await page.getByRole("textbox", { name: "Evidence IDs" }).fill(secondAccepted.id);
   await page.getByRole("button", { name: "Freeze report snapshot" }).click();
   await page.getByRole("status").getByText("Frozen report pending Approver ratification.").waitFor();
+  assert.equal(await includeReadyModel.isChecked(), false, "Report Studio transferred model consent to a replacement build");
+  assert.equal(await includeReadyExport.isChecked(), false, "Report Studio transferred XLSX consent to a replacement build");
 
   const proof = page.locator(".report-proof-stage");
   await proof.locator("table.filed-table th", { hasText: "Instrument" }).waitFor();
@@ -838,10 +860,11 @@ try {
   assert.ok(!/(^|\n)#{1,3}\s/.test(proofText), "filed proof still contains a raw markdown heading");
   assert.ok(!proofText.includes("`"), "filed proof still contains raw markdown code fences");
   assert.deepEqual(reportInputPayload.thesis.evidence_ids, [secondAccepted.id], "a valid case snapshot outside the visible picker was rejected client-side");
-  assert.deepEqual(freezePayload, { thesis_version: 101, recommendation_version: 202 });
+  assert.deepEqual(freezePayload, { thesis_version: 101, recommendation_version: 202, model_build_id: modelBuildId, include_model_export: true });
   await page.unroute(reportInputsPath);
   await page.unroute(reportFreezePath);
   await page.unroute(reportsGetPath);
+  await page.unroute(modelsPath);
 
   const reportSourcesPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/sources`;
   await page.route(reportSourcesPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: "not-json" }));
@@ -850,8 +873,26 @@ try {
   assert.equal(await page.getByRole("textbox", { name: "Core thesis" }).count(), 1, "evidence inventory failure blocked the report editor");
   await page.unroute(reportSourcesPath);
 
-  await page.goto(`${baseURL}/report-studio/?case=${raceCase.id}`, { waitUntil: "networkidle" });
+  let releaseSlowModel;
+  let markSlowModelStarted;
+  const slowModel = new Promise((resolve) => { releaseSlowModel = resolve; });
+  const slowModelStarted = new Promise((resolve) => { markSlowModelStarted = resolve; });
+  await page.route(modelsPath, async (route) => {
+    markSlowModelStarted();
+    await slowModel;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(modelInventory()) }).catch(() => {});
+  });
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(raceCase.id);
   await page.getByText("Freeze unavailable", { exact: true }).waitFor();
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(caseRecord.id);
+  await slowModelStarted;
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(raceCase.id);
+  await page.getByText("Freeze unavailable", { exact: true }).waitFor();
+  releaseSlowModel();
+  await page.waitForTimeout(100);
+  assert.equal(await page.getByRole("combobox", { name: "Select case" }).inputValue(), raceCase.id, "stale report refresh changed the selected case");
+  await page.getByText("No ready model", { exact: true }).waitFor();
+  await page.unroute(modelsPath);
   assert.equal(await page.getByRole("button", { name: "Freeze report snapshot" }).isDisabled(), true, "Report Studio allowed freeze without an accepted snapshot");
 
   await page.goto(`${baseURL}/sources/?case=${caseRecord.id}&artifact=${artifact.id}`, { waitUntil: "networkidle" });

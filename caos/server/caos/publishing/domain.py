@@ -12,7 +12,7 @@ def model_report_identity(
     model_build: dict[str, Any] | None,
     snapshot: dict[str, Any],
     *,
-    include_export: bool | None = None,
+    include_export: bool = False,
 ) -> dict[str, Any] | None:
     if model_build is None:
         return None
@@ -33,8 +33,7 @@ def model_report_identity(
         "input_fingerprint": model_build["input_fingerprint"],
     }
     export = model_build.get("export") or {}
-    use_export = export.get("status") == "READY" if include_export is None else include_export
-    if use_export:
+    if include_export:
         if (
             export.get("status") != "READY"
             or not isinstance(export.get("sha256"), str)
@@ -75,6 +74,8 @@ def freeze_report(
     thesis: dict[str, Any],
     recommendations: dict[str, Any],
     model_build: dict[str, Any] | None | bool = None,
+    *,
+    include_model_export: bool = False,
 ) -> dict[str, Any]:
     if not snapshot:
         raise ValueError("SNAPSHOT_REQUIRED")
@@ -88,7 +89,11 @@ def freeze_report(
         model_build = None
     if model_build is True or (model_build is not None and not isinstance(model_build, dict)):
         raise ValueError("MODEL_BUILD_INVALID")
-    model_identity = model_report_identity(model_build, snapshot)
+    if include_model_export and model_build is None:
+        raise ValueError("MODEL_EXPORT_MISMATCH")
+    model_identity = model_report_identity(
+        model_build, snapshot, include_export=include_model_export
+    )
     content = {
         "case_id": case_id,
         "snapshot_id": snapshot["id"],

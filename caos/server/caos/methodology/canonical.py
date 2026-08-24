@@ -98,15 +98,17 @@ def is_canonical_full_credit(plan: dict[str, Any]) -> bool:
 
 def canonical_generation_state(model: str, reporting_period: str) -> dict[str, Any]:
     output_limit = sum(CANONICAL_OUTPUT_TOKENS.values()) + max(CANONICAL_OUTPUT_TOKENS.values())
+    evidence_reads = 60
+    repairs = 1
     limits = {
-        "turns": len(CANONICAL_MODULES) + 1,
-        "evidence_reads": 60,
+        "turns": evidence_reads + len(CANONICAL_MODULES) + repairs,
+        "evidence_reads": evidence_reads,
         "evidence_bytes": 5 * 1024 * 1024,
         "input_tokens": 500_000,
         "output_tokens": output_limit,
         "active_minutes": 15,
         "provider_retries": 1,
-        "repairs": 1,
+        "repairs": repairs,
     }
     return {
         "phase": "generating",

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from caos.contracts import digest
 from caos.migrations import apply_migrations, migration_files
 from caos.store import JobFencedError, MAX_ACTIVE_JOBS, MemoryStore, PostgresStore
 
@@ -49,6 +50,46 @@ def _accepted_build(store: MemoryStore, *, build_id: str | None = None) -> dict[
         "accepted_snapshot_id": snapshot["id"],
         "source_set_id": source_set["id"],
         "input_fingerprint": "a" * 64,
+        "worksheet_schema_version": "caos.model.worksheet.v1",
+    }
+
+
+def _model_result() -> dict[str, Any]:
+    payload = {
+        "schema_version": "caos.model.worksheet.v1",
+        "identity": {
+            "issuer_id": "issuer",
+            "issuer_name": "Issuer",
+            "analysis_date": "2026-08-24",
+        },
+        "tabs": [
+            {
+                "id": "MODEL",
+                "name": "Model",
+                "max_row": 1,
+                "max_column": 1,
+                "freeze_panes": "",
+                "merged_cells": [],
+                "columns": [
+                    {"column": 1, "letter": "A", "width": 12.0, "hidden": False}
+                ],
+                "cells": [],
+            }
+        ],
+    }
+    return {
+        "payload": payload,
+        "payload_digest": digest(payload),
+        "qa": {
+            "status": "PASS",
+            "semantic_checks": [],
+            "semantic_check_count": 0,
+            "formula_count": 0,
+            "worksheet_cell_count": 0,
+            "limitation_flags": [],
+            "validation_warnings": [],
+            "source_manifest": [],
+        },
     }
 
 
@@ -64,9 +105,7 @@ def test_memory_model_build_lifecycle_is_idempotent_fenced_and_export_independen
     assert queued["export"] == {"status": "NOT_REQUESTED", "error": None}
     assert token is not None and store.claim_model_job(build["id"], "other") is None
     assert store.renew_model_job(build["id"], token) is True
-    ready = store.complete_model_job(
-        build["id"], token, {"payload": {"tabs": []}, "payload_digest": "c" * 64}, "worker"
-    )
+    ready = store.complete_model_job(build["id"], token, _model_result(), "worker")
 
     assert ready["status"] == "READY"
     assert ready["export"]["status"] == "NOT_REQUESTED"
@@ -74,9 +113,10 @@ def test_memory_model_build_lifecycle_is_idempotent_fenced_and_export_independen
     assert store.list_model_builds(build["case_id"]) == [ready]
     assert store.model_job_is_current(build["id"], token) is False
 
-    exporting, queued_export = store.queue_model_export(build["id"], "analyst")
+    exporting, queued_export = store.queue_model_export(build["id"], "approver")
     export_token = store.claim_model_job(build["id"], "export-worker", "export")
     assert queued_export is True and exporting["status"] == "READY" and export_token is not None
+    assert store.model_jobs[f"{build['id']}:export"]["actor"] == "approver"
     export_failed = store.fail_model_job(
         build["id"],
         export_token,
@@ -87,6 +127,39 @@ def test_memory_model_build_lifecycle_is_idempotent_fenced_and_export_independen
     assert export_failed["status"] == "READY" and export_failed["export"]["status"] == "FAILED"
     retried, retry_queued = store.queue_model_export(build["id"], "analyst")
     assert retry_queued is True and retried["status"] == "READY" and retried["export"]["status"] == "QUEUED"
+
+
+def test_model_completion_rejects_incomplete_or_mismatched_results() -> None:
+    store = MemoryStore()
+    build = _accepted_build(store)
+    store.queue_model_build(build, "analyst")
+    token = store.claim_model_job(build["id"], "worker")
+    assert token is not None
+    valid = _model_result()
+    incomplete_cell = copy.deepcopy(valid)
+    incomplete_cell["payload"]["tabs"][0]["cells"] = [{"address": "A1"}]
+    incomplete_cell["qa"]["worksheet_cell_count"] = 1
+    incomplete_cell["payload_digest"] = digest(incomplete_cell["payload"])
+    nonfinite_column = copy.deepcopy(valid)
+    nonfinite_column["payload"]["tabs"][0]["columns"][0]["width"] = float("nan")
+    nonfinite_column["payload_digest"] = digest(nonfinite_column["payload"])
+    invalid_results = [
+        {"payload": valid["payload"], "payload_digest": valid["payload_digest"]},
+        {**valid, "payload_digest": "0" * 64},
+        {**valid, "unexpected": True},
+        incomplete_cell,
+        nonfinite_column,
+    ]
+
+    for result in invalid_results:
+        with pytest.raises(ValueError, match="MODEL_RESULT_INVALID"):
+            store.complete_model_job(build["id"], token, result, "worker")
+        assert store.get_model_build(build["id"])["status"] == "BUILDING"
+
+    ready = store.complete_model_job(build["id"], token, valid, "worker")
+    valid["payload"]["identity"]["issuer_name"] = "mutated after completion"
+    assert ready["status"] == "READY"
+    assert store.get_model_build(build["id"])["payload"]["identity"]["issuer_name"] == "Issuer"
 
 
 def test_memory_model_takeover_fences_stale_worker_and_bounds_errors() -> None:
@@ -123,11 +196,12 @@ def test_failed_model_build_can_be_retried_without_changing_identity() -> None:
         "worker",
     )
 
-    retried = store.retry_model_build(queued["id"], "analyst")
+    retried = store.retry_model_build(queued["id"], "approver")
 
     assert retried["id"] == queued["id"]
     assert retried["input_fingerprint"] == queued["input_fingerprint"]
     assert retried["status"] == "QUEUED" and retried["error"] is None
+    assert store.model_jobs[f"{queued['id']}:calculate"]["actor"] == "approver"
     assert store.claim_model_job(queued["id"], "replacement") is not None
 
 
@@ -236,9 +310,10 @@ def test_postgres_model_queue_is_unique_and_takeover_is_fenced() -> None:
     replacement_store = PostgresStore(database_url)
     replacement = replacement_store.claim_model_job(build_id, "replacement")
     assert replacement is not None
+    assert replacement_store.model_jobs[f"{build_id}:calculate"]["actor"] == "analyst"
     with pytest.raises(JobFencedError):
         worker.complete_model_job(build_id, stale, {"payload": {}}, "stale")
-    ready = replacement_store.complete_model_job(build_id, replacement, {"payload": {"tabs": []}}, "replacement")
+    ready = replacement_store.complete_model_job(build_id, replacement, _model_result(), "replacement")
     assert ready["status"] == "READY" and ready["export"]["status"] == "NOT_REQUESTED"
     with replacement_store._psycopg.connect(replacement_store._dsn) as connection:
         with connection.cursor() as cursor:
