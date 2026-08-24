@@ -457,7 +457,7 @@ def test_promoted_note_can_be_repromoted_after_its_source_is_withdrawn(tmp_path:
         assert detail["source_set"]["source_ids"] == [restored["promoted_source_id"]]
 
 
-def test_full_credit_model_dependent_node_is_blocked(tmp_path: Path) -> None:
+def test_full_credit_model_dependent_node_hands_off_to_model_builder(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         case_id = client.post("/api/cases", json={"name": "Model gate", "issuer": "A", "sector": "A"}).json()["id"]
         client.post(f"/api/cases/{case_id}/sources", files={"file": ("source.txt", b"source", "text/plain")})
@@ -469,7 +469,10 @@ def test_full_credit_model_dependent_node_is_blocked(tmp_path: Path) -> None:
             time.sleep(0.05)
         assert state["status"] == "succeeded"
         model_artifact = next(value for value in client.app.state.store.artifacts.values() if value["run_id"] == run["id"] and value["module_id"] == "CP-2G")
-        assert model_artifact["payload"]["status"] == "BLOCKED"
+        assert model_artifact["payload"]["status"] == "COMPLETE"
+        assert "accepted-run CP-MODEL build" in model_artifact["payload"]["summary"]
+        assert model_artifact["payload"]["narrative"]["exceptions"] == "Worksheet calculation runs after accepted-run handoff in Model Builder; this artifact emits no workbook values."
+        assert "signed" not in model_artifact["markdown"]
 
 
 def test_analyst_versions_are_cas_and_recommendation_vocabulary_is_exact(tmp_path: Path) -> None:
@@ -1053,6 +1056,21 @@ def test_cpdr_compose_defaults_are_deny_all_and_provider_key_is_worker_only() ->
     assert "ANTHROPIC_API_KEY" not in services["oauth2-proxy"]
     assert "ANTHROPIC_API_KEY" not in services["caddy"]
     assert sum("ANTHROPIC_API_KEY:" in line for line in compose.splitlines()) == 1
+
+
+def test_cp_model_image_keeps_libreoffice_in_worker_only() -> None:
+    root = Path(__file__).parents[1]
+    dockerfile = (root / "deploy" / "Dockerfile").read_text(encoding="utf-8")
+    compose = (root / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
+    services = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|^volumes:\n)", compose, flags=re.MULTILINE | re.DOTALL))
+    worker_stage, app_stage = dockerfile.split("FROM runtime AS worker", 1)[1].split("FROM runtime AS app", 1)
+
+    assert "libreoffice-calc" in worker_stage
+    assert "libreoffice" not in app_stage.lower()
+    assert "verify_image_resources.py --runtime worker" in worker_stage
+    assert "verify_image_resources.py --runtime app" in app_stage
+    assert "target: app" in services["app"]
+    assert "target: worker" in services["worker"]
 
 
 @pytest.mark.parametrize(("poll_value", "expected"), [("0.25", 0.25), ("nan", 0.01), ("0", 0.01)])

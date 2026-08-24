@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -44,7 +45,6 @@ from .contracts import (
     SnapshotSwitchRequest,
     StartRunRequest,
     ThesisRequest,
-    clean_json,
     digest,
 )
 from .identity_cases.domain import (
@@ -54,7 +54,20 @@ from .identity_cases.domain import (
     require_role,
 )
 from .methodology.bundle import DeployVBundle, MethodologyError
-from .publishing.domain import freeze_report, render_pdf, render_xlsx
+from .models.domain import CpModelBundle
+from .models.runtime import (
+    MAX_EXPORT_BYTES,
+    ModelBuildRuntime,
+    ModelReadinessService,
+    public_model_build,
+)
+from .publishing.domain import (
+    freeze_report,
+    model_report_identity,
+    render_pdf,
+    render_xlsx,
+    report_input_fingerprint,
+)
 from .publishing.recipes import validate_recipe
 from .sources.domain import current_source_set, ingest_upload, list_sources, pathway_fit
 from .store import STORE, MemoryStore, PostgresStore, now_iso
@@ -68,6 +81,11 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     store = store or (PostgresStore(settings.database_url) if settings.environment == "production" else STORE)
     bundle = DeployVBundle(settings.deploy_v_root)
     runtime = WorkflowRuntime(store, bundle, settings)
+    model_bundle = CpModelBundle(settings.deploy_v_root)
+    model_readiness = ModelReadinessService(store, bundle, model_bundle)
+    model_runtime = ModelBuildRuntime(
+        store, model_readiness, model_bundle, runtime.executor, settings.storage_dir
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -81,6 +99,8 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     app.state.store = store
     app.state.bundle = bundle
     app.state.runtime = runtime
+    app.state.model_readiness = model_readiness
+    app.state.model_runtime = model_runtime
 
     @app.middleware("http")
     async def refresh_production_state(request: Request, call_next: Any) -> Response:
@@ -104,6 +124,12 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             raise HTTPException(status_code=404, detail="run not found")
         require_case(store, run["case_id"], actor)
         return run
+
+    def model_for_case(case_id: str, build_id: str) -> dict[str, Any]:
+        build = store.get_model_build(build_id)
+        if build is None or build.get("case_id") != case_id:
+            raise HTTPException(status_code=404, detail="model build not found")
+        return build
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -421,7 +447,109 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     @app.get("/api/cases/{case_id}/model")
     def model(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
-        return {"status": "BLOCKED", "official": False, "module_id": "CP-MODEL", "reason": "signed Deploy V CP-MODEL correction required", "note": "No provisional workbook is labelled as an official CP-MODEL output."}
+        return model_readiness.readiness(case_id)
+
+    @app.get("/api/cases/{case_id}/models")
+    def models(case_id: str, request: Request) -> dict[str, Any]:
+        require_case(store, case_id, identity(request))
+        return {
+            "readiness": model_readiness.readiness(case_id),
+            "builds": [public_model_build(build) for build in store.list_model_builds(case_id)],
+        }
+
+    @app.post("/api/cases/{case_id}/models", status_code=202)
+    def queue_model(case_id: str, request: Request) -> dict[str, Any]:
+        who = identity(request)
+        require_case(store, case_id, who, write=True)
+        try:
+            build, created = model_readiness.queue(case_id, who.subject)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="MODEL_NOT_READY") from exc
+        if created and settings.environment != "production":
+            model_runtime.schedule(build["id"], who.subject)
+        return {"build": public_model_build(build), "created": created}
+
+    @app.get("/api/cases/{case_id}/models/{build_id}")
+    def model_status(case_id: str, build_id: str, request: Request) -> dict[str, Any]:
+        require_case(store, case_id, identity(request))
+        return public_model_build(model_for_case(case_id, build_id))
+
+    @app.get("/api/cases/{case_id}/models/{build_id}/worksheet")
+    def model_worksheet(case_id: str, build_id: str, request: Request) -> dict[str, Any]:
+        require_case(store, case_id, identity(request))
+        build = model_for_case(case_id, build_id)
+        if build.get("status") != "READY" or not isinstance(build.get("payload"), dict):
+            raise HTTPException(status_code=409, detail="MODEL_NOT_READY")
+        return {
+            "build_id": build["id"],
+            "input_fingerprint": build["input_fingerprint"],
+            "payload_digest": build["payload_digest"],
+            "qa": build["qa"],
+            "payload": build["payload"],
+        }
+
+    @app.post("/api/cases/{case_id}/models/{build_id}/export", status_code=202)
+    def queue_model_export(case_id: str, build_id: str, request: Request) -> dict[str, Any]:
+        who = identity(request)
+        require_case(store, case_id, who, write=True)
+        model_for_case(case_id, build_id)
+        try:
+            build, queued = store.queue_model_export(build_id, who.subject)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="MODEL_EXPORT_NOT_READY") from exc
+        if queued and settings.environment != "production":
+            model_runtime.schedule_export(build_id, who.subject)
+        return {"build": public_model_build(build), "queued": queued}
+
+    @app.get("/api/cases/{case_id}/models/{build_id}/download")
+    def download_model(case_id: str, build_id: str, request: Request) -> Response:
+        who = identity(request)
+        require_case(store, case_id, who)
+        build = model_for_case(case_id, build_id)
+        export = build.get("export") or {}
+        key = export.get("vault_key")
+        if export.get("status") != "READY" or not isinstance(key, str):
+            raise HTTPException(status_code=409, detail="MODEL_EXPORT_NOT_READY")
+        root = settings.storage_dir.resolve()
+        candidate = root / key
+        try:
+            path = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail="MODEL_EXPORT_UNAVAILABLE") from exc
+        if not path.is_relative_to(root) or not path.is_file():
+            raise HTTPException(status_code=409, detail="MODEL_EXPORT_UNAVAILABLE")
+        size = path.stat().st_size
+        expected_size = export.get("size")
+        if (
+            not isinstance(expected_size, int)
+            or expected_size <= 0
+            or expected_size > MAX_EXPORT_BYTES
+            or size != expected_size
+        ):
+            raise HTTPException(status_code=409, detail="MODEL_EXPORT_INTEGRITY_FAILED")
+        with path.open("rb") as exported:
+            checksum = hashlib.file_digest(exported, "sha256").hexdigest()
+        if checksum != export.get("sha256"):
+            raise HTTPException(status_code=409, detail="MODEL_EXPORT_INTEGRITY_FAILED")
+        with store.lock:
+            audit_start = len(store.audit)
+            store.audit_event(
+                "model.export.downloaded",
+                who.subject,
+                case_id=case_id,
+                build_id=build_id,
+            )
+            try:
+                store.persist()
+            except Exception:
+                del store.audit[audit_start:]
+                raise
+        return FileResponse(
+            path,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=f"{build_id}.xlsx",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.post("/api/cases/{case_id}/reports/freeze", status_code=201)
     def freeze(case_id: str, payload: FreezeReportRequest, request: Request) -> dict[str, Any]:
@@ -430,11 +558,23 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         snapshot_value = accepted_snapshot(store, case_id)
         thesis_value = next((value for value in store.versioned(store.theses, case_id) if value["version"] == payload.thesis_version), None)
         recommendation_value = recommendation_state(store, case_id, next((value for value in store.versioned(store.recommendations, case_id) if value["version"] == payload.recommendation_version), None))
+        model_build = (
+            model_for_case(case_id, payload.model_build_id)
+            if payload.model_build_id
+            else None
+        )
         try:
-            return freeze_report(store, case_id, who.subject, snapshot_value, thesis_value, recommendation_value, payload.include_model)
+            return freeze_report(
+                store,
+                case_id,
+                who.subject,
+                snapshot_value,
+                thesis_value,
+                recommendation_value,
+                model_build,
+            )
         except ValueError as exc:
-            status = 423 if str(exc) == "CP_MODEL_AUTHORITY_BLOCKED" else 409
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/cases/{case_id}/reports")
     def reports(case_id: str, request: Request) -> dict[str, Any] | None:
@@ -456,7 +596,23 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             snapshot_value = accepted_snapshot(store, case_id)
             thesis_value = next((value for value in store.versioned(store.theses, case_id) if value["version"] == report["content"]["thesis_version"]), None)
             recommendation_value = recommendation_state(store, case_id, next((value for value in store.versioned(store.recommendations, case_id) if value["version"] == report["content"]["recommendation_version"]), None))
-            current_fingerprint = digest(clean_json({"snapshot": snapshot_value, "thesis": thesis_value, "recommendations": recommendation_value, "include_model": False}))
+            frozen_model = report["content"].get("model")
+            current_model = None
+            if frozen_model:
+                build = store.get_model_build(frozen_model["build_id"])
+                try:
+                    current_model = model_report_identity(
+                        build,
+                        snapshot_value,
+                        include_export="export" in frozen_model,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail="STALE_PREVIEW") from exc
+                if current_model != frozen_model:
+                    raise HTTPException(status_code=409, detail="STALE_PREVIEW")
+            current_fingerprint = report_input_fingerprint(
+                snapshot_value, thesis_value, recommendation_value, current_model
+            )
             if current_fingerprint != report["input_fingerprint"]:
                 raise HTTPException(status_code=409, detail="STALE_PREVIEW")
             prior_report = copy.deepcopy(report)

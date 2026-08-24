@@ -127,15 +127,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build app image
-        run: docker build --tag caos-app:ci --file caos/deploy/Dockerfile .
+        run: docker build --target app --tag caos-app:ci --file caos/deploy/Dockerfile .
+      - name: Build worker image
+        run: docker build --target worker --tag caos-worker:ci --file caos/deploy/Dockerfile .
       - name: Verify immutable app resources
-        run: docker run --rm --entrypoint python caos-app:ci verify_image_resources.py
+        run: docker run --rm --entrypoint python caos-app:ci verify_image_resources.py --runtime app
+      - name: Verify worker resources and export runtime
+        run: docker run --rm --entrypoint python caos-worker:ci verify_image_resources.py --runtime worker
       - name: Trivy scan — fixable HIGH/CRITICAL gate
         run: |
           curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b "$RUNNER_TEMP/trivy-bin" v0.72.0
           "$RUNNER_TEMP/trivy-bin/trivy" image --scanners vuln \
             --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 caos-app:ci
+          "$RUNNER_TEMP/trivy-bin/trivy" image --scanners vuln \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 caos-worker:ci
 
   security:
     name: Security — dependency and SAST gates

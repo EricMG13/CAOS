@@ -33,6 +33,7 @@ services:
     build:
       context: ../..
       dockerfile: caos/deploy/Dockerfile
+      target: app
     restart: unless-stopped
     depends_on:
       db: { condition: service_healthy }
@@ -68,6 +69,7 @@ services:
     build:
       context: ../..
       dockerfile: caos/deploy/Dockerfile
+      target: worker
     restart: unless-stopped
     command: ["python", "worker.py"]
     depends_on:

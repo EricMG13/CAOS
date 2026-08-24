@@ -101,6 +101,27 @@ try {
   assert.ok(caseFixtureHits > 0, "pending-plan case fixture was not exercised");
   assert.ok(runFixtureHits > 0, "pending-plan run fixture was not exercised");
   await pendingContext.close();
+
+  const modelContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, extraHTTPHeaders: identityHeaders });
+  const modelPage = await modelContext.newPage();
+  const modelCaseId = "case_a11y_ready_model";
+  const modelBuildId = "model_a11y_ready";
+  const modelCase = { id: modelCaseId, name: "Ready model", issuer: "Northstar", sector: "Services", current_execution_id: null };
+  const modelBuild = { id: modelBuildId, case_id: modelCaseId, accepted_run_id: "run_a11y_model", accepted_snapshot_id: "snap_a11y_model", source_set_id: "set_a11y_model", input_fingerprint: "a".repeat(64), status: "READY", queued_at: "2026-08-24T00:00:00Z", started_at: "2026-08-24T00:00:01Z", completed_at: "2026-08-24T00:00:02Z", error: null, export: { status: "NOT_REQUESTED", error: null }, qa: { status: "PASS", semantic_check_count: 2, formula_count: 1, worksheet_cell_count: 3 }, payload_digest: "b".repeat(64) };
+  const modelReadiness = { status: "READY", module_id: "CP-MODEL", accepted_snapshot: { id: "snap_a11y_model", run_id: "run_a11y_model", digest: "c".repeat(64) }, source_set: { id: "set_a11y_model", version: 1, digest: "d".repeat(64) }, requirements: ["CP-1", "CP-1A", "CP-1B", "CP-2", "CP-2A", "CP-2B"].map((module_id) => ({ module_id, status: "READY", digest: "e".repeat(64) })), blockers: [], build: modelBuild };
+  const worksheetTab = (name) => ({ id: name.toUpperCase().replaceAll(" ", "_"), name, max_row: 2, max_column: 2, freeze_panes: "B2", merged_cells: [], columns: [{ column: 1, letter: "A", width: 18, hidden: false }, { column: 2, letter: "B", width: 12, hidden: false }], cells: [{ address: "A1", row: 1, column: 1, value: name, value_type: "text", formula: null, semantic_id: null, owner: null, write_class: null, period_id: null, source_refs: null, number_format: "General", style: { bold: true, italic: false, fill: "0A2E63", align: "left", wrap: false } }, { address: "A2", row: 2, column: 1, value: 100, value_type: "number", formula: null, semantic_id: "account::revenue", owner: "CP-1", write_class: "SOURCE", period_id: "FY2025", source_refs: "SRC-1 | page 1 | 2026-08-24", number_format: "#,##0.0", style: { bold: false, italic: false, fill: "FFF4CC", align: "right", wrap: false } }, { address: "B2", row: 2, column: 2, value: 2.5, value_type: "formula", formula: "=A2/40", semantic_id: "metric::leverage", owner: "CP-MODEL", write_class: "FORMULA", period_id: "FY2025", source_refs: null, number_format: "0.0x", style: { bold: false, italic: false, fill: null, align: "right", wrap: false } }] });
+  await modelPage.route((url) => url.pathname === "/api/cases", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([modelCase]) }));
+  await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(modelCase) }));
+  await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/snapshot`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: null, latest_accepted: null, switch_required: false, diff: null }) }));
+  await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/models`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ readiness: modelReadiness, builds: [modelBuild] }) }));
+  await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/models/${modelBuildId}/worksheet`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ build_id: modelBuildId, input_fingerprint: modelBuild.input_fingerprint, payload_digest: modelBuild.payload_digest, qa: modelBuild.qa, payload: { schema_version: "caos.model.worksheet.v1", identity: { issuer_id: "northstar", issuer_name: "Northstar", analysis_date: "2026-08-24" }, tabs: [worksheetTab("Credit Snapshot"), worksheetTab("Model"), worksheetTab("KPIs")] } }) }));
+  await modelPage.goto(`${baseUrl}/model-builder/?case=${modelCaseId}&fixture=ready-model`, { waitUntil: "networkidle" });
+  await modelPage.getByRole("tab", { name: "Credit Snapshot" }).waitFor();
+  await modelPage.getByRole("button", { name: /Show lineage for account::revenue/ }).click();
+  await modelPage.locator("#model-cell-lineage").getByText(/SRC-1/).waitFor();
+  const modelResult = await new AxeBuilder({ page: modelPage }).analyze();
+  for (const violation of modelResult.violations) violations.push({ viewport: "ready-model-1280", route: "/model-builder/", id: violation.id, impact: violation.impact, nodes: violation.nodes.map((node) => ({ target: node.target, html: node.html, summary: node.failureSummary })) });
+  await modelContext.close();
 } finally {
   await browser.close();
 }
@@ -109,5 +130,5 @@ if (violations.length) {
   console.error(JSON.stringify({ violations }, null, 2));
   process.exitCode = 1;
 } else {
-  console.log(JSON.stringify({ routes: routes.length, viewports: viewports.length, combinations: routes.length * viewports.length + 1, pendingPlanFixture: true, violations: 0 }));
+  console.log(JSON.stringify({ routes: routes.length, viewports: viewports.length, combinations: routes.length * viewports.length + 2, pendingPlanFixture: true, readyModelFixture: true, violations: 0 }));
 }

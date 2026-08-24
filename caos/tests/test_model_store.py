@@ -110,6 +110,27 @@ def test_memory_model_takeover_fences_stale_worker_and_bounds_errors() -> None:
     assert failed["status"] == "FAILED" and failed["export"]["status"] == "NOT_REQUESTED"
 
 
+def test_failed_model_build_can_be_retried_without_changing_identity() -> None:
+    store = MemoryStore()
+    build = _accepted_build(store)
+    queued, _created = store.queue_model_build(build, "analyst")
+    token = store.claim_model_job(queued["id"], "worker")
+    assert token is not None
+    store.fail_model_job(
+        queued["id"],
+        token,
+        {"code": "MODEL_CALCULATION_FAILED", "detail": "bounded"},
+        "worker",
+    )
+
+    retried = store.retry_model_build(queued["id"], "analyst")
+
+    assert retried["id"] == queued["id"]
+    assert retried["input_fingerprint"] == queued["input_fingerprint"]
+    assert retried["status"] == "QUEUED" and retried["error"] is None
+    assert store.claim_model_job(queued["id"], "replacement") is not None
+
+
 def test_memory_model_writes_roll_back_and_share_the_workflow_budget() -> None:
     class FailingStore(MemoryStore):
         fail = False

@@ -393,6 +393,43 @@ class MemoryStore:
             value = self.model_builds.get(build_id)
             return copy.deepcopy(value) if value else None
 
+    def retry_model_build(self, build_id: str, actor: str) -> dict[str, Any]:
+        with self.lock:
+            prior = copy.deepcopy((self.model_builds, self.model_jobs, self.audit))
+            try:
+                build = self._retry_model_build_locked(build_id, actor)
+                self.persist()
+            except Exception:
+                self.model_builds, self.model_jobs, self.audit = prior
+                raise
+            return build
+
+    def _retry_model_build_locked(self, build_id: str, actor: str) -> dict[str, Any]:
+        build = self.model_builds.get(build_id)
+        key = _model_job_key(build_id, "calculate")
+        job = self.model_jobs.get(key)
+        if not build or build.get("status") != "FAILED" or not job or job.get("status") != "failed":
+            raise ValueError("MODEL_RETRY_INVALID")
+        build.update(status="QUEUED", started_at=None, completed_at=None, error=None)
+        job.update(
+            status="queued",
+            worker=None,
+            attempt_token=None,
+            lease_until=0.0,
+            error=None,
+        )
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "model.retried",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+            }
+        )
+        return copy.deepcopy(build)
+
     def list_model_builds(self, case_id: str) -> list[dict[str, Any]]:
         with self.lock:
             values = [value for value in self.model_builds.values() if value.get("case_id") == case_id]
@@ -966,6 +1003,37 @@ class PostgresStore(MemoryStore):
                 raise
             self._adopt_persisted(state, revision)
             return copy.deepcopy(record), True
+
+    def retry_model_build(self, build_id: str, actor: str) -> dict[str, Any]:
+        with self.lock:
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                        row = cursor.fetchone()
+                        if row is None:
+                            raise RuntimeError("authoritative model state is unavailable")
+                        database_revision, database_state = row
+                        self._adopt_persisted(copy.deepcopy(database_state), database_revision)
+                        build = self._retry_model_build_locked(build_id, actor)
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                        self._update_model_build_connection(connection, build)
+                        cursor.execute(
+                            "UPDATE model_build_jobs SET state='queued', worker_id=NULL, attempt_token=NULL, "
+                            "lease_until=NULL, error=NULL, updated_at=now() "
+                            "WHERE build_id=%s AND kind='calculate'",
+                            (build_id,),
+                        )
+                        if cursor.rowcount != 1:
+                            raise RuntimeError("model retry job is unavailable")
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
+            return copy.deepcopy(build)
 
     def queue_model_export(self, build_id: str, actor: str) -> tuple[dict[str, Any], bool]:
         with self.lock:

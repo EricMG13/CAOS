@@ -185,7 +185,7 @@ async function inventoryLoadedRoute(context, role, slug, title) {
     } else if (slug === "command-center") {
       await page.getByRole("heading", { name: "Synthetic Dense Issuer" }).waitFor();
     } else if (slug === "model-builder") {
-      await page.getByText("Official CP-MODEL blocked", { exact: true }).waitFor();
+      await page.getByText("CANONICAL MODEL INPUTS INVALID", { exact: true }).waitFor();
     } else if (slug === "report-studio") {
       await page.getByRole("button", { name: "Freeze report snapshot" }).waitFor();
       for (const name of ["Markdown", "PDF", "XLSX"]) await page.getByRole("link", { name, exact: true }).waitFor();
@@ -407,7 +407,7 @@ try {
     { slug: "deep-dive", endpoint: `/api/cases/${emptyCase.id}/snapshot`, url: `${baseURL}/deep-dive/?case=${emptyCase.id}`, emptyText: "No accepted snapshot. Run the selected route, inspect exceptions, then accept it explicitly." },
     { slug: "rv-screener", endpoint: `/api/cases/${emptyCase.id}/rv`, url: `${baseURL}/rv-screener/?case=${emptyCase.id}`, emptyText: "Version a comparable market universe to see eligible rows." },
     { slug: "command-center", endpoint: `/api/cases/${emptyCase.id}/lens`, url: `${baseURL}/command-center/?case=${emptyCase.id}`, emptyText: "No accepted snapshot yet. Posture becomes reviewable after an explicit acceptance." },
-    { slug: "model-builder", endpoint: `/api/cases/${emptyCase.id}/model`, url: `${baseURL}/model-builder/?case=${emptyCase.id}` },
+    { slug: "model-builder", endpoint: `/api/cases/${emptyCase.id}/models`, url: `${baseURL}/model-builder/?case=${emptyCase.id}`, emptyText: "ACCEPTED FULL CREDIT REQUIRED", emptyEndpoint: null },
     { slug: "report-studio", endpoint: `/api/cases/${emptyCase.id}/reports`, url: `${baseURL}/report-studio/?case=${emptyCase.id}`, emptyText: "No frozen report for this case." },
   ];
 

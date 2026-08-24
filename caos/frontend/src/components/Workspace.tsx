@@ -18,6 +18,12 @@ type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?
 type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
 type ReportDraft = { thesis?: string; instrument?: string; recommendation?: string; evidenceIds?: string };
 type EvidenceOption = { id: string; kind: "Snapshot" | "Artifact" | "Source"; label: string };
+type ModelBuild = { id: string; case_id: string; accepted_run_id: string; accepted_snapshot_id: string; source_set_id: string; input_fingerprint: string; status: "QUEUED" | "BUILDING" | "READY" | "FAILED"; queued_at: string; started_at?: string | null; completed_at?: string | null; error?: { code: string; detail: string } | null; export: { status: "NOT_REQUESTED" | "QUEUED" | "EXPORTING" | "READY" | "FAILED"; error?: { code: string; detail: string } | null; filename?: string; sha256?: string; size?: number }; qa?: { status: string; semantic_check_count: number; formula_count: number; worksheet_cell_count: number; validation_warnings?: string[]; limitation_flags?: string[] }; payload_digest?: string };
+type ModelReadiness = { status: "NOT_READY" | "READY_TO_BUILD" | ModelBuild["status"]; module_id: "CP-MODEL"; accepted_snapshot: { id: string; run_id: string; digest?: string } | null; source_set: { id: string; version: number; digest: string } | null; requirements: { module_id: string; status: string; digest?: string }[]; blockers: { code: string; detail: string }[]; build: ModelBuild | null };
+type ModelInventory = { readiness: ModelReadiness; builds: ModelBuild[] };
+type WorksheetCell = { address: string; row: number; column: number; value: string | number | boolean | null; value_type: "formula" | "boolean" | "number" | "date" | "text"; formula: string | null; semantic_id: string | null; owner: string | null; write_class: string | null; period_id: string | null; source_refs: string | null; number_format: string; style: { bold: boolean; italic: boolean; fill: string | null; align: string | null; wrap: boolean } };
+type WorksheetTab = { id: string; name: string; max_row: number; max_column: number; freeze_panes: string; merged_cells: string[]; columns: { column: number; letter: string; width?: number; hidden: boolean }[]; cells: WorksheetCell[] };
+type WorksheetResponse = { build_id: string; input_fingerprint: string; payload_digest: string; qa: ModelBuild["qa"]; payload: { schema_version: string; identity: { issuer_id: string; issuer_name: string; analysis_date: string }; tabs: WorksheetTab[] } };
 
 const pathways = [
   ["FULL_CREDIT", "Full Credit"],
@@ -417,7 +423,7 @@ export default function Workspace({ destination, children }: { destination?: Des
       case "Deep-Dive": return <DeepDive selectedCase={selectedCase} question={routeQuestion} caseId={caseId} pendingAction={pendingAction} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} />;
       case "RV Screener": return <RVView caseId={caseId} />;
       case "Command Center": return <CommandView caseId={caseId} question={routeQuestion} />;
-      case "Model Builder": return <ModelView caseId={caseId} />;
+      case "Model Builder": return <ModelView caseId={caseId} role={role} />;
       case "Report Studio": return <ReportView acceptedSnapshot={authority?.accepted ?? null} caseId={caseId} role={role} selectedCase={selectedCase} />;
       case "Admin Studio": return <AdminView />;
     }
@@ -721,12 +727,154 @@ function CommandView({ caseId, question }: { caseId: string; question: string })
   return <div className="grid command-layout">{question && <section className="context-strip span-12"><strong>Evidence request</strong><p>{question}</p></section>}<section className="panel command-changes"><div className="panel-header"><h2>What changed</h2><span className="panel-meta">Snapshot diff</span></div><div className="panel-body flow">{loading || loadError ? <LoadState loading={loading} error={loadError} /> : !snapshot?.accepted ? <ActionState title="Posture unavailable" detail="No accepted snapshot yet. Posture becomes reviewable after an explicit acceptance." action="Open Run Console" href={withQuery("/run-console", { case: caseId })} /> : diff?.changed ? <><div className="callout warning">Accepted snapshot differs from the latest accepted execution.</div><ul className="change-list">{diff.source_set_changed && <li>Source set changed.</li>}{(diff.added?.length ?? 0) > 0 && <li>{diff.added?.length} module{diff.added?.length === 1 ? "" : "s"} added.</li>}{(diff.modified?.length ?? 0) > 0 && <li>{diff.modified?.length} module{diff.modified?.length === 1 ? "" : "s"} modified.</li>}{(diff.removed?.length ?? 0) > 0 && <li>{diff.removed?.length} module{diff.removed?.length === 1 ? "" : "s"} removed.</li>}</ul></> : <div className="callout">No material change in the current accepted snapshot.</div>}</div></section><section className="panel command-lens"><div className="panel-header"><h2>Issuer lens</h2><span className="panel-meta">Case scoped</span></div><div className="panel-body flow">{loading || loadError ? <LoadState loading={loading} error={loadError} /> : <><h2>{lens?.issuer || "—"}</h2><p className="muted">{lens?.sector || "—"}</p><p className="mono">Snapshot: {lens?.accepted_snapshot_id || "none accepted"}</p><p className="mono">Source set: {lens?.source_set?.version ? `v${lens.source_set.version}` : "none"}</p></>}</div></section><section className="context-strip command-boundary"><strong>Analyst boundary</strong><p>No system recommendation is shown here. Instrument-specific recommendations are analyst-owned and versioned in Report Studio.</p></section></div>;
 }
 
-function ModelView({ caseId }: { caseId: string }) {
-  const [model, setModel] = useState<{ status: string; reason: string } | null>(null); const [loading, setLoading] = useState(true); const [loadError, setLoadError] = useState(""); const [checkedAt, setCheckedAt] = useState("");
-  // Model authority is external state; loading flags intentionally reset at the fetch boundary.
+const worksheetFillClasses: Record<string, string> = {
+  "0a2e63": "worksheet-fill-section",
+  "1f4e78": "worksheet-fill-header",
+  d9eaf7: "worksheet-fill-subheader",
+  eaf3f8: "worksheet-fill-label",
+  fff4cc: "worksheet-fill-input",
+  e2f0d9: "worksheet-fill-positive",
+  fce4d6: "worksheet-fill-negative",
+  e7e6e6: "worksheet-fill-muted",
+};
+
+function formatWorksheetValue(cell?: WorksheetCell) {
+  if (!cell || cell.value === null || cell.value === "") return "";
+  if (typeof cell.value !== "number") return String(cell.value);
+  if (cell.number_format.includes("%")) return `${(cell.value * 100).toFixed(1)}%`;
+  if (cell.number_format.includes("0.0x")) return `${cell.value.toFixed(1)}x`;
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(cell.value);
+}
+
+function WorksheetGrid({ tab, selected, onSelect }: { tab: WorksheetTab; selected: WorksheetCell | null; onSelect: (cell: WorksheetCell) => void }) {
+  const cells = useMemo(() => new Map(tab.cells.map((cell) => [`${cell.row}:${cell.column}`, cell])), [tab.cells]);
+  return <div className="worksheet-scroll" tabIndex={0} role="region" aria-label={`${tab.name} worksheet; scroll horizontally and vertically`}>
+    <table className="worksheet-grid">
+      <caption className="sr-only">Read-only {tab.name} worksheet. Formula values are calculated by CP-MODEL on the server.</caption>
+      <colgroup><col className="worksheet-row-number" />{tab.columns.map((column) => <col key={column.column} style={{ width: `${Math.min(200, Math.max(48, (column.width || 10) * 7))}px` }} />)}</colgroup>
+      <thead><tr><th scope="col"><span className="sr-only">Row number</span></th>{tab.columns.map((column) => <th scope="col" key={column.column}>{column.letter}</th>)}</tr></thead>
+      <tbody>{Array.from({ length: tab.max_row }, (_, rowIndex) => {
+        const row = rowIndex + 1;
+        return <tr key={row}><th scope="row">{row}</th>{Array.from({ length: tab.max_column }, (_unused, columnIndex) => {
+          const cell = cells.get(`${row}:${columnIndex + 1}`);
+          const fillClass = cell?.style.fill ? worksheetFillClasses[cell.style.fill.toLowerCase()] || "" : "";
+          const className = ["worksheet-cell", fillClass, cell?.style.bold ? "is-bold" : "", cell?.style.italic ? "is-italic" : "", cell?.value_type === "number" || cell?.value_type === "formula" && typeof cell.value === "number" ? "num" : "", selected?.address === cell?.address ? "is-selected" : ""].filter(Boolean).join(" ");
+          const value = formatWorksheetValue(cell);
+          return <td key={columnIndex + 1} className={className} title={cell?.formula || undefined}>{cell && (cell.source_refs || cell.formula) ? <button className="worksheet-cell-link" type="button" aria-label={`Show lineage for ${cell.semantic_id || cell.address}`} aria-controls="model-cell-lineage" aria-expanded={selected?.address === cell.address} onClick={() => onSelect(cell)}>{value || "—"}</button> : value}</td>;
+        })}</tr>;
+      })}</tbody>
+    </table>
+  </div>;
+}
+
+function modelStatusTone(status?: ModelReadiness["status"]) {
+  if (status === "READY") return "success";
+  if (status === "FAILED" || status === "NOT_READY") return "critical";
+  return "warning";
+}
+
+function ModelView({ caseId, role }: { caseId: string; role: string }) {
+  const [inventory, setInventory] = useState<ModelInventory | null>(null);
+  const [worksheet, setWorksheet] = useState<WorksheetResponse | null>(null);
+  const [activeTab, setActiveTab] = useState("CREDIT_SNAPSHOT");
+  const [selectedCell, setSelectedCell] = useState<WorksheetCell | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [message, setMessage] = useState("");
+  const [pending, setPending] = useState("");
+  const [readyCaseId, setReadyCaseId] = useState("");
+  const requestId = useRef(0);
+  const actionId = useRef(0);
+  const worksheetRef = useRef<WorksheetResponse | null>(null);
+  const refresh = useCallback(async (signal?: AbortSignal, showLoading = true) => {
+    if (!caseId) return;
+    const expectedCaseId = caseId;
+    const currentRequest = ++requestId.current;
+    if (showLoading) setLoading(true);
+    setLoadError("");
+    try {
+      const next = await request<ModelInventory>(`/api/cases/${caseId}/models`, {}, signal);
+      if (currentRequest !== requestId.current || expectedCaseId !== caseId) return;
+      const build = next.readiness.build || next.builds[0] || null;
+      let nextWorksheet: WorksheetResponse | null = null;
+      if (build?.status === "READY") {
+        const cached = worksheetRef.current;
+        const cacheMatches = cached?.build_id === build.id
+          && cached.input_fingerprint === build.input_fingerprint
+          && (!build.payload_digest || cached.payload_digest === build.payload_digest);
+        nextWorksheet = cacheMatches
+          ? cached
+          : await request<WorksheetResponse>(`/api/cases/${caseId}/models/${build.id}/worksheet`, {}, signal);
+        if (nextWorksheet.build_id !== build.id
+          || nextWorksheet.input_fingerprint !== build.input_fingerprint
+          || build.payload_digest && nextWorksheet.payload_digest !== build.payload_digest) {
+          throw new Error("Model worksheet identity does not match the selected build.");
+        }
+      }
+      if (currentRequest !== requestId.current || expectedCaseId !== caseId) return;
+      if (worksheetRef.current !== nextWorksheet) setSelectedCell(null);
+      worksheetRef.current = nextWorksheet;
+      setInventory(next);
+      setWorksheet(nextWorksheet);
+      setReadyCaseId(caseId);
+    } catch (caught) {
+      if (currentRequest !== requestId.current || expectedCaseId !== caseId || caught instanceof DOMException && caught.name === "AbortError") return;
+      setLoadError(caught instanceof Error ? caught.message : "Unable to load Model Builder");
+      setReadyCaseId(expectedCaseId);
+    } finally {
+      if (currentRequest === requestId.current && expectedCaseId === caseId) setLoading(false);
+    }
+  }, [caseId]);
+  // Model state is an external synchronization boundary; reset selection when its case changes.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { if (!caseId) return; let ignore = false; setLoading(true); setLoadError(""); void request<typeof model>(`/api/cases/${caseId}/model`).then((next) => { if (!ignore) { setModel(next); setCheckedAt(new Date().toISOString()); } }).catch((caught) => { if (!ignore) setLoadError(caught instanceof Error ? caught.message : "Unable to load model authority"); }).finally(() => { if (!ignore) setLoading(false); }); return () => { ignore = true; }; }, [caseId]);
-  return <div className="grid"><section className="panel span-12 model-workspace"><div className="panel-header"><h2>Methodology authority</h2><span className="status warning">Blocked</span></div><div className="panel-body flow readable">{loading || loadError ? <LoadState loading={loading} error={loadError} /> : <><div className="callout warning"><strong>Official CP-MODEL blocked</strong><br />{model?.reason || "Signed Deploy V authority correction required."}</div><dl className="state-facts"><dt>Owner</dt><dd>Methodology governance</dd><dt>Last checked</dt><dd>{formatDate(checkedAt)}</dd><dt>Available work</dt><dd>Review accepted analysis and source evidence; no provisional workbook is labelled official.</dd></dl><p>CAOS will not fabricate CP-2B, alias CP-2A, or label a provisional workbook as official. The model surface becomes available when the external authority gate is signed.</p><div className="row-actions"><Link className="button small" href={withQuery("/deep-dive", { case: caseId })}>Review accepted analysis</Link><button className="button small" type="button" onClick={() => window.location.reload()}>Check again</button></div></>}</div></section></div>;
+  useEffect(() => { requestId.current += 1; actionId.current += 1; worksheetRef.current = null; setSelectedCell(null); setReadyCaseId(""); setMessage(""); setPending(""); const controller = new AbortController(); void refresh(controller.signal); return () => { controller.abort(); requestId.current += 1; actionId.current += 1; }; }, [refresh]);
+  const status = inventory?.readiness.status;
+  const build = inventory?.readiness.build || inventory?.builds[0] || null;
+  const exportStatus = build?.export.status;
+  useEffect(() => {
+    if (status !== "QUEUED" && status !== "BUILDING" && exportStatus !== "QUEUED" && exportStatus !== "EXPORTING") return;
+    let cancelled = false;
+    let timer = 0;
+    const poll = async () => {
+      await refresh(undefined, false);
+      if (!cancelled) timer = window.setTimeout(() => { void poll(); }, 1500);
+    };
+    timer = window.setTimeout(() => { void poll(); }, 1500);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [exportStatus, refresh, status]);
+  const tab = worksheet?.payload.tabs.find((item) => item.id === activeTab) || worksheet?.payload.tabs[0] || null;
+  const canWrite = role !== "READER";
+  const buildModel = async () => {
+    const currentAction = ++actionId.current;
+    setPending("build"); setMessage("");
+    try { await request(`/api/cases/${caseId}/models`, { method: "POST" }); if (currentAction !== actionId.current) return; setMessage(status === "FAILED" ? "Model rebuild queued." : "Model build queued."); await refresh(undefined, false); }
+    catch (caught) { if (currentAction === actionId.current) setMessage(caught instanceof Error ? caught.message : "Unable to queue model build"); }
+    finally { if (currentAction === actionId.current) setPending(""); }
+  };
+  const exportModel = async () => {
+    if (!build) return;
+    const currentAction = ++actionId.current;
+    setPending("export"); setMessage("");
+    try { await request(`/api/cases/${caseId}/models/${build.id}/export`, { method: "POST" }); if (currentAction !== actionId.current) return; setMessage(build.export.status === "FAILED" ? "XLSX export retry queued." : "XLSX export queued."); await refresh(undefined, false); }
+    catch (caught) { if (currentAction === actionId.current) setMessage(caught instanceof Error ? caught.message : "Unable to queue XLSX export"); }
+    finally { if (currentAction === actionId.current) setPending(""); }
+  };
+  const selectTab = (nextTab: WorksheetTab) => { setActiveTab(nextTab.id); setSelectedCell(null); };
+  const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!worksheet || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = worksheet.payload.tabs;
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    selectTab(tabs[nextIndex]);
+    document.getElementById(`model-tab-${tabs[nextIndex].id}`)?.focus();
+  };
+  if (loadError && readyCaseId === caseId) return <div className="grid"><section className="panel span-12"><div className="panel-header"><h2>Model Builder</h2><span className="status critical">Unavailable</span></div><div className="panel-body"><LoadState loading={false} error={loadError} /></div></section></div>;
+  if (!caseId || readyCaseId !== caseId || loading && !inventory) return <div className="grid"><section className="panel span-12"><div className="panel-header"><h2>Model Builder</h2></div><div className="panel-body"><LoadState loading error={loadError} /></div></section></div>;
+  return <div className="grid model-builder">
+    <section className="panel span-12"><div className="panel-header"><h2>Model Builder</h2><span className={`status ${modelStatusTone(status)}`} role="status" aria-live="polite" aria-atomic="true">{status?.replaceAll("_", " ")}</span></div><div className="panel-body model-summary"><div><p className="eyebrow">ACCEPTED AUTHORITY</p><dl className="state-facts"><dt>Snapshot</dt><dd className="mono">{inventory?.readiness.accepted_snapshot?.id || "Not accepted"}</dd><dt>Source set</dt><dd className="mono">{inventory?.readiness.source_set ? `v${inventory.readiness.source_set.version} · ${inventory.readiness.source_set.id}` : "Unavailable"}</dd><dt>Build</dt><dd className="mono">{build?.id || "Not built"}</dd></dl></div><div><p className="eyebrow">HANDOFF GATE</p><ul className="model-requirements">{inventory?.readiness.requirements.map((item) => <li key={item.module_id}><span className={`status ${item.status === "READY" ? "success" : "critical"}`}>{item.module_id}</span><span className="mono muted">{item.digest?.slice(0, 12) || item.status}</span></li>)}</ul></div><div className="model-actions">{status === "NOT_READY" ? <Link className="button small" href={withQuery("/run-console", { case: caseId })}>Open Run Console</Link> : canWrite && (status === "READY_TO_BUILD" || status === "FAILED") ? <button className="button primary" type="button" disabled={pending === "build"} onClick={() => void buildModel()}>{pending === "build" ? "Queuing…" : status === "FAILED" ? "Retry build" : "Build model"}</button> : null}<button className="button small" type="button" disabled={loading} onClick={() => void refresh()}>{loading ? "Refreshing…" : "Refresh"}</button></div></div>{inventory?.readiness.blockers.map((blocker) => <div className="callout warning model-blocker" key={blocker.code}><strong>{blocker.code.replaceAll("_", " ")}</strong><br />{blocker.detail}</div>)}{message ? <p className={message.includes("Unable") || message.includes("NOT_") ? "error" : "muted"} role="status">{message}</p> : null}</section>
+    {status === "READY" && worksheet && tab ? <><section className="panel model-sheet"><div className="panel-header"><h2>{worksheet.payload.identity.issuer_name}</h2><span className="panel-meta">READ ONLY · {worksheet.payload.identity.analysis_date}</span></div><div className="worksheet-tabs" role="tablist" aria-label="Model worksheets">{worksheet.payload.tabs.map((item, index) => <button id={`model-tab-${item.id}`} key={item.id} className="worksheet-tab" type="button" role="tab" aria-selected={item.id === tab.id} aria-controls="model-worksheet-panel" tabIndex={item.id === tab.id ? 0 : -1} onClick={() => selectTab(item)} onKeyDown={(event) => onTabKeyDown(event, index)}>{item.name}</button>)}</div><div id="model-worksheet-panel" role="tabpanel" aria-labelledby={`model-tab-${tab.id}`}><WorksheetGrid tab={tab} selected={selectedCell} onSelect={setSelectedCell} /></div></section><section className="panel model-lineage" id="model-cell-lineage" aria-labelledby="model-cell-lineage-heading"><div className="panel-header"><h2 id="model-cell-lineage-heading">Cell lineage</h2><span className="panel-meta">ONE CLICK</span></div><div className="panel-body flow">{selectedCell ? <><dl className="state-facts"><dt>Cell</dt><dd className="mono">{tab.name}!{selectedCell.address}</dd><dt>Semantic ID</dt><dd className="mono">{selectedCell.semantic_id}</dd><dt>Owner</dt><dd>{selectedCell.owner}</dd><dt>Period</dt><dd className="mono">{selectedCell.period_id || "—"}</dd></dl>{selectedCell.formula ? <><p className="eyebrow">FORMULA</p><code className="lineage-code">{selectedCell.formula}</code></> : null}<p className="eyebrow">SOURCE REFS</p><p className="mono lineage-source">{selectedCell.source_refs || "Calculated by CP-MODEL from mapped inputs."}</p></> : <p className="muted">Select a sourced or calculated worksheet value to inspect its lineage.</p>}</div></section><section className="panel span-12"><div className="panel-header"><h2>Model QA & export</h2><span className={`status ${build?.qa?.status === "PASS" ? "success" : "warning"}`}>{build?.qa?.status || "Pending"}</span></div><div className="panel-body model-export"><dl className="state-facts"><dt>Semantic checks</dt><dd className="num">{build?.qa?.semantic_check_count ?? "—"}</dd><dt>Formula cells</dt><dd className="num">{build?.qa?.formula_count ?? "—"}</dd><dt>Worksheet cells</dt><dd className="num">{build?.qa?.worksheet_cell_count ?? "—"}</dd><dt>Payload</dt><dd className="mono">{build?.payload_digest || "—"}</dd><dt>XLSX</dt><dd>{build?.export.status.replaceAll("_", " ")}</dd></dl><div className="row-actions">{canWrite && build?.export.status === "NOT_REQUESTED" ? <button className="button" type="button" disabled={pending === "export"} onClick={() => void exportModel()}>{pending === "export" ? "Queuing…" : "Export XLSX"}</button> : null}{canWrite && build?.export.status === "FAILED" ? <button className="button" type="button" disabled={pending === "export"} onClick={() => void exportModel()}>{pending === "export" ? "Queuing…" : "Retry export"}</button> : null}{build?.export.status === "READY" ? <a className="button primary" href={`${apiBase}/api/cases/${caseId}/models/${build.id}/download`} download>Download XLSX</a> : null}{build?.export.status === "QUEUED" || build?.export.status === "EXPORTING" ? <button className="button" type="button" disabled>{build.export.status === "QUEUED" ? "Export queued" : "Exporting…"}</button> : null}</div></div>{build?.export.status === "FAILED" && build.export.error ? <div className="callout warning model-blocker" role="alert"><strong>{build.export.error.code}</strong><br />{build.export.error.detail}</div> : null}</section></> : status === "FAILED" ? <section className="panel span-12"><div className="panel-body"><div className="callout warning"><strong>{build?.error?.code || "MODEL_CALCULATION_FAILED"}</strong><br />{build?.error?.detail || "The model calculation did not complete."}</div></div></section> : status === "QUEUED" || status === "BUILDING" ? <section className="panel span-12"><div className="panel-body"><div className="callout"><strong>{status === "QUEUED" ? "Build queued" : "Calculating worksheet"}</strong><br />The worker is validating canonical inputs, reconciling the Python model, and persisting the read-only worksheet payload.</div></div></section> : null}
+    {inventory?.builds.length ? <section className="panel span-12"><div className="panel-header"><h2>Build history</h2><span className="panel-meta">IMMUTABLE FINGERPRINTS</span></div><div className="panel-body table-wrap" tabIndex={0} role="region" aria-label="Model build history"><table><thead><tr><th scope="col">Queued</th><th scope="col">Build</th><th scope="col">Status</th><th scope="col">Input fingerprint</th><th scope="col">Export</th></tr></thead><tbody>{inventory.builds.map((item) => <tr key={item.id}><td>{formatDate(item.queued_at)}</td><td className="mono">{item.id}</td><td><span className={`status ${modelStatusTone(item.status)}`}>{item.status}</span></td><td className="mono">{item.input_fingerprint}</td><td>{item.export.status.replaceAll("_", " ")}</td></tr>)}</tbody></table></div></section> : null}
+  </div>;
 }
 
 function AdminView() {
@@ -737,16 +885,17 @@ function AdminView() {
 
 function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { acceptedSnapshot: Snapshot | null; caseId: string; role: string; selectedCase: CaseRecord | null }) {
   type DraftState = Required<ReportDraft> & { dirty: boolean };
-  const [report, setReport] = useState<{ id?: string; status: string; digest: string; preview_digest?: string; input_fingerprint?: string; snapshot_digest: string; markdown: string } | null>(null);
+  const [report, setReport] = useState<{ id?: string; status: string; digest: string; preview_digest?: string; input_fingerprint?: string; snapshot_digest: string; markdown: string; content?: { model?: { build_id: string; payload_digest: string } | null } } | null>(null);
   const [versions, setVersions] = useState({ thesis: 0, recommendation: 0 });
   const [draft, setDraft] = useState<DraftState>({ thesis: "", instrument: "", recommendation: "MARKET WEIGHT", evidenceIds: "", dirty: false });
+  const [readyModel, setReadyModel] = useState<ModelBuild | null>(null); const [includeModel, setIncludeModel] = useState(false);
   const [message, setMessage] = useState(""); const [error, setError] = useState(""); const [sources, setSources] = useState<SourceRecord[]>([]); const [evidenceError, setEvidenceError] = useState(""); const [evidenceQuery, setEvidenceQuery] = useState(""); const [loading, setLoading] = useState(true); const [pending, setPending] = useState(""); const [readyCaseId, setReadyCaseId] = useState("");
   const draftKey = `caos-report-draft:${caseId}`;
   const refresh = async () => {
     if (!caseId) { setLoading(false); return; }
     setLoading(true); setError(""); setEvidenceError("");
     try {
-      const [nextReport, nextThesis, nextRecommendations, nextSources] = await Promise.all([
+      const [nextReport, nextThesis, nextRecommendations, nextSources, nextModels] = await Promise.all([
         request<typeof report>(`/api/cases/${caseId}/reports`),
         request<{ current?: { version: number; core_thesis: string; evidence_ids?: string[] } }>(`/api/cases/${caseId}/thesis`),
         request<{ current?: { version: number; rows: { instrument: string; recommendation: string; primary?: boolean }[] } }>(`/api/cases/${caseId}/recommendations`),
@@ -754,6 +903,7 @@ function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { accepted
           setEvidenceError(caught instanceof Error ? caught.message : "Unable to load evidence inventory");
           return [];
         }),
+        request<ModelInventory>(`/api/cases/${caseId}/models`).catch(() => null),
       ]);
       const primary = nextRecommendations.current?.rows.find((row) => row.primary) || nextRecommendations.current?.rows[0];
       const stored = window.sessionStorage.getItem(draftKey);
@@ -766,7 +916,8 @@ function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { accepted
           else window.sessionStorage.removeItem(draftKey);
         } catch { window.sessionStorage.removeItem(draftKey); }
       }
-      setReport(nextReport); setSources(nextSources);
+      const model = nextModels?.readiness.build?.status === "READY" ? nextModels.readiness.build : null;
+      setReport(nextReport); setSources(nextSources); setReadyModel(model); setIncludeModel((current) => Boolean(model) && current);
       setVersions({ thesis: nextThesis.current?.version ?? 0, recommendation: nextRecommendations.current?.version ?? 0 });
       setDraft({
         thesis: storedDraft?.thesis ?? nextThesis.current?.core_thesis ?? "",
@@ -807,7 +958,7 @@ function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { accepted
         }),
       });
       setVersions({ thesis: saved.thesis.version, recommendation: saved.recommendations.version });
-      await request(`/api/cases/${caseId}/reports/freeze`, { method: "POST", body: JSON.stringify({ thesis_version: saved.thesis.version, recommendation_version: saved.recommendations.version, include_model: false }) });
+      await request(`/api/cases/${caseId}/reports/freeze`, { method: "POST", body: JSON.stringify({ thesis_version: saved.thesis.version, recommendation_version: saved.recommendations.version, ...(includeModel && readyModel ? { model_build_id: readyModel.id } : {}) }) });
       window.sessionStorage.removeItem(draftKey);
       setDraft((current) => ({ ...current, dirty: false }));
       setMessage("Frozen report pending Approver ratification.");
@@ -841,6 +992,7 @@ function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { accepted
         </fieldset>
         {evidenceError && <p className="error" role="alert">Evidence inventory unavailable: {evidenceError}</p>}
         <div className="field"><label htmlFor="evidence-ids">Evidence IDs</label><input id="evidence-ids" name="evidence-ids" autoComplete="off" value={draft.evidenceIds} onChange={(event) => updateDraft("evidenceIds", event.target.value)} placeholder="src_…, art_…, snapshot_…" disabled={busy} /><span className="muted">Paste case-scoped IDs or use the picker above.</span></div>
+        <fieldset className="evidence-picker"><legend>CP-MODEL appendix</legend><label className="evidence-option"><input type="checkbox" checked={includeModel} onChange={(event) => setIncludeModel(event.target.checked)} disabled={busy || !readyModel} /><span><strong>{readyModel ? "Include ready model" : "No ready model"}</strong><span className="mono">{readyModel ? `${readyModel.id} · ${readyModel.payload_digest}` : "Build the accepted snapshot in Model Builder to include it."}</span></span></label></fieldset>
         {draft.dirty && <p className="status warning" role="status">Draft saved locally</p>}
         {!acceptedSnapshot && <ActionState title="Freeze unavailable" detail="Accept an analytical snapshot before freezing this report. Your draft remains available in this browser." action="Open Run Console" href={withQuery("/run-console", { case: caseId })} warning />}
         <div className="report-actions"><button className="button primary" type="submit" disabled={busy || !acceptedSnapshot}>{busy ? "Freezing…" : "Freeze report snapshot"}</button>{acceptedSnapshot ? <span className="muted">Server authority is checked again at freeze.</span> : <Link className="button small" href={withQuery("/run-console", { case: caseId })}>Accept a snapshot first</Link>}</div>
@@ -850,7 +1002,7 @@ function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { accepted
     <section className="report-proof-stage" aria-labelledby="paper-proof-title">
       <article className="paper report-paper">
         <header className="report-paper-header"><div><span className="paper-kicker">CAOS · filed proof</span><h2 id="paper-proof-title">{selectedCase ? `${selectedCase.issuer} — ${selectedCase.name}` : "Filed proof"}</h2></div>{report && <span className={`status ${report.status === "APPROVED" ? "success" : "warning"}`}>{report.status}</span>}</header>
-        <div className="report-paper-body">{loading ? <LoadState loading /> : report ? <div className="flow"><p className="mono">{report.digest}</p><p className="muted mono">Snapshot {report.snapshot_digest}</p>{report.status === "PENDING_APPROVAL" && (role === "APPROVER" || role === "ADMIN") && <button className="button primary" type="button" onClick={approve} disabled={pending === "approve"}>{pending === "approve" ? "Approving…" : "Approve frozen report"}</button>}{report.status === "APPROVED" && <div className="proof-actions"><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/md`}>Markdown</a><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/pdf`}>PDF</a><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/xlsx`}>XLSX</a></div>}<FiledProof markdown={report.markdown} /></div> : <div className="empty">No frozen report for this case.</div>}</div>
+        <div className="report-paper-body">{loading ? <LoadState loading /> : report ? <div className="flow"><p className="mono">{report.digest}</p><p className="muted mono">Snapshot {report.snapshot_digest}</p>{report.content?.model ? <p className="muted mono">Model {report.content.model.build_id} · {report.content.model.payload_digest}</p> : null}{report.status === "PENDING_APPROVAL" && (role === "APPROVER" || role === "ADMIN") && <button className="button primary" type="button" onClick={approve} disabled={pending === "approve"}>{pending === "approve" ? "Approving…" : "Approve frozen report"}</button>}{report.status === "APPROVED" && <div className="proof-actions"><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/md`}>Markdown</a><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/pdf`}>PDF</a><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/xlsx`}>XLSX</a></div>}<FiledProof markdown={report.markdown} /></div> : <div className="empty">No frozen report for this case.</div>}</div>
       </article>
     </section>
   </div>;

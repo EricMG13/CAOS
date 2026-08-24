@@ -20,8 +20,20 @@ COPY caos/server/ ./
 COPY caos/deploy/verify_image_resources.py ./verify_image_resources.py
 COPY --from=frontend /frontend/out ./static
 RUN useradd -m -u 10001 caos && mkdir -p /vault && chown -R caos:caos /app /vault
-USER caos
 RUN python -m compileall -q .
 RUN python verify_image_resources.py
+
+FROM runtime AS worker
+COPY caos/tests/fixtures/cp_model/ /image-fixtures/cp_model/
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice-calc \
+    && rm -rf /var/lib/apt/lists/*
+USER caos
+RUN python verify_image_resources.py --runtime worker
+CMD ["python", "worker.py"]
+
+FROM runtime AS app
+USER caos
+RUN python verify_image_resources.py --runtime app
 EXPOSE 8000
 CMD ["python", "run.py"]

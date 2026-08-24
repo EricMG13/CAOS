@@ -196,6 +196,33 @@ class CpModelBundle:
                 scripts / "validate_cp_model_inputs.py",
                 {"validate_handoff": self._handoff},
             )
+            package = _load_module(
+                "cp_model_v3",
+                scripts / "cp_model_v3" / "__init__.py",
+                {
+                    "validate_handoff": self._handoff,
+                    "validate_cp_model_inputs": self._inputs,
+                },
+            )
+            self._domain = sys.modules[f"{package.__name__}.domain"]
+            self._calculations = sys.modules[f"{package.__name__}.calculations"]
+            self._workbook = sys.modules[f"{package.__name__}.workbook"]
+            self._builder = sys.modules[f"{package.__name__}.builder"]
+        runtime_hash = hashlib.sha256()
+        for path in (
+            scripts / "cp_model_v3" / "domain.py",
+            scripts / "cp_model_v3" / "calculations.py",
+            scripts / "cp_model_v3" / "workbook.py",
+            scripts / "validate_cp_model_inputs.py",
+            scripts / "validate_handoff.py",
+        ):
+            runtime_hash.update(path.name.encode("utf-8"))
+            runtime_hash.update(path.read_bytes())
+        self.calculation_runtime = {
+            "name": "cp_model_v3_python",
+            "version": self._domain.V3_CONTRACT_VERSION,
+            "sha256": runtime_hash.hexdigest(),
+        }
 
     def validate_handoff(
         self, markdown: str, *, module_id: str, run_id: str | None = None
@@ -214,6 +241,46 @@ class CpModelBundle:
         cp2g: str | None = None,
     ) -> Any:
         return self._inputs.validate_cp_model_bundle(cp1, cp1a, cp1b, cp2, cp2b, cp2g)
+
+    def calculate(self, paths: dict[str, Path]) -> tuple[Any, Any]:
+        bundle_paths = self._domain.BundlePaths(
+            cp1=paths["CP-1"],
+            cp1a=paths["CP-1A"],
+            cp1b=paths["CP-1B"],
+            cp2=paths["CP-2"],
+            cp2b=paths["CP-2B"],
+            cp2g=paths.get("CP-2G"),
+        )
+        model = self._domain.build_ir(bundle_paths)
+        return model, self._calculations.calculate(model)
+
+    def render_workbook(
+        self, model: Any, calculations: Any, output_path: Path
+    ) -> Any:
+        return self._workbook.render_workbook(
+            model,
+            calculations,
+            self._workbook.RenderMetadata(
+                renderer_hash=self.calculation_runtime["sha256"],
+                calculation_engine="CP-MODEL Python calculations",
+            ),
+            output_path,
+        )
+
+    def export(self, paths: dict[str, Path], output_dir: Path) -> Any:
+        return self._builder.build_cp_model(
+            self._builder.BuildRequest(
+                bundle=self._domain.BundlePaths(
+                    cp1=paths["CP-1"],
+                    cp1a=paths["CP-1A"],
+                    cp1b=paths["CP-1B"],
+                    cp2=paths["CP-2"],
+                    cp2b=paths["CP-2B"],
+                    cp2g=paths.get("CP-2G"),
+                ),
+                output_dir=output_dir,
+            )
+        )
 
 
 def project_cp2b(

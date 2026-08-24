@@ -699,7 +699,6 @@ class WorkflowRuntime:
                     raise JobFencedError("missing fenced CP-DR execution context")
                 return self._execute_cpdr(run, node, actor, source_set, source_ids, upstream_artifacts, input_fingerprint, research, fenced_call, lease_check)
             raise WorkflowError("CP_DR_RESEARCH_PHASE_INVALID")
-        model_blocked = node["module_id"] in {"CP-2G", "CP-MODEL"}
         visual_kind = {
             "CP-L10": "variance_bridge",
             "CP-1": "trend",
@@ -718,7 +717,7 @@ class WorkflowRuntime:
             "CP-1": "Canonical credit facts are organized by period and source locator.",
             "CP-1B": "Earnings deltas are tied to the accepted source set.",
             "CP-2": "System analysis frames the credit posture without writing analyst recommendations.",
-            "CP-2G": "Forward credit model output is blocked pending the signed Deploy V CP-MODEL correction.",
+            "CP-2G": "Forward credit model inputs and scenario drivers are organized for the accepted-run CP-MODEL build.",
             "CP-3": "Relative-value comparability remains separate from instrument recommendation authority.",
             "CP-4": "Legal and covenant observations remain evidence-bound and provisional.",
             "CP-4C": "Recovery and restructuring observations remain scenario disclosures, not probabilities.",
@@ -727,14 +726,14 @@ class WorkflowRuntime:
         payload = {
             "module_id": node["module_id"],
             "schema_version": "deploy-v-host-v1",
-            "status": "BLOCKED" if model_blocked else "COMPLETE",
+            "status": "COMPLETE",
             "authority": "SYSTEM_ANALYSIS",
             "confidence": {"value": 40, "label": "Low", "method_version": "deploy-v-confidence-v1"},
             "provenance": {"methodology_build_id": plan["build_id"], "profile_id": plan["profile_id"], "selection_id": plan["selection_id"], "upstream_artifact_digests": upstream_artifacts},
             "summary": summary,
             "evidence_refs": source_ids,
             "lineage": {"case_id": run["case_id"], "run_id": run["id"], "source_set_id": source_set["id"], "input_fingerprint": input_fingerprint, "upstream_artifacts": upstream_artifacts},
-            "narrative": {"takeaway": summary, "basis": "Typed payload generated from the pinned Deploy V route and immutable source-set identity.", "exceptions": "Signed Deploy V CP-MODEL correction required; no model values are emitted." if model_blocked else "No model provider call is required for this deterministic host slice."},
+            "narrative": {"takeaway": summary, "basis": "Typed payload generated from the pinned Deploy V route and immutable source-set identity.", "exceptions": "Worksheet calculation runs after accepted-run handoff in Model Builder; this artifact emits no workbook values." if node["module_id"] == "CP-2G" else "No model provider call is required for this deterministic host slice."},
             "visual": {"kind": visual_kind, "accessible_table": True, "period": "LTM", "units": "governed source units", "freshness": "source-set pinned", "takeaway": summary, "basis": "Typed artifact and pinned source lineage", "evidence_refs": source_ids, "input_fingerprint": input_fingerprint},
         }
         payload = self.bundle.validate_payload(payload, node["module_id"])

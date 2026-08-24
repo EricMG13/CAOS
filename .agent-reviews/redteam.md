@@ -3967,3 +3967,42 @@ XLSX export dependency.
 Decision: accept the browser-first correction. CAOS uses the vendored Python IR
 and calculation book as model authority; LibreOffice remains a worker-only XLSX
 publication verifier and cannot block an otherwise valid in-application model.
+
+## 2026-08-24 — Leveraged-loan RV workbook ingestion architecture gate
+
+Decision under review: replace manual generic RV rows with server-side ingestion
+of the fixed CP-3 leveraged-loan workbook, normalize every sector tab once, show
+the validated universe immediately, and reserve CP-3 conclusions for a later
+accepted-analysis overlay.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-138 | Source-authority reviewer | Parsing the workbook once for the screen and again for CP-3 could produce two universes from one file, especially when formulas, blanks, or duplicate instruments are interpreted differently. | Critical | Resolved in architecture | One server-owned importer creates an immutable normalized universe bound to the uploaded source ID, SHA-256, template version, and importer version. The RV screen reads that universe, and CP-3 references the same universe identity rather than reparsing or accepting manually copied rows. |
+| RT-2026-08-24-139 | Spreadsheet-integrity reviewer | A workbook can retain the expected filename while moving headers, adding hidden rows, changing units, or replacing values with formulas, causing silent column drift. | Critical | Resolved in architecture | The importer fails closed on the fixed template signature, required sector-tab header map, date cell, units, and bounded data-table regions. It never infers columns by position alone, never activates a partial import, and returns sheet/row/column validation findings for correction. |
+| RT-2026-08-24-140 | File-boundary attacker | XLSX is an attacker-controlled ZIP container that can contain macros, external links, oversized shared strings, formula payloads, or decompression bombs. | Critical | Resolved in architecture | The existing authenticated upload, size limit, content hashing, vault isolation, and ClamAV gate remain mandatory. The RV importer accepts `.xlsx` only, opens it without executing formulas or external links, applies bounded archive/cell/string limits, rejects macro-enabled or malformed packages, and treats all cell text as untrusted data. |
+| RT-2026-08-24-141 | Credit-methodology reviewer | Immediate display can make source-reported margin, Mid YTM, or Mid 3Y DM look like a CAOS recommendation before CP-3 has assessed structure, liquidity, recovery, or compensation. | Critical | Resolved in interface contract | The immediate surface is labelled `SOURCE DATA · UNANALYZED`, preserves the workbook's metric names and units, and emits no attractive/fair/unattractive signal. CP-3 conclusions appear only in a separately labelled overlay bound to an accepted snapshot and matching universe version. |
+| RT-2026-08-24-142 | Data-quality reviewer | Importing every sector tab can duplicate a loan, preserve conflicting rows, or mix summary tables with instrument rows. | High | Resolved in architecture | Only the fixed issuer table on each recognized sector tab is imported. Stable instrument identity uses FIGI plus Bloomberg loan identifier where available; exact duplicates collapse, conflicts remain explicit validation findings, and index/ratings summary blocks are not treated as instruments. Sector and source-sheet identity remain on every row. |
+| RT-2026-08-24-143 | Metric-semantics reviewer | Generic `spread`, `yield`, and `duration` fields can silently relabel loan metrics or compare values with different units. | Critical | Resolved in data contract | The normalized MVP uses the workbook's leveraged-loan fields and explicit units: margin in basis points, bid/ask in points of par, dated price changes in points, Mid YTM in percent, and Mid 3Y DM in basis points. Values are finite-or-null, source-reported, and never converted into bond metrics or recomputed by the MVP. |
+| RT-2026-08-24-144 | Rollout reviewer | Replacing the existing RV endpoint in place could make historical generic universes unreadable or let a failed import erase the last valid screen. | High | Resolved in rollout contract | Workbook imports are new immutable versions. A new version becomes active only after complete validation and atomic persistence; failures leave the prior active universe untouched. Existing generic RV records remain readable during migration but cannot masquerade as the new loan-template contract. |
+
+Decision: accept the normalized server-side import architecture for detailed
+design. The MVP is loan-only, fixed-template, source-reported, and immediately
+viewable; it does not add flexible spreadsheet mapping, bond fields, a pricing
+engine, or a pre-CP-3 investment signal.
+
+## 2026-08-24 — Browser-first CP-MODEL implementation verification
+
+Decision under review: ship the accepted-run model build, persisted worksheet,
+optional XLSX export, Model Builder controls, and report binding.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-145 | Authority-residue reviewer | Removing the Model Builder placeholder while leaving CP-2G marked `BLOCKED` would preserve the signed-authority requirement in live workflow output. | Critical | Resolved and verified | The stale CP-2G branch was found by the final blocker sweep and replaced with a complete accepted-run handoff into Model Builder. A regression asserts complete status, exact handoff scope, and absence of signed-gate copy. |
+| RT-2026-08-24-146 | Numeric-boundary reviewer | A finite decimal can overflow when converted to a JSON float, while a serialization exception can leave a workbook handle open. | High | Resolved and verified | JSON normalization now rejects non-finite post-conversion values, and workbook closure is guaranteed by `finally`. Focused overflow and exception-path tests pass. |
+| RT-2026-08-24-147 | Browser-concurrency reviewer | Interval polling and stale action continuations could overlap requests, strand a new case in loading, or repeatedly transfer the immutable worksheet. | High | Resolved and verified | Polling is serial, case changes invalidate action continuations, first-load errors render, and worksheet reuse requires matching build ID, input fingerprint, and payload digest. The browser fixture proves single-flight slow polling and one worksheet fetch during export polling. |
+| RT-2026-08-24-148 | Deployment-boundary reviewer | LibreOffice in the request-serving image would make worksheet availability depend on an office process and broaden the API attack surface. | Critical | Resolved and verified | The API and worker are separate Docker targets. The API verifier finds no LibreOffice; the worker alone exports and validates 338 formulas and 20 semantic checks as UID 10001. Trivy reports zero fixable HIGH/CRITICAL findings in both targets. |
+| RT-2026-08-24-149 | Durability/recovery reviewer | A ready model could disappear across process restart or restore with metadata pointing to missing or altered XLSX bytes. | Critical | Resolved and verified | The real-PostgreSQL suite passes 322 tests across idempotency, leases, fencing, report identity, and downloads. The production restore drill recovered model payload/jobs and verified optional XLSX path, size, and SHA-256 exactly. |
+
+Decision: accept the implementation. The in-app worksheet is the primary model,
+LibreOffice remains optional and worker-only, and no signed-authority blocker
+remains in live runtime or product documentation.

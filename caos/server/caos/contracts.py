@@ -240,7 +240,8 @@ class RVUniverseRequest(StrictModel):
 class FreezeReportRequest(StrictModel):
     thesis_version: int = Field(ge=1)
     recommendation_version: int = Field(ge=1)
-    include_model: bool = False
+    model_build_id: str | None = Field(default=None, min_length=1, max_length=120)
+    include_model: Literal[False] = False
 
 
 class ApproveRequest(StrictModel):

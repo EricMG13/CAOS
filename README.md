@@ -84,13 +84,13 @@ Production fails closed unless you provide PostgreSQL, edge, session, OIDC, and 
 
 Run [`caos/server/migrate.py`](caos/server/migrate.py) against the deployment database before starting the API and worker. The supported stack is defined in [`caos/deploy/docker-compose.yml`](caos/deploy/docker-compose.yml).
 
-## Known boundary
+## Model Builder
 
-The official CP-MODEL workbook remains blocked by a signed-authority mismatch: its
-contract still requires CP-2B as an upstream owner while the signed module
-catalog marks CP-2B as absorbed by CP-2A. Only a new signed Deploy V bundle (or
-signed reconciliation) can unblock that path; CAOS does not label a provisional
-workbook as an official model output.
+An accepted canonical Full Credit run can queue an immutable CP-MODEL build.
+CAOS calculates and persists the model with the vendored Python IR, then renders
+Credit Snapshot, Model, and KPIs as read-only worksheet tabs with cell lineage in
+Model Builder. LibreOffice is not required for the in-app model; it is installed
+only in the background worker for an optional recalculated XLSX export.
 
 ## Product principles
 

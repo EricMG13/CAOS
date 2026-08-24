@@ -8,7 +8,74 @@ from ..contracts import clean_json, digest
 from ..store import MemoryStore, now_iso
 
 
-def freeze_report(store: MemoryStore, case_id: str, actor: str, snapshot: dict[str, Any], thesis: dict[str, Any], recommendations: dict[str, Any], include_model: bool) -> dict[str, Any]:
+def model_report_identity(
+    model_build: dict[str, Any] | None,
+    snapshot: dict[str, Any],
+    *,
+    include_export: bool | None = None,
+) -> dict[str, Any] | None:
+    if model_build is None:
+        return None
+    if not isinstance(snapshot, dict):
+        raise ValueError("MODEL_SNAPSHOT_MISMATCH")
+    if (
+        model_build.get("status") != "READY"
+        or model_build.get("case_id") != snapshot.get("case_id")
+        or model_build.get("accepted_snapshot_id") != snapshot.get("id")
+        or not isinstance(model_build.get("payload_digest"), str)
+        or not isinstance(model_build.get("input_fingerprint"), str)
+    ):
+        raise ValueError("MODEL_SNAPSHOT_MISMATCH")
+    identity = {
+        "build_id": model_build["id"],
+        "accepted_snapshot_id": model_build["accepted_snapshot_id"],
+        "payload_digest": model_build["payload_digest"],
+        "input_fingerprint": model_build["input_fingerprint"],
+    }
+    export = model_build.get("export") or {}
+    use_export = export.get("status") == "READY" if include_export is None else include_export
+    if use_export:
+        if (
+            export.get("status") != "READY"
+            or not isinstance(export.get("sha256"), str)
+            or not isinstance(export.get("size"), int)
+        ):
+            raise ValueError("MODEL_EXPORT_MISMATCH")
+        identity["export"] = {
+            "sha256": export["sha256"],
+            "size": export["size"],
+            "filename": export.get("filename"),
+        }
+    return identity
+
+
+def report_input_fingerprint(
+    snapshot: dict[str, Any],
+    thesis: dict[str, Any],
+    recommendations: dict[str, Any],
+    model_identity: dict[str, Any] | None,
+) -> str:
+    return digest(
+        clean_json(
+            {
+                "snapshot": snapshot,
+                "thesis": thesis,
+                "recommendations": recommendations,
+                "model": model_identity,
+            }
+        )
+    )
+
+
+def freeze_report(
+    store: MemoryStore,
+    case_id: str,
+    actor: str,
+    snapshot: dict[str, Any],
+    thesis: dict[str, Any],
+    recommendations: dict[str, Any],
+    model_build: dict[str, Any] | None | bool = None,
+) -> dict[str, Any]:
     if not snapshot:
         raise ValueError("SNAPSHOT_REQUIRED")
     if not thesis or not recommendations:
@@ -17,17 +84,23 @@ def freeze_report(store: MemoryStore, case_id: str, actor: str, snapshot: dict[s
         raise ValueError("RECOMMENDATION_MATRIX_NOT_ELIGIBLE")
     if recommendations.get("accepted_snapshot_id") != snapshot["id"]:
         raise ValueError("RECOMMENDATION_SNAPSHOT_MISMATCH")
-    if include_model:
-        raise ValueError("CP_MODEL_AUTHORITY_BLOCKED")
+    if model_build is False:
+        model_build = None
+    if model_build is True or (model_build is not None and not isinstance(model_build, dict)):
+        raise ValueError("MODEL_BUILD_INVALID")
+    model_identity = model_report_identity(model_build, snapshot)
     content = {
         "case_id": case_id,
         "snapshot_id": snapshot["id"],
         "snapshot_digest": digest(snapshot),
         "thesis_version": thesis["version"],
         "recommendation_version": recommendations["version"],
-        "include_model": False,
+        "include_model": model_identity is not None,
+        "model": model_identity,
     }
-    content["input_fingerprint"] = digest(clean_json({"snapshot": snapshot, "thesis": thesis, "recommendations": recommendations, "include_model": include_model}))
+    content["input_fingerprint"] = report_input_fingerprint(
+        snapshot, thesis, recommendations, model_identity
+    )
     preview_digest = digest(content)
     report = {
         "id": store._id("report"),
@@ -40,7 +113,9 @@ def freeze_report(store: MemoryStore, case_id: str, actor: str, snapshot: dict[s
         "input_fingerprint": content["input_fingerprint"],
         "snapshot_digest": content["snapshot_digest"],
         "content": content,
-        "markdown": render_markdown(store, snapshot, thesis, recommendations, preview_digest),
+        "markdown": render_markdown(
+            store, snapshot, thesis, recommendations, preview_digest, model_identity
+        ),
     }
     with store.lock:
         previous_report = store.reports.get(case_id)
@@ -59,7 +134,7 @@ def freeze_report(store: MemoryStore, case_id: str, actor: str, snapshot: dict[s
     return copy.deepcopy(report)
 
 
-def render_markdown(store: MemoryStore, snapshot: dict[str, Any], thesis: dict[str, Any], recommendations: dict[str, Any], report_digest: str) -> str:
+def render_markdown(store: MemoryStore, snapshot: dict[str, Any], thesis: dict[str, Any], recommendations: dict[str, Any], report_digest: str, model_identity: dict[str, Any] | None = None) -> str:
     lines = [
         "# CAOS Credit Snapshot",
         "",
@@ -77,6 +152,19 @@ def render_markdown(store: MemoryStore, snapshot: dict[str, Any], thesis: dict[s
         "| --- | --- | --- | --- |",
     ]
     lines.extend(f"| {row['instrument']} | {row['recommendation']} | {'Yes' if row.get('primary') else 'No'} | {row['rationale']} |" for row in recommendations["rows"])
+    lines.extend(
+        [
+            "",
+            "## CP-MODEL",
+            "",
+            (
+                f"Included build `{model_identity['build_id']}` with worksheet payload "
+                f"`{model_identity['payload_digest']}`."
+                if model_identity
+                else "No CP-MODEL build included in this report."
+            ),
+        ]
+    )
     lines.extend(["", "## Evidence & QA", "", "Every conclusion is bound to the accepted snapshot and its immutable artifact lineage."])
     return "\n".join(lines) + "\n"
 
@@ -117,7 +205,17 @@ def render_xlsx(report: dict[str, Any]) -> bytes:
     sheet.append(["Field", "Value"])
     sheet.append(["Report digest", report["digest"]])
     sheet.append(["Accepted snapshot digest", report["snapshot_digest"]])
-    sheet.append(["Model appendix", "Blocked pending signed Deploy V CP-MODEL correction"])
+    model = report.get("content", {}).get("model")
+    sheet.append(
+        [
+            "Model appendix",
+            (
+                f"{model['build_id']} | payload {model['payload_digest']}"
+                if model
+                else "Not included"
+            ),
+        ]
+    )
     output = io.BytesIO()
     workbook.save(output)
     return output.getvalue()

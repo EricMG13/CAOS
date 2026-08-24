@@ -55,6 +55,14 @@ caos/server/migrations/**
 caos/server/vendor/**
 !caos/server/vendor/**/*.py
 
+# Worker-image-only CP-MODEL export smoke fixture.
+!caos/tests/
+caos/tests/**
+!caos/tests/fixtures/
+caos/tests/fixtures/**
+!caos/tests/fixtures/cp_model/
+!caos/tests/fixtures/cp_model/**
+
 # App Dockerfile and the runtime-resource contract probe only. Backup images
 # retain their existing caos/ context and caos/.dockerignore in this tranche.
 !caos/deploy/

@@ -649,6 +649,136 @@ try {
     if (document.activeElement !== element) throw new Error("focus did not return to the QA trigger");
   }));
 
+  const modelBuildId = `model_${fixtureSuffix}`;
+  const modelRequirements = ["CP-1", "CP-1A", "CP-1B", "CP-2", "CP-2A", "CP-2B"].map((module_id) => ({ module_id, status: "READY", digest: "a".repeat(64) }));
+  let modelState = "READY_TO_BUILD";
+  let modelExportState = "NOT_REQUESTED";
+  let modelGets = 0;
+  let modelPosts = 0;
+  let exportPosts = 0;
+  let worksheetGets = 0;
+  let modelGetDelay = 0;
+  let modelGetsInFlight = 0;
+  let maxModelGetsInFlight = 0;
+  let modelLoadFails = false;
+  const modelBuild = () => ({ id: modelBuildId, case_id: caseRecord.id, accepted_run_id: run.id, accepted_snapshot_id: accepted.id, source_set_id: "set-model", input_fingerprint: "b".repeat(64), status: modelState, queued_at: "2026-08-24T12:00:00Z", started_at: null, completed_at: modelState === "READY" ? "2026-08-24T12:01:00Z" : null, error: modelState === "FAILED" ? { code: "MODEL_CALCULATION_FAILED", detail: "The model calculation did not complete." } : null, export: { status: modelExportState, error: modelExportState === "FAILED" ? { code: "MODEL_EXPORT_FAILED", detail: "The XLSX export did not complete." } : null }, qa: modelState === "READY" ? { status: "PASS", semantic_check_count: 20, formula_count: 4, worksheet_cell_count: 12 } : undefined, payload_digest: modelState === "READY" ? "c".repeat(64) : undefined });
+  const modelInventory = () => ({
+    readiness: {
+      status: modelState,
+      module_id: "CP-MODEL",
+      accepted_snapshot: modelState === "NOT_READY" ? null : { id: accepted.id, run_id: run.id, digest: accepted.digest },
+      source_set: modelState === "NOT_READY" ? null : { id: "set-model", version: 1, digest: "d".repeat(64) },
+      requirements: modelState === "NOT_READY" ? modelRequirements.map(({ module_id }) => ({ module_id, status: "MISSING" })) : modelRequirements,
+      blockers: modelState === "NOT_READY" ? [{ code: "ACCEPTED_FULL_CREDIT_REQUIRED", detail: "Accept a completed Full Credit run before building a model." }] : [],
+      build: ["QUEUED", "BUILDING", "READY", "FAILED"].includes(modelState) ? modelBuild() : null,
+    },
+    builds: ["QUEUED", "BUILDING", "READY", "FAILED"].includes(modelState) ? [modelBuild(), { ...modelBuild(), id: `model_history_${fixtureSuffix}`, status: "FAILED", input_fingerprint: "e".repeat(64) }] : [],
+  });
+  const modelWorksheet = {
+    build_id: modelBuildId,
+    input_fingerprint: "b".repeat(64),
+    payload_digest: "c".repeat(64),
+    qa: { status: "PASS", semantic_check_count: 20, formula_count: 4, worksheet_cell_count: 12 },
+    payload: {
+      schema_version: "caos.model.worksheet.v1",
+      identity: { issuer_id: "northstar", issuer_name: primaryIssuer, analysis_date: "2026-08-24" },
+      tabs: ["Credit Snapshot", "Model", "KPIs"].map((name) => ({
+        id: name.toUpperCase().replaceAll(" ", "_"), name, max_row: 2, max_column: 2, freeze_panes: "B2", merged_cells: [],
+        columns: [{ column: 1, letter: "A", width: 22, hidden: false }, { column: 2, letter: "B", width: 14, hidden: false }],
+        cells: [
+          { address: "A1", row: 1, column: 1, value: name, value_type: "text", formula: null, semantic_id: null, owner: null, write_class: null, period_id: null, source_refs: null, number_format: "General", style: { bold: true, italic: false, fill: "0A2E63", align: "left", wrap: false } },
+          { address: "A2", row: 2, column: 1, value: 1160, value_type: "number", formula: null, semantic_id: "account::revenue::FY2025", owner: "CP-1", write_class: "SOURCE", period_id: "FY2025", source_refs: "SRC-1 | page 42 | 2026-08-24", number_format: "#,##0.0", style: { bold: false, italic: false, fill: "FFF4CC", align: "right", wrap: false } },
+          { address: "B2", row: 2, column: 2, value: 4.2, value_type: "formula", formula: "=A2/276", semantic_id: "metric::leverage::FY2025", owner: "CP-MODEL", write_class: "FORMULA", period_id: "FY2025", source_refs: null, number_format: "0.0x", style: { bold: false, italic: false, fill: null, align: "right", wrap: false } },
+        ],
+      })),
+    },
+  };
+  const modelsPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models`;
+  const worksheetPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/${modelBuildId}/worksheet`;
+  const exportPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/${modelBuildId}/export`;
+  await page.route(modelsPath, async (route) => {
+    if (route.request().method() === "POST") {
+      modelPosts += 1; modelState = "QUEUED";
+      await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ build: modelBuild(), created: true }) });
+      return;
+    }
+    modelGets += 1;
+    modelGetsInFlight += 1;
+    maxModelGetsInFlight = Math.max(maxModelGetsInFlight, modelGetsInFlight);
+    if (modelGetDelay) await new Promise((resolve) => setTimeout(resolve, modelGetDelay));
+    modelGetsInFlight -= 1;
+    if (modelLoadFails) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "not-json" });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(modelInventory()) });
+  });
+  await page.route(worksheetPath, (route) => {
+    worksheetGets += 1;
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(modelWorksheet) });
+  });
+  await page.route(exportPath, async (route) => {
+    exportPosts += 1; modelExportState = "QUEUED";
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ build: modelBuild(), queued: true }) });
+  });
+  await page.goto(`${baseURL}/model-builder/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
+  const buildButton = page.getByRole("button", { name: "Build model" });
+  await buildButton.click();
+  await page.getByText("Build queued", { exact: true }).waitFor();
+  await buildButton.click({ force: true }).catch(() => {});
+  assert.equal(modelPosts, 1, "disabled model control submitted a duplicate build");
+  modelState = "BUILDING";
+  modelGetDelay = 1700;
+  await page.getByText("Calculating worksheet", { exact: true }).waitFor({ timeout: 4000 });
+  modelGetDelay = 0;
+  assert.equal(maxModelGetsInFlight, 1, "Model Builder overlapped slow poll requests");
+  modelState = "READY";
+  await page.getByRole("tab", { name: "Credit Snapshot" }).waitFor({ timeout: 4000 });
+  const terminalGets = modelGets;
+  await page.waitForTimeout(1800);
+  assert.equal(modelGets, terminalGets, "Model Builder kept polling after READY");
+  const sourceCell = page.getByRole("button", { name: /Show lineage for account::revenue/ });
+  await sourceCell.click();
+  await page.locator("#model-cell-lineage").getByText(/SRC-1 \| page 42/).waitFor();
+  const firstTab = page.getByRole("tab", { name: "Credit Snapshot" });
+  await firstTab.focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await page.getByRole("tab", { name: "Model" }).getAttribute("aria-selected"), "true");
+  const formulaCell = page.getByRole("button", { name: /Show lineage for metric::leverage/ });
+  await formulaCell.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#model-cell-lineage").getByText("=A2/276", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "Model build history" }).locator("tbody tr").count(), 2, "immutable model history was not rendered");
+  const terminalWorksheetGets = worksheetGets;
+  await page.getByRole("button", { name: "Export XLSX" }).click();
+  await page.getByRole("button", { name: "Export queued" }).waitFor();
+  assert.equal(exportPosts, 1);
+  modelExportState = "READY";
+  await page.getByRole("link", { name: "Download XLSX" }).waitFor({ timeout: 4000 });
+  const exportTerminalGets = modelGets;
+  await page.waitForTimeout(1800);
+  assert.equal(modelGets, exportTerminalGets, "Model Builder kept polling after export READY");
+  assert.equal(worksheetGets, terminalWorksheetGets, "export polling reloaded an immutable worksheet");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, "Model Builder causes page-level horizontal overflow at 390px");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  modelState = "READY"; modelExportState = "FAILED";
+  await page.goto(`${baseURL}/model-builder/?case=${caseRecord.id}&state=export-failed`, { waitUntil: "networkidle" });
+  await page.getByText("MODEL_EXPORT_FAILED", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Credit Snapshot" }).waitFor();
+  for (const [state, text] of [["FAILED", "MODEL_CALCULATION_FAILED"], ["NOT_READY", "ACCEPTED FULL CREDIT REQUIRED"]]) {
+    modelState = state; modelExportState = "NOT_REQUESTED";
+    await page.goto(`${baseURL}/model-builder/?case=${caseRecord.id}&state=${state}`, { waitUntil: "networkidle" });
+    await page.getByText(text, { exact: true }).waitFor();
+  }
+  modelLoadFails = true;
+  await page.goto(`${baseURL}/model-builder/?case=${caseRecord.id}&state=load-error`, { waitUntil: "networkidle" });
+  await page.getByText("Unavailable", { exact: true }).waitFor();
+  modelLoadFails = false;
+  await page.unroute(modelsPath);
+  await page.unroute(worksheetPath);
+  await page.unroute(exportPath);
+
   await page.evaluate((caseId) => window.sessionStorage.setItem(`caos-report-draft:${caseId}`, JSON.stringify({ evidenceIds: 17 })), caseRecord.id);
   await page.goto(`${baseURL}/report-studio/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Compose" }).waitFor();
@@ -708,7 +838,7 @@ try {
   assert.ok(!/(^|\n)#{1,3}\s/.test(proofText), "filed proof still contains a raw markdown heading");
   assert.ok(!proofText.includes("`"), "filed proof still contains raw markdown code fences");
   assert.deepEqual(reportInputPayload.thesis.evidence_ids, [secondAccepted.id], "a valid case snapshot outside the visible picker was rejected client-side");
-  assert.deepEqual(freezePayload, { thesis_version: 101, recommendation_version: 202, include_model: false });
+  assert.deepEqual(freezePayload, { thesis_version: 101, recommendation_version: 202 });
   await page.unroute(reportInputsPath);
   await page.unroute(reportFreezePath);
   await page.unroute(reportsGetPath);

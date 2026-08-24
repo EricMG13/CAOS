@@ -4,8 +4,9 @@ CAOS is a case-centric institutional credit-analysis workspace built around the
 vendored Deploy V methodology bundle. The browser receives a static Next.js
 analytical workspace; FastAPI serves `/api` and the exported UI from the same
 image. PostgreSQL owns records and job state in deployment, `/vault` owns
-immutable content-addressed source blobs, and the worker uses the same image as
-the API process.
+immutable content-addressed source blobs and model exports, and the Dockerfile
+builds separate API and worker targets from one shared Python runtime. Only the
+worker target contains LibreOffice.
 
 ## Local boot
 
@@ -52,8 +53,10 @@ pathways are Full Credit, Earnings Update, Covenant & Refinancing, Relative
 Value, Distressed & Restructuring and source-bound Deep Research. Screen and
 Full are the user terms; Deploy V LITE/FULL profile identities remain internal.
 
-The official CP-MODEL workbook remains blocked by a signed-authority mismatch:
-its contract still requires CP-2B as an upstream owner while the signed module
-catalog marks CP-2B as absorbed by CP-2A. Only a new signed Deploy V bundle (or
-signed reconciliation) can unblock that path. No provisional workbook is
-labelled as an official model output.
+Model Builder accepts only canonical Full Credit snapshots with the required
+CP-1/CP-2 handoffs and a validated CP-2B projection. The worker calculates and
+persists the vendored Python worksheet model first; the browser renders its
+Credit Snapshot, Model, and KPIs tabs without LibreOffice. XLSX export is an
+independent optional worker job, so an export failure does not demote a ready
+in-app model. Reports bind to the immutable model ID, accepted snapshot, input
+fingerprint, and payload hash, with an export hash added only when one exists.

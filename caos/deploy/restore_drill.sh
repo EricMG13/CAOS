@@ -103,5 +103,22 @@ docker run --rm -v "$drill_volume:/vault:ro" alpine:3.20 sh -c 'test -n "$(find 
 compose exec -T db createdb -U caos "$drill_db"
 db_created=1
 compose exec -T db pg_restore --exit-on-error --no-owner --no-acl -U caos -d "$drill_db" < "$dump_path"
-compose exec -T db psql -v ON_ERROR_STOP=1 -U caos -d "$drill_db" -c "SELECT to_regclass('public.caos_state') IS NOT NULL AS state_table_present;"
+compose exec -T db psql -v ON_ERROR_STOP=1 -U caos -d "$drill_db" -c "DO \$\$ BEGIN IF to_regclass('public.caos_state') IS NULL OR to_regclass('public.model_builds') IS NULL OR to_regclass('public.model_build_jobs') IS NULL THEN RAISE EXCEPTION 'required restored tables are missing'; END IF; IF EXISTS (SELECT 1 FROM model_builds WHERE record->>'id' IS DISTINCT FROM id OR record->>'status' IS DISTINCT FROM status OR status = 'READY' AND (jsonb_typeof(record->'payload') IS DISTINCT FROM 'object' OR record->>'payload_digest' IS NULL OR record->>'payload_digest' !~ '^[0-9a-f]{64}$') OR record #>> '{export,status}' = 'READY' AND (record #>> '{export,vault_key}' IS NULL OR record #>> '{export,vault_key}' !~ '^models/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[0-9a-f]{64}\\.xlsx$' OR record #>> '{export,sha256}' IS NULL OR record #>> '{export,sha256}' !~ '^[0-9a-f]{64}$' OR record #>> '{export,size}' IS NULL OR record #>> '{export,size}' !~ '^[0-9]+$')) THEN RAISE EXCEPTION 'restored model metadata is invalid'; END IF; END \$\$;"
+model_exports=$(compose exec -T db psql -Atq -F '|' -v ON_ERROR_STOP=1 -U caos -d "$drill_db" -c "SELECT id, record #>> '{export,vault_key}', record #>> '{export,sha256}', record #>> '{export,size}' FROM model_builds WHERE record #>> '{export,status}' = 'READY' ORDER BY id;")
+printf '%s\n' "$model_exports" | docker run --rm -i -v "$drill_volume:/vault:ro" alpine:3.20 sh -c '
+set -eu
+while IFS="|" read -r build_id vault_key expected_sha expected_size; do
+    [ -n "$build_id" ] || continue
+    case "$vault_key" in
+        models/*/*/"$expected_sha".xlsx) ;;
+        *) echo "invalid restored model export key for $build_id" >&2; exit 1 ;;
+    esac
+    path="/vault/$vault_key"
+    test -f "$path"
+    actual_size=$(wc -c < "$path" | tr -d "[:space:]")
+    [ "$actual_size" = "$expected_size" ]
+    actual_sha=$(sha256sum "$path" | cut -d " " -f 1)
+    [ "$actual_sha" = "$expected_sha" ]
+done
+'
 echo "restore drill passed for isolated database $drill_db"
