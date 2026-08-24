@@ -3900,3 +3900,32 @@ image, Compose, and real-PostgreSQL gates pass after the narrow historical
 Gitleaks correction. Live-provider smoke, shadow evaluation, and opt-in
 activation remain explicitly not authorized; the feature stays disabled and
 deny-all by default.
+
+## 2026-08-24 — Hybrid CP-DR MVP boundary critic pass
+
+Decision under review: classify governance approval, live-provider smoke,
+twenty-case shadow evaluation, opt-in activation, and live rollback as stored
+post-MVP controls rather than blockers to MVP creation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-115 | Saboteur | Removing live and shadow checks from the MVP gate could be read as permission to activate an unvalidated provider path. | Critical | Resolved in contract | MVP completion is explicitly limited to the disabled, deny-all, locally verified foundation. The full checks remain verbatim as mandatory pre-activation controls, and MVP completion neither authorizes nor implies provider use. |
+| RT-2026-08-24-116 | New-hire reviewer | A future operator may not know whether the stored checks are optional backlog or binding release controls. | High | Resolved in contract | Phase 7 and the design label each stored section mandatory before activation or broader adoption, while separately identifying it as outside MVP creation. |
+| RT-2026-08-24-117 | Security reviewer | Closing the MVP without ZDR approval could expose confidential data if the default or allowlists were relaxed accidentally. | Critical | Resolved and verified | The shipped configuration remains `CPDR_AGENT_ENABLED=false`, empty allowlists deny all, and the provider key is worker-only and empty by default. Changing those controls is a separate authorized operational action. |
+| RT-2026-08-24-118 | Product-value reviewer | Local tests cannot prove the agent improves research, so an MVP-complete claim could overstate product value. | High | Resolved in wording | The MVP claim covers implementation and local correctness only. Material research improvement remains unproven until the stored blinded twenty-case evaluation passes. |
+
+Decision: accept the clarified MVP boundary. The implementation is an MVP while
+disabled and deny-all by default; governance, provider-value, activation, and
+live-rollback claims remain open and mandatory before production use or broader
+adoption.
+
+## 2026-08-24 — Hybrid CP-DR MVP boundary wording follow-up
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-119 | Saboteur | Saying only that implementation and automated gates pass could let a partial build bypass earlier phase exit gates. | High | Resolved in wording | MVP completion now explicitly requires every Phase 0–6 exit gate plus the Phase 7 local automated gate. |
+| RT-2026-08-24-120 | New-hire reviewer | The design stored live smoke as an unlabelled paragraph, making it easier to overlook than the named shadow and pilot controls. | Medium | Resolved in wording | The design now gives live smoke the same explicit stored post-MVP heading and mandatory pre-activation status. |
+| RT-2026-08-24-121 | Security reviewer | A documentation-only reclassification is safe only if it does not silently change the deployed default or secret boundary. | Critical | Verified unchanged | The exact docs-only diff changes no runtime or deployment file; the previously verified disabled flag, empty deny-all allowlists, and worker-only optional key remain authoritative. |
+
+Decision: the clarified wording closes the documentation ambiguities without
+weakening any runtime control or post-MVP activation gate.

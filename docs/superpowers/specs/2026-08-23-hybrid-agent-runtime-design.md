@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-23
 
-**Status:** Approved design; implementation plan ready
+**Status:** Approved design; MVP implemented; activation controls stored
 
 **Initial scope:** CP-DR Deep Research only
 
@@ -19,8 +19,10 @@ another case, or write directly to application storage. The existing DAG,
 source-set pinning, deterministic calculators, validation, fenced persistence,
 snapshot acceptance, and report approval remain authoritative.
 
-Phase 1 succeeds when CP-DR produces materially better source-cited research
-without weakening auditability, cost controls, privacy, or human approval.
+The MVP succeeds when the bounded CP-DR path is implemented, locally verified,
+disabled by default, and deny-all without explicit allowlists. Materially better
+source-cited research, governance approval, and production activation remain
+post-MVP gates; MVP completion does not claim them.
 
 ## Current state
 
@@ -286,14 +288,19 @@ cancellation or arbitrary retry interface.
 - existing run, source pinning, report approval, authorization, security, and
   accessibility suites.
 
-A live-provider smoke test is opt-in and never runs with production documents in
-CI. Normal CI uses the deterministic fake provider and a blank provider key.
+### Stored post-MVP live-provider smoke test
 
-### Shadow evaluation
+The live-provider smoke test is removed from MVP creation but retained as a
+mandatory pre-activation control. It is opt-in and never runs with production
+documents in CI. Normal CI uses the deterministic fake provider and a blank
+provider key.
 
-Before user-visible activation, run 20 sanitized source-set cases against the
-current deterministic result and the candidate agent result. Activation
-requires:
+### Stored post-MVP shadow evaluation
+
+This evaluation is removed from MVP creation but retained as a mandatory
+pre-activation control. Before user-visible activation, run 20 sanitized
+source-set cases against the current deterministic result and the candidate
+agent result. Activation requires:
 
 - every material claim has a valid evidence-block citation;
 - zero unsupported material claims;
@@ -305,12 +312,14 @@ requires:
   better and win their blinded pairwise comparison with the deterministic
   baseline.
 
-### Opt-in pilot
+### Stored post-MVP opt-in pilot
 
-Enable CP-DR only for named internal users or cases. Human plan approval and
-snapshot acceptance remain mandatory. Any critical grounding, privacy, case
-isolation, or methodology-authority failure disables the pilot. Rollback turns
-off CP-DR execution visibly; it does not restore the generic summary.
+This pilot is removed from MVP creation but retained as a mandatory activation
+control. Enable CP-DR only for named internal users or cases. Human plan
+approval and snapshot acceptance remain mandatory. Any critical grounding,
+privacy, case isolation, or methodology-authority failure disables the pilot.
+Rollback turns off CP-DR execution visibly; it does not restore the generic
+summary.
 
 ## Non-goals
 

@@ -18,7 +18,9 @@ Base plan commit: `9d816ed`
 - Phase 1: complete (commit `27328bc`; independent review approved with no findings)
 - Phase 2: complete (commits `f61c9b8`, `8824561`, `2b5328d`; independent review approved after fixes)
 - Phase 3: complete (commits `5ab0553`, `f21220b`; independent review approved after test-evidence fix)
-- Phase 4: in progress
-- Phase 5: pending
-- Phase 6: pending
-- Phase 7: pending
+- Phase 4: complete (commits `ae0400a`..`e3baa7f`; independent review approved after five adversarial remediation passes)
+- Phase 5: complete (commits `770988a`, `90da7b8`; independent review approved after one remediation pass)
+- Phase 6: complete (commit `bd2602d`; independent review approved with no findings)
+- Phase 7A: complete (commit `56c69fc`; full automated matrix PASS; independent review approved with no findings; current frontend reconfirmed after concurrent commits through `9ef34da`: lint, TypeScript, 6 unit tests, build, workbench, and 28 rendered axe combinations PASS with 0 violations)
+- Stored post-MVP controls: pending and NOT AUTHORIZED, but not MVP blockers (ZDR/commercial approval, sanitized live-provider smoke, twenty-case blinded evaluation, named opt-in pilot, and exercised live rollback)
+- MVP boundary: complete (commit `9ef34da`; approved plan/spec preserve the controls as mandatory before activation while removing them from MVP creation)
