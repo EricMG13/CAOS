@@ -1440,7 +1440,11 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
         assert completed is not None and completed["status"] == "succeeded", completed and completed.get("error")
         cpdr_node = next(node for node in completed["nodes"] if node["module_id"] == "CP-DR")
         artifact = store.get_artifact(cpdr_node["artifact_id"])
-        assert artifact is not None and artifact["filename"].endswith("_CP-DR_20260823.md")
+        # The CP-DR filename is dated by the run's creation date
+        # (workflows/domain.py passes run["created_at"][:10]), so derive the
+        # expectation instead of hardcoding a day that rots overnight.
+        expected_date = completed["created_at"][:10].replace("-", "")
+        assert artifact is not None and artifact["filename"].endswith(f"_CP-DR_{expected_date}.md")
         assert set(artifact["payload"]) == {
             "schema_version", "module_id", "transport", "host_confidence", "canonical_output",
             "methodology", "source_set", "upstream_artifacts",
