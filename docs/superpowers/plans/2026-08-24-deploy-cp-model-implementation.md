@@ -100,11 +100,11 @@ Create the smallest real bundle that proves the existing validator and exporter 
    - Exact columns/enums: `cp-model/scripts/validate_cp_model_inputs.py:31`
 3. Make the fixture use one issuer, one run ID, one source set, at least four quarters, reconciled model accounts, one segment, one add-back, one debt facility, and source locators.
 4. Add a concrete `CpModelBundle` loader in `models/domain.py`. Follow `DeployVBundle._load_cpdr_script` rather than changing global `sys.path` permanently.
-5. Add `project_cp2b(cp2a_markdown: str, *, run_id: str) -> str`. It must:
+5. Add `project_cp2b(cp2a_markdown: str, *, run_id: str, cp2a_artifact_digest: str) -> str`. It must:
    - require the complete T5.1 through T5.7 tables and `cp2b.cp_model_catalysts`
    - preserve every row and source locator
    - create the canonical six-H2 CP-2B envelope
-   - record the CP-2A digest as derivation provenance
+   - record the supplied host-owned CP-2A artifact digest as derivation provenance; never try to derive the artifact digest from Markdown
    - perform no inference or repair
 6. Validate the projection with common handoff validation and the full CP-MODEL bundle validator.
 7. Leave one negative fixture proving incomplete T5 registers fail before model readiness.
@@ -145,16 +145,18 @@ Replace generic placeholders for CP-1, CP-1A, CP-1B, CP-2, and CP-2A with host-v
 
 ### Implementation
 
-1. Run GitNexus context and upstream impact for `AnthropicGateway`, `WorkflowRuntime._build_artifact_with_slot`, `WorkflowRuntime._execute_node`, `DeployVBundle`, and any signature changed. Warn before a HIGH or CRITICAL edit.
+1. Run GitNexus context and upstream impact for `AnthropicGateway`, `WorkflowRuntime._build_artifact_with_slot`, `WorkflowRuntime._build_artifact`, `DeployVBundle`, `build_snapshot_payload`, and any signature changed. Warn before a HIGH or CRITICAL edit.
 2. Extract the existing provider turn, retry, token, telemetry, evidence-tool, lease, and sanitization mechanics into one shared concrete helper. Keep CP-DR behavior and tests unchanged.
-3. Add `CanonicalModuleRunner` for exactly `CP-1`, `CP-1A`, `CP-1B`, `CP-2`, and `CP-2A` on `FULL_CREDIT_32/FULL_CREDIT_ASSESSMENT` runs.
-4. Load each module's complete `SKILL.md` and mandatory references from the verified Deploy V root. Expose only pinned case evidence and already validated upstream artifact Markdown.
-5. Require structured provider output containing one complete canonical Markdown string. Recompute host identity, source-set lineage, evidence references, provenance, and digests before validation.
-6. Run the module's common handoff and semantic/completeness checks. Reject a provider response that omits a required table or workflow output.
-7. For CP-2A, create and validate the CP-2B projection from Phase 1 and store it as a derived payload on the CP-2A artifact with its own digest and derivation identity.
-8. Keep all other analytical nodes on their existing deterministic host behavior. Do not broaden provider activation beyond the five required modules.
-9. Fail the node and run with bounded `AGENT_*` or `CANONICAL_HANDOFF_INVALID` codes. Never fall back to a generic artifact.
-10. Add fake-provider end-to-end tests proving exact evidence access, canonical validation, lease loss, provider failure, and generic-placeholder rejection.
+3. Initialize a persisted `canonical_generation` budget on Full Credit runs. Store per-module fixed output-token ceilings for the five activated modules, derive the aggregate output allowance from those ceilings plus one bounded repair, and persist aggregate turns, evidence reads/bytes, input/output tokens, active time, retries, repairs, in-flight request digest, and attempts. Reserve and reconcile against this state through fenced run updates; never borrow or alias the CP-DR `research` budget.
+4. Add `CanonicalModuleRunner` for exactly `CP-1`, `CP-1A`, `CP-1B`, `CP-2`, and `CP-2A` on `FULL_CREDIT_32/FULL_CREDIT_ASSESSMENT` runs.
+5. Load each module's complete `SKILL.md` and mandatory references from the verified Deploy V root. Expose only pinned case evidence and already validated upstream artifact Markdown.
+6. Require structured provider output containing one complete canonical Markdown string. Recompute host identity, source-set lineage, evidence references, provenance, and digests before validation.
+7. Run the module's common handoff and semantic/completeness checks. Reject a provider response that omits a required table or workflow output.
+8. For CP-2A, create and validate the CP-2B projection from Phase 1 using the host artifact digest and store it as a derived payload on the CP-2A artifact with its own digest and derivation identity.
+9. Extend `build_snapshot_payload` so acceptance re-runs canonical common and module completeness validation for CP-1, CP-1A, CP-1B, CP-2, and CP-2A, verifies the CP-2B projection against the current CP-2A digest, and runs the full CP-MODEL bundle validator before minting a snapshot.
+10. Keep all other analytical nodes on their existing deterministic host behavior. Do not broaden provider activation beyond the five required modules.
+11. Fail the node and run with bounded `AGENT_*` or `CANONICAL_HANDOFF_INVALID` codes. Never fall back to a generic artifact.
+12. Add fake-provider end-to-end tests proving exact evidence access, canonical validation, acceptance-time revalidation, lease loss, provider failure, and generic-placeholder rejection.
 
 ### Copy-ready references
 
@@ -260,7 +262,7 @@ Resolve one accepted snapshot, queue its immutable fingerprint, and publish one 
 5. Add `ModelBuildRuntime` on the existing executor. Claim/heartbeat/fence like analytical runs.
 6. Materialize canonical Markdown under a private temporary directory. Call `build_cp_model(BuildRequest(...))` directly and store `BuildResult` metadata plus byte size.
 7. Publish under the server-derived relative key `models/{case_id}/{build_id}/{governed_filename}` with exclusive creation.
-8. Add a host validation/adoption path for the metadata-failure orphan. It must re-open, validate sheet registry/formulas/cached values, compare the expected hash and build inputs, and adopt only the exact build-specific file.
+8. Add a host recovery path for a metadata-failure orphan without relying on private renderer APIs. Rebuild from the same immutable inputs and renderer into a fresh private directory; the new `BuildResult` supplies recalculation, sheet, formula, cached-value, and binary QA. If the orphan bytes hash to the same validated result, adopt them. Otherwise move the orphan to a server-owned quarantine name and exclusively publish the newly validated workbook. Never expose or adopt either file until fenced metadata finalization succeeds.
 9. Extend the production worker loop to submit analytical and model work with typed future keys. Catch completed-future exceptions so one failed task cannot terminate polling.
 10. In development, schedule the model runtime immediately after durable queue creation, matching run behavior.
 
@@ -414,6 +416,7 @@ Make the same image execute CP-MODEL under production hardening and preserve mod
 
 - Modify `caos/deploy/Dockerfile`
 - Modify `caos/deploy/verify_image_resources.py`
+- Copy `caos/tests/fixtures/cp_model/` into the runtime image as a build-smoke fixture
 - Modify `caos/deploy/restore_drill.sh`
 - Modify `caos/tests/test_backup_integrity.py`
 - Modify `.github/workflows/ci.yml` and `.github/workflows/nightly.yml` only where required to separate source and image checks
@@ -423,7 +426,7 @@ Make the same image execute CP-MODEL under production hardening and preserve mod
 
 1. Run impact analysis for deployment verifier symbols and inspect current image CI before editing.
 2. Install the minimum headless LibreOffice packages in the digest-pinned Debian image. Record the exact installed package/version evidence; do not claim apt repositories are version-pinned unless they are.
-3. Extend image verification to locate and execute `soffice --version`, import `openpyxl`, load the vendored CP-MODEL package, and run the canonical fixture export.
+3. Copy the canonical CP-MODEL fixture into an explicit image-only fixture directory, then extend image verification to locate and execute `soffice --version`, import `openpyxl`, load the vendored CP-MODEL package, and run that fixture export. Do not assume the server-only Docker copy contains `caos/tests`.
 4. Give the verifier an explicit source-only mode because nightly host checks do not have LibreOffice. Keep the image mode mandatory in image CI.
 5. Assert the image runs as UID 10001 and preserve read-only root, dropped capabilities, no-new-privileges, private `/tmp`, shared `/vault`, and worker-only provider key.
 6. Prove backup includes model bytes and database records. Extend restore verification to compare restored workbook hash/size with restored model metadata and perform an authenticated download smoke when the disposable stack is available.
