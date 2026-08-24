@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import secrets
 import socket
@@ -99,6 +100,16 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         def reject_non_finite(_constant: str) -> None:
             raise ValueError("non-finite JSON number")
 
+        def reject_overflowing_number(token: str) -> float:
+            # `parse_constant` only fires on the NaN/Infinity literals. A finite-looking
+            # token that overflows the double range (1e999) is admitted by the parser as
+            # `inf`, which then re-serialises to a bare `Infinity` this same reader would
+            # reject -- a figure that no longer round-trips through its own evidence.
+            value = float(token)
+            if not math.isfinite(value):
+                raise ValueError("non-finite JSON number")
+            return value
+
         def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             data = dict(pairs)
             if len(data) != len(pairs):
@@ -106,7 +117,7 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
             return data
 
         try:
-            data = json.loads(content.decode("utf-8"), parse_constant=reject_non_finite, object_pairs_hook=reject_duplicate_keys)
+            data = json.loads(content.decode("utf-8"), parse_constant=reject_non_finite, parse_float=reject_overflowing_number, object_pairs_hook=reject_duplicate_keys)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail="invalid JSON source") from exc
         if data is None or (isinstance(data, str) and not data.strip()) or (isinstance(data, (dict, list)) and not data):

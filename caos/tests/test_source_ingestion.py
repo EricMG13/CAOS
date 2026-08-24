@@ -128,7 +128,16 @@ def test_evidence_free_json_values_are_rejected_before_source_set_creation(tmp_p
 
 def test_non_finite_json_values_are_rejected_before_source_set_creation(tmp_path: Path) -> None:
     settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v")
-    uploads = [("nan.json", b'{"amount":NaN}'), ("positive.json", b'{"amount":Infinity}'), ("negative.json", b'{"amount":-Infinity}')]
+    uploads = [
+        ("nan.json", b'{"amount":NaN}'),
+        ("positive.json", b'{"amount":Infinity}'),
+        ("negative.json", b'{"amount":-Infinity}'),
+        # Not the NaN/Infinity literals: finite-looking tokens that overflow the double
+        # range. `parse_constant` never sees these, so they used to land as `inf`.
+        ("overflow.json", b'{"amount":1e999}'),
+        ("negative-overflow.json", b'{"amount":-1e999}'),
+        ("uppercase-overflow.json", b'{"amount":1E400}'),
+    ]
 
     with TestClient(create_app(settings, MemoryStore())) as client:
         for filename, content in uploads:
@@ -213,7 +222,7 @@ def test_json_scalar_values_are_accepted(tmp_path: Path) -> None:
     settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v")
 
     with TestClient(create_app(settings, MemoryStore())) as client:
-        for filename, content in [("zero.json", b"0"), ("false.json", b"false"), ("finite.json", b'{"amount":1.25}')]:
+        for filename, content in [("zero.json", b"0"), ("false.json", b"false"), ("finite.json", b'{"amount":1.25}'), ("large-finite.json", b'{"amount":1e308}')]:
             case_id = client.post("/api/cases", json={"name": filename, "issuer": "Issuer", "sector": "Test"}).json()["id"]
             upload = client.post(f"/api/cases/{case_id}/sources", files={"file": (filename, content, "application/json")})
 
