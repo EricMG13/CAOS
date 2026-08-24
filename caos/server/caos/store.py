@@ -11,12 +11,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .migrations import apply_migrations
+
 
 class JobFencedError(RuntimeError):
     """Raised when a worker tries to write after its lease has expired."""
 
 
 MAX_ACTIVE_JOBS = 20
+MODEL_JOB_KINDS = {"calculate", "export"}
 
 
 def now_iso() -> str:
@@ -30,6 +33,12 @@ def _remaining_finalization_seconds(deadline: float | None) -> float | None:
     if remaining <= 0:
         raise TimeoutError("finalization deadline exceeded")
     return remaining
+
+
+def _model_job_key(build_id: str, kind: str) -> str:
+    if kind not in MODEL_JOB_KINDS:
+        raise ValueError("MODEL_JOB_KIND_INVALID")
+    return f"{build_id}:{kind}"
 
 
 class MemoryStore:
@@ -61,6 +70,8 @@ class MemoryStore:
         self.events: dict[str, list[dict[str, Any]]] = {}
         self.event_conditions: dict[str, threading.Condition] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
+        self.model_builds: dict[str, dict[str, Any]] = {}
+        self.model_jobs: dict[str, dict[str, Any]] = {}
 
     def persist(self) -> None:
         """Persistence hook; the development adapter intentionally does nothing."""
@@ -234,7 +245,14 @@ class MemoryStore:
             job = self.jobs.get(run_id)
             if job and job["status"] == "running" and job["lease_until"] > time.monotonic():
                 return None
-            if sum(value["status"] == "running" and value["lease_until"] > time.monotonic() for value in self.jobs.values()) >= MAX_ACTIVE_JOBS:
+            active = sum(
+                value["status"] == "running" and value["lease_until"] > time.monotonic()
+                for value in self.jobs.values()
+            ) + sum(
+                value["status"] == "claimed" and value["lease_until"] > time.monotonic()
+                for value in self.model_jobs.values()
+            )
+            if active >= MAX_ACTIVE_JOBS:
                 return None
             token = self._id("attempt")
             self.jobs[run_id] = {"status": "running", "worker": worker, "attempt_token": token, "lease_until": time.monotonic() + 60, "budget_reserved": 1}
@@ -280,6 +298,335 @@ class MemoryStore:
     def _assert_job_locked(self, run_id: str, attempt_token: str) -> None:
         if not self._job_is_current_locked(run_id, attempt_token):
             raise JobFencedError("stale workflow attempt")
+
+    def queue_model_build(
+        self,
+        build: dict[str, Any],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            prior = copy.deepcopy((self.model_builds, self.model_jobs, self.audit))
+            try:
+                record, created = self._queue_model_build_locked(build, actor)
+                if not created:
+                    return record, False
+                self.persist()
+            except Exception:
+                self.model_builds, self.model_jobs, self.audit = prior
+                raise
+            return copy.deepcopy(record), True
+
+    def _queue_model_build_locked(
+        self,
+        build: dict[str, Any],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        existing = next(
+            (
+                value
+                for value in self.model_builds.values()
+                if value.get("case_id") == build.get("case_id")
+                and value.get("input_fingerprint") == build.get("input_fingerprint")
+            ),
+            None,
+        )
+        if existing is not None:
+            return copy.deepcopy(existing), False
+        fingerprint = build.get("input_fingerprint")
+        run = self.runs.get(build.get("accepted_run_id"))
+        snapshot = self.snapshots.get(build.get("accepted_snapshot_id"))
+        source_set = self.source_set_history.get(build.get("source_set_id"))
+        if (
+            not isinstance(build.get("id"), str)
+            or build["id"] in self.model_builds
+            or build.get("case_id") not in self.cases
+            or not run
+            or run.get("case_id") != build.get("case_id")
+            or run.get("status") != "succeeded"
+            or run.get("accepted_snapshot_id") != build.get("accepted_snapshot_id")
+            or not snapshot
+            or snapshot.get("case_id") != build.get("case_id")
+            or snapshot.get("run_id") != build.get("accepted_run_id")
+            or snapshot.get("source_set_id") != build.get("source_set_id")
+            or not source_set
+            or source_set.get("case_id") != build.get("case_id")
+            or not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in fingerprint)
+        ):
+            raise ValueError("MODEL_BUILD_INVALID")
+        record = copy.deepcopy(build)
+        record.update(
+            status="QUEUED",
+            created_by=actor,
+            queued_at=record.get("queued_at") or now_iso(),
+            started_at=None,
+            completed_at=None,
+            error=None,
+        )
+        record["export"] = {"status": "NOT_REQUESTED", "error": None}
+        key = _model_job_key(record["id"], "calculate")
+        self.model_builds[record["id"]] = record
+        self.model_jobs[key] = {
+            "build_id": record["id"],
+            "kind": "calculate",
+            "status": "queued",
+            "worker": None,
+            "attempt_token": None,
+            "lease_until": 0.0,
+            "error": None,
+        }
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "model.queued",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": record["case_id"],
+                "build_id": record["id"],
+            }
+        )
+        return copy.deepcopy(record), True
+
+    def get_model_build(self, build_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            value = self.model_builds.get(build_id)
+            return copy.deepcopy(value) if value else None
+
+    def list_model_builds(self, case_id: str) -> list[dict[str, Any]]:
+        with self.lock:
+            values = [value for value in self.model_builds.values() if value.get("case_id") == case_id]
+            return copy.deepcopy(sorted(values, key=lambda value: value["queued_at"], reverse=True))
+
+    def queue_model_export(self, build_id: str, actor: str) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            prior = copy.deepcopy((self.model_builds, self.model_jobs, self.audit))
+            try:
+                build, queued = self._queue_model_export_locked(build_id, actor)
+                if not queued:
+                    return build, False
+                self.persist()
+            except Exception:
+                self.model_builds, self.model_jobs, self.audit = prior
+                raise
+            return build, True
+
+    def _queue_model_export_locked(self, build_id: str, actor: str) -> tuple[dict[str, Any], bool]:
+        build = self.model_builds.get(build_id)
+        if not build or build.get("status") != "READY":
+            raise ValueError("MODEL_EXPORT_NOT_READY")
+        key = _model_job_key(build_id, "export")
+        job = self.model_jobs.get(key)
+        if job and job.get("status") in {"queued", "claimed", "succeeded"}:
+            return copy.deepcopy(build), False
+        self.model_jobs[key] = {
+            "build_id": build_id,
+            "kind": "export",
+            "status": "queued",
+            "worker": None,
+            "attempt_token": None,
+            "lease_until": 0.0,
+            "error": None,
+        }
+        build["export"] = {"status": "QUEUED", "error": None}
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "model.export.queued",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+            }
+        )
+        return copy.deepcopy(build), True
+
+    def claim_model_job(self, build_id: str, worker: str, kind: str = "calculate") -> str | None:
+        with self.lock:
+            key = _model_job_key(build_id, kind)
+            job = self.model_jobs.get(key)
+            build = self.model_builds.get(build_id)
+            if not job or not build:
+                return None
+            now = time.monotonic()
+            if job["status"] == "claimed" and job["lease_until"] > now:
+                return None
+            if job["status"] not in {"queued", "claimed"}:
+                return None
+            active = sum(
+                value["status"] == "running" and value["lease_until"] > now
+                for value in self.jobs.values()
+            ) + sum(
+                value["status"] == "claimed" and value["lease_until"] > now
+                for value in self.model_jobs.values()
+            )
+            if active >= MAX_ACTIVE_JOBS:
+                return None
+            prior = copy.deepcopy((build, job))
+            try:
+                token = self._id("attempt")
+                job.update(
+                    status="claimed",
+                    worker=worker,
+                    attempt_token=token,
+                    lease_until=now + 60,
+                    error=None,
+                )
+                if kind == "calculate":
+                    build.update(status="BUILDING", started_at=build.get("started_at") or now_iso())
+                else:
+                    build["export"] = {**build["export"], "status": "EXPORTING", "error": None}
+                self.persist()
+                return token
+            except Exception:
+                self.model_builds[build_id], self.model_jobs[key] = prior
+                raise
+
+    def renew_model_job(self, build_id: str, attempt_token: str, kind: str = "calculate") -> bool:
+        with self.lock:
+            key = _model_job_key(build_id, kind)
+            if not self._model_job_is_current_locked(key, attempt_token):
+                return False
+            self.model_jobs[key]["lease_until"] = time.monotonic() + 60
+            self.persist()
+            return True
+
+    def model_job_is_current(self, build_id: str, attempt_token: str, kind: str = "calculate") -> bool:
+        with self.lock:
+            return self._model_job_is_current_locked(_model_job_key(build_id, kind), attempt_token)
+
+    def _model_job_is_current_locked(self, key: str, attempt_token: str) -> bool:
+        job = self.model_jobs.get(key)
+        return bool(
+            job
+            and job["status"] == "claimed"
+            and job.get("attempt_token") == attempt_token
+            and job["lease_until"] > time.monotonic()
+        )
+
+    def _assert_model_job_locked(self, build_id: str, attempt_token: str, kind: str) -> str:
+        key = _model_job_key(build_id, kind)
+        if not self._model_job_is_current_locked(key, attempt_token):
+            raise JobFencedError("stale model attempt")
+        return key
+
+    def complete_model_job(
+        self,
+        build_id: str,
+        attempt_token: str,
+        result: dict[str, Any],
+        actor: str,
+        kind: str = "calculate",
+    ) -> dict[str, Any]:
+        with self.lock:
+            key = self._assert_model_job_locked(build_id, attempt_token, kind)
+            prior = copy.deepcopy((self.model_builds[build_id], self.model_jobs[key], self.audit))
+            try:
+                completed = self._complete_model_job_locked(build_id, key, result, actor, kind)
+                self.persist()
+            except Exception:
+                self.model_builds[build_id], self.model_jobs[key], self.audit = prior
+                raise
+            return completed
+
+    def _complete_model_job_locked(
+        self,
+        build_id: str,
+        key: str,
+        result: dict[str, Any],
+        actor: str,
+        kind: str,
+    ) -> dict[str, Any]:
+        immutable = {
+            "id",
+            "case_id",
+            "accepted_run_id",
+            "accepted_snapshot_id",
+            "source_set_id",
+            "input_fingerprint",
+            "created_by",
+            "queued_at",
+            "started_at",
+            "completed_at",
+            "status",
+            "error",
+            "export",
+        }
+        if immutable.intersection(result):
+            raise ValueError("MODEL_RESULT_INVALID")
+        build = self.model_builds[build_id]
+        if kind == "calculate":
+            build.update(copy.deepcopy(result))
+            build.update(status="READY", completed_at=now_iso(), error=None)
+        else:
+            build["export"] = {**build["export"], **copy.deepcopy(result), "status": "READY", "error": None}
+        self.model_jobs[key].update(status="succeeded", lease_until=0.0)
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": f"model.{kind}.succeeded",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+            }
+        )
+        return copy.deepcopy(build)
+
+    def fail_model_job(
+        self,
+        build_id: str,
+        attempt_token: str,
+        error: dict[str, Any],
+        actor: str,
+        kind: str = "calculate",
+    ) -> dict[str, Any]:
+        with self.lock:
+            key = self._assert_model_job_locked(build_id, attempt_token, kind)
+            prior = copy.deepcopy((self.model_builds[build_id], self.model_jobs[key], self.audit))
+            try:
+                failed = self._fail_model_job_locked(build_id, key, error, actor, kind)
+                self.persist()
+            except Exception:
+                self.model_builds[build_id], self.model_jobs[key], self.audit = prior
+                raise
+            return failed
+
+    def _fail_model_job_locked(
+        self,
+        build_id: str,
+        key: str,
+        error: dict[str, Any],
+        actor: str,
+        kind: str,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(error, dict)
+            or set(error) != {"code", "detail"}
+            or not isinstance(error["code"], str)
+            or len(error["code"]) > 80
+            or not isinstance(error["detail"], str)
+            or len(error["detail"]) > 500
+        ):
+            raise ValueError("MODEL_ERROR_INVALID")
+        build = self.model_builds[build_id]
+        if kind == "calculate":
+            build.update(status="FAILED", completed_at=now_iso(), error=copy.deepcopy(error))
+        else:
+            build["export"] = {**build["export"], "status": "FAILED", "error": copy.deepcopy(error)}
+        self.model_jobs[key].update(status="failed", lease_until=0.0, error=copy.deepcopy(error))
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": f"model.{kind}.failed",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+                "code": error["code"],
+            }
+        )
+        return copy.deepcopy(build)
 
     def emit(self, run_id: str, event: str, data: dict[str, Any]) -> None:
         with self.lock:
@@ -559,9 +906,8 @@ class PostgresStore(MemoryStore):
         self._jsonb = Jsonb
         self._dsn = database_url.replace("postgresql+psycopg://", "postgresql://")
         with self._psycopg.connect(self._dsn) as connection:
+            apply_migrations(connection, Path(__file__).parent.parent / "migrations")
             with connection.cursor() as cursor:
-                migration = (Path(__file__).parent.parent / "migrations" / "001_baseline.sql").read_text()
-                cursor.execute(migration)
                 cursor.execute("CREATE TABLE IF NOT EXISTS caos_state (id boolean PRIMARY KEY DEFAULT true, revision bigint NOT NULL DEFAULT 0, state jsonb NOT NULL)")
                 cursor.execute("SELECT revision, state FROM caos_state WHERE id = true")
                 row = cursor.fetchone()
@@ -574,6 +920,263 @@ class PostgresStore(MemoryStore):
             self._base_state = self._snapshot()
             connection.commit()
 
+    def queue_model_build(
+        self,
+        build: dict[str, Any],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                        row = cursor.fetchone()
+                        if row is None:
+                            raise RuntimeError("authoritative model state is unavailable")
+                        database_revision, database_state = row
+                        self._restore(copy.deepcopy(database_state))
+                        self._state_revision = database_revision
+                        self._base_state = self._snapshot()
+                        record, created = self._queue_model_build_locked(build, actor)
+                        if not created:
+                            return record, False
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                        cursor.execute(
+                            "INSERT INTO model_builds("
+                            "id, case_id, accepted_run_id, accepted_snapshot_id, source_set_id, "
+                            "input_fingerprint, status, record, created_by, queued_at, started_at, completed_at"
+                            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (
+                                record["id"], record["case_id"], record["accepted_run_id"],
+                                record["accepted_snapshot_id"], record["source_set_id"],
+                                record["input_fingerprint"], record["status"], self._jsonb(record),
+                                record["created_by"], record["queued_at"], record.get("started_at"),
+                                record.get("completed_at"),
+                            ),
+                        )
+                        cursor.execute(
+                            "INSERT INTO model_build_jobs(build_id, kind, state) VALUES (%s, 'calculate', 'queued')",
+                            (record["id"],),
+                        )
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
+            return copy.deepcopy(record), True
+
+    def queue_model_export(self, build_id: str, actor: str) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                        row = cursor.fetchone()
+                        if row is None:
+                            raise RuntimeError("authoritative model state is unavailable")
+                        database_revision, database_state = row
+                        self._restore(copy.deepcopy(database_state))
+                        self._state_revision = database_revision
+                        self._base_state = self._snapshot()
+                        build, queued = self._queue_model_export_locked(build_id, actor)
+                        if not queued:
+                            return build, False
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                        self._update_model_build_connection(connection, build)
+                        cursor.execute(
+                            "INSERT INTO model_build_jobs(build_id, kind, state) VALUES (%s, 'export', 'queued') "
+                            "ON CONFLICT (build_id, kind) DO UPDATE SET state='queued', worker_id=NULL, "
+                            "attempt_token=NULL, lease_until=NULL, error=NULL, updated_at=now()",
+                            (build_id,),
+                        )
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
+            return copy.deepcopy(build), True
+
+    def claim_model_job(self, build_id: str, worker: str, kind: str = "calculate") -> str | None:
+        key = _model_job_key(build_id, kind)
+        token = self._id("attempt")
+        with self.lock:
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT pg_advisory_xact_lock(hashtext('caos:workflow-budget'))")
+                        cursor.execute(
+                            "SELECT (SELECT count(*) FROM jobs WHERE state='claimed' AND lease_until > now()) + "
+                            "(SELECT count(*) FROM model_build_jobs WHERE state='claimed' AND lease_until > now())"
+                        )
+                        if cursor.fetchone()[0] >= MAX_ACTIVE_JOBS:
+                            return None
+                        cursor.execute(
+                            "UPDATE model_build_jobs SET state='claimed', worker_id=%s, attempt_token=%s, "
+                            "lease_until=now() + interval '60 seconds', error=NULL, updated_at=now() "
+                            "WHERE build_id=%s AND kind=%s AND (state='queued' OR "
+                            "(state='claimed' AND (lease_until IS NULL OR lease_until <= now()))) "
+                            "RETURNING build_id",
+                            (worker, token, build_id, kind),
+                        )
+                        if cursor.fetchone() is None:
+                            return None
+                        cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                        state_row = cursor.fetchone()
+                        if state_row is None:
+                            raise RuntimeError("authoritative model state is unavailable")
+                        database_revision, database_state = state_row
+                        self._adopt_persisted(copy.deepcopy(database_state), database_revision)
+                        build = self.model_builds.get(build_id)
+                        if build is None:
+                            raise RuntimeError("model build record is unavailable")
+                        self.model_jobs[key] = {
+                            "build_id": build_id,
+                            "kind": kind,
+                            "status": "claimed",
+                            "worker": worker,
+                            "attempt_token": token,
+                            "lease_until": time.monotonic() + 60,
+                            "error": None,
+                        }
+                        if kind == "calculate":
+                            build.update(status="BUILDING", started_at=build.get("started_at") or now_iso())
+                        else:
+                            build["export"] = {**build["export"], "status": "EXPORTING", "error": None}
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                        self._update_model_build_connection(connection, build)
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
+            return token
+
+    def renew_model_job(self, build_id: str, attempt_token: str, kind: str = "calculate") -> bool:
+        _model_job_key(build_id, kind)
+        with self._psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE model_build_jobs SET lease_until=now() + interval '60 seconds', updated_at=now() "
+                    "WHERE build_id=%s AND kind=%s AND state='claimed' AND attempt_token=%s "
+                    "AND lease_until > now() RETURNING build_id",
+                    (build_id, kind, attempt_token),
+                )
+                renewed = cursor.fetchone() is not None
+            connection.commit()
+        if renewed:
+            with self.lock:
+                job = self.model_jobs.get(_model_job_key(build_id, kind))
+                if job and job.get("attempt_token") == attempt_token:
+                    job["lease_until"] = time.monotonic() + 60
+        return renewed
+
+    def model_job_is_current(self, build_id: str, attempt_token: str, kind: str = "calculate") -> bool:
+        _model_job_key(build_id, kind)
+        with self._psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM model_build_jobs WHERE build_id=%s AND kind=%s AND state='claimed' "
+                    "AND attempt_token=%s AND lease_until > now()",
+                    (build_id, kind, attempt_token),
+                )
+                return cursor.fetchone() is not None
+
+    @contextmanager
+    def _model_fenced_connection(
+        self,
+        build_id: str,
+        attempt_token: str,
+        kind: str,
+    ) -> Iterator[Any]:
+        key = _model_job_key(build_id, kind)
+        with self.lock:
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            restore_on_error = False
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT worker_id FROM model_build_jobs WHERE build_id=%s AND kind=%s "
+                            "AND state='claimed' AND attempt_token=%s AND lease_until > now() FOR UPDATE",
+                            (build_id, kind, attempt_token),
+                        )
+                        job_row = cursor.fetchone()
+                        if job_row is None:
+                            raise JobFencedError("stale model attempt")
+                        cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                        state_row = cursor.fetchone()
+                        if state_row is None:
+                            raise JobFencedError("authoritative model state is unavailable")
+                        database_revision, database_state = state_row
+                        self._adopt_persisted(copy.deepcopy(database_state), database_revision)
+                        self.model_jobs[key] = {
+                            "build_id": build_id,
+                            "kind": kind,
+                            "status": "claimed",
+                            "worker": job_row[0],
+                            "attempt_token": attempt_token,
+                            "lease_until": time.monotonic() + 60,
+                            "error": None,
+                        }
+                        restore_on_error = True
+                        yield connection
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                        self._update_model_build_connection(connection, self.model_builds[build_id])
+                        job = self.model_jobs[key]
+                        cursor.execute(
+                            "UPDATE model_build_jobs SET state=%s, lease_until=NULL, error=%s, updated_at=now() "
+                            "WHERE build_id=%s AND kind=%s AND attempt_token=%s",
+                            (job["status"], self._jsonb(job.get("error")), build_id, kind, attempt_token),
+                        )
+                    connection.commit()
+            except Exception:
+                if restore_on_error:
+                    self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
+
+    def _update_model_build_connection(self, connection: Any, build: dict[str, Any]) -> None:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE model_builds SET status=%s, record=%s, started_at=%s, completed_at=%s, "
+                "updated_at=now() WHERE id=%s",
+                (
+                    build["status"], self._jsonb(build), build.get("started_at"),
+                    build.get("completed_at"), build["id"],
+                ),
+            )
+
+    def complete_model_job(
+        self,
+        build_id: str,
+        attempt_token: str,
+        result: dict[str, Any],
+        actor: str,
+        kind: str = "calculate",
+    ) -> dict[str, Any]:
+        with self._model_fenced_connection(build_id, attempt_token, kind):
+            key = self._assert_model_job_locked(build_id, attempt_token, kind)
+            return self._complete_model_job_locked(build_id, key, result, actor, kind)
+
+    def fail_model_job(
+        self,
+        build_id: str,
+        attempt_token: str,
+        error: dict[str, Any],
+        actor: str,
+        kind: str = "calculate",
+    ) -> dict[str, Any]:
+        with self._model_fenced_connection(build_id, attempt_token, kind):
+            key = self._assert_model_job_locked(build_id, attempt_token, kind)
+            return self._fail_model_job_locked(build_id, key, error, actor, kind)
+
     def claim_job(self, run_id: str, worker: str) -> str | None:
         token = self._id("attempt")
         with self._psycopg.connect(self._dsn) as connection:
@@ -584,7 +1187,10 @@ class PostgresStore(MemoryStore):
                 if not run or not case:
                     return None
                 cursor.execute("SELECT pg_advisory_xact_lock(hashtext('caos:workflow-budget'))")
-                cursor.execute("SELECT count(*) FROM jobs WHERE state='claimed' AND lease_until > now()")
+                cursor.execute(
+                    "SELECT (SELECT count(*) FROM jobs WHERE state='claimed' AND lease_until > now()) + "
+                    "(SELECT count(*) FROM model_build_jobs WHERE state='claimed' AND lease_until > now())"
+                )
                 if cursor.fetchone()[0] >= MAX_ACTIVE_JOBS:
                     return None
                 cursor.execute(
@@ -811,7 +1417,7 @@ class PostgresStore(MemoryStore):
                     job["status"] = "finished"
 
     def _snapshot(self) -> dict[str, Any]:
-        return {name: copy.deepcopy(getattr(self, name)) for name in ("cases", "sources", "source_sets", "source_set_history", "runs", "nodes", "artifacts", "snapshots", "theses", "recommendations", "notes", "assumptions", "reports", "methodology_drafts", "rv_universes", "audit", "events", "jobs")}
+        return {name: copy.deepcopy(getattr(self, name)) for name in ("cases", "sources", "source_sets", "source_set_history", "runs", "nodes", "artifacts", "snapshots", "theses", "recommendations", "notes", "assumptions", "reports", "methodology_drafts", "rv_universes", "audit", "events", "jobs", "model_builds", "model_jobs")}
 
     def _restore(self, state: dict[str, Any]) -> None:
         for name, value in state.items():
