@@ -6,6 +6,11 @@ import json
 from typing import Any
 
 from ..contracts import RecommendationMatrixRequest, ThesisRequest, digest
+from ..methodology.canonical import (
+    CANONICAL_MODULES,
+    CanonicalModuleRunner,
+    is_canonical_full_credit,
+)
 from ..methodology.cpdr import confidence_inputs, render_cpdr_markdown, validate_cpdr_payload
 from ..store import MemoryStore, now_iso
 
@@ -294,6 +299,9 @@ def mark_assumptions_stale(store: MemoryStore, case_id: str, changed_source_ids:
 def build_snapshot_payload(store: MemoryStore, run: dict[str, Any], bundle: Any | None = None) -> dict[str, Any]:
     if run.get("status") != "succeeded" or len(run.get("nodes", [])) != len(run.get("node_ids", [])):
         raise ValueError("RUN_NOT_READY")
+    canonical_required = is_canonical_full_credit(run.get("plan") or {})
+    canonical_runner = CanonicalModuleRunner(bundle) if canonical_required and bundle is not None else None
+    canonical_artifacts: dict[str, dict[str, Any]] = {}
     artifacts = []
     for node in run["nodes"]:
         artifact = store.get_artifact(node.get("artifact_id")) if node.get("artifact_id") else None
@@ -308,7 +316,24 @@ def build_snapshot_payload(store: MemoryStore, run: dict[str, Any], bundle: Any 
             raise ValueError("RUN_NOT_READY")
         if node.get("module_id") == "CP-DR" and not cpdr_artifact_is_valid(store, run, node, artifact, bundle):
             raise ValueError("RUN_NOT_READY")
+        if node.get("module_id") in CANONICAL_MODULES and canonical_required:
+            if not canonical_artifact_is_valid(
+                store,
+                run,
+                node,
+                artifact,
+                canonical_runner,
+            ):
+                raise ValueError("RUN_NOT_READY")
+            canonical_artifacts[node["module_id"]] = artifact
         artifacts.append(artifact)
+    if canonical_required:
+        try:
+            if canonical_runner is None or set(canonical_artifacts) != set(CANONICAL_MODULES):
+                raise ValueError("RUN_NOT_READY")
+            canonical_runner.validate_bundle(canonical_artifacts, run["id"])
+        except Exception as exc:
+            raise ValueError("RUN_NOT_READY") from exc
     source_set = store.source_set_by_id(run["plan"].get("source_set_id"))
     if not source_set:
         raise ValueError("SOURCE_SET_CHANGED")
@@ -320,6 +345,171 @@ def build_snapshot_payload(store: MemoryStore, run: dict[str, Any], bundle: Any 
         "artifacts": [{"id": artifact["id"], "module_id": artifact["module_id"], "digest": artifact["digest"]} for artifact in artifacts],
         "accepted_at": now_iso(),
     }
+
+
+def canonical_artifact_is_valid(
+    store: MemoryStore,
+    run: dict[str, Any],
+    node: dict[str, Any],
+    artifact: dict[str, Any],
+    runner: CanonicalModuleRunner | None,
+) -> bool:
+    try:
+        if runner is None:
+            return False
+        runner.bundle.verify()
+        module_id = node["module_id"]
+        envelope = artifact["payload"]
+        expected_keys = {
+            "schema_version",
+            "module_id",
+            "confidence_inputs",
+            "host_confidence",
+            "canonical_output",
+            "methodology",
+            "source_set",
+            "upstream_artifacts",
+            "evidence_refs",
+        }
+        generation = run.get("canonical_generation") or {}
+        source_set = store.source_set_by_id(run["plan"].get("source_set_id"))
+        case = store.get_case(run["case_id"])
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != expected_keys
+            or not source_set
+            or not case
+            or generation.get("reporting_period") != run["created_at"][:10]
+            or generation.get("phase") != "complete"
+            or set(generation.get("completed_modules") or []) != set(CANONICAL_MODULES)
+        ):
+            return False
+        expected_upstream = []
+        for dependency in node.get("dependencies", []):
+            dependency_node = next(
+                (item for item in run["nodes"] if item.get("module_id") == dependency),
+                None,
+            )
+            dependency_artifact = (
+                store.get_artifact(dependency_node.get("artifact_id"))
+                if dependency_node
+                else None
+            )
+            if not dependency_artifact:
+                return False
+            expected_upstream.append(
+                {
+                    "module_id": dependency,
+                    "artifact_id": dependency_artifact["id"],
+                    "digest": dependency_artifact["digest"],
+                }
+            )
+        expected_fingerprint = digest(
+            {
+                "plan": run["plan"]["plan_digest"],
+                "module": module_id,
+                "source_set": source_set,
+                "source_ids": list(source_set["source_ids"]),
+                "upstream_artifacts": expected_upstream,
+            }
+        )
+        if (
+            artifact.get("case_id") != run["case_id"]
+            or artifact.get("run_id") != run["id"]
+            or artifact.get("module_id") != module_id
+            or artifact.get("input_fingerprint") != expected_fingerprint
+            or envelope["schema_version"] != "caos.canonical.artifact.v1"
+            or envelope["module_id"] != module_id
+            or envelope["methodology"]
+            != {
+                "build_id": runner.bundle.build_id,
+                "authority_digest": digest(runner.authority(module_id)),
+            }
+            or envelope["source_set"]
+            != {
+                "id": source_set["id"],
+                "version": source_set["version"],
+                "digest": digest(source_set),
+            }
+            or envelope["upstream_artifacts"] != expected_upstream
+        ):
+            return False
+        evidence_refs = envelope["evidence_refs"]
+        if not isinstance(evidence_refs, list) or any(not isinstance(row, dict) for row in evidence_refs):
+            return False
+        evidence_keys = [(row.get("source_id"), row.get("block_id")) for row in evidence_refs]
+        if len(evidence_keys) != len(set(evidence_keys)):
+            return False
+        expected_evidence = []
+        with store.lock:
+            for row in evidence_refs:
+                source = store.sources.get(row.get("source_id"))
+                blocks = (source or {}).get("blocks") or []
+                matching = [
+                    block
+                    for block in blocks
+                    if isinstance(block, dict) and block.get("block_id") == row.get("block_id")
+                ]
+                if (
+                    not source
+                    or source.get("case_id") != run["case_id"]
+                    or source.get("withdrawn")
+                    or source["id"] not in source_set["source_ids"]
+                    or len(matching) != 1
+                ):
+                    return False
+                block = matching[0]
+                expected_evidence.append(
+                    {
+                        "source_id": source["id"],
+                        "block_id": block["block_id"],
+                        "source_digest": source["sha256"],
+                        "origin_family": source["sha256"],
+                        "authority_class": "unclassified",
+                        "locator": json.dumps(
+                            block.get("locator"), sort_keys=True, separators=(",", ":")
+                        ),
+                        "extractor_version": str(block.get("extractor_version")),
+                        "confidence": str(block.get("confidence")),
+                    }
+                )
+        if evidence_refs != sorted(
+            expected_evidence, key=lambda item: (item["source_id"], item["block_id"])
+        ):
+            return False
+        runner.validate_model_sources(
+            artifact.get("markdown", ""),
+            {item["source_id"] for item in expected_evidence},
+        )
+        confidence = runner.confidence(module_id, envelope["confidence_inputs"])
+        if envelope["host_confidence"] != confidence or confidence["qa_status"] != "Passed":
+            return False
+        markdown = artifact.get("markdown")
+        filename = artifact.get("filename")
+        if not isinstance(markdown, str) or not isinstance(filename, str):
+            return False
+        validation = runner.validate_handoff(
+            module_id,
+            markdown,
+            run_id=run["id"],
+            reporting_period=generation["reporting_period"],
+            filename=filename,
+        )
+        fields = validation.fields or {}
+        canonical_output = {
+            "filename": filename,
+            "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+        }
+        return bool(
+            fields.get("issuer_name") == case["issuer"]
+            and str(fields.get("issuer_id")) == run["case_id"].replace("_", "-")
+            and fields.get("confidence_score") == confidence["confidence_score"]
+            and fields.get("confidence_band") == confidence["confidence_band"]
+            and envelope["canonical_output"] == canonical_output
+            and artifact.get("digest") == digest(envelope)
+        )
+    except Exception:
+        return False
 
 
 def cpdr_artifact_is_valid(

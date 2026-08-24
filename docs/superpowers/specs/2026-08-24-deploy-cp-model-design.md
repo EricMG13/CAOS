@@ -8,23 +8,23 @@ meta:
 
 # Deploy CP-MODEL from accepted Full Credit runs
 
-This design replaces the Model Builder authority placeholder with a case-scoped path that creates, validates, stores, and downloads CP-MODEL v3 workbooks. A model build uses one accepted Full Credit snapshot and fails closed unless its canonical handoffs satisfy the vendored CP-MODEL contract.
+This design replaces the Model Builder authority placeholder with a case-scoped path that calculates, validates, stores, and displays CP-MODEL v3 worksheet data. A model build uses one accepted Full Credit snapshot and fails closed unless its canonical handoffs satisfy the vendored CP-MODEL contract. LibreOffice is required only when an analyst explicitly requests an XLSX export.
 
 ## Content plan
 
 - **Goal**: deploy CP-MODEL without the obsolete signed-correction requirement while preserving every input, calculation, lineage, and publication gate
 - **Audience**: CAOS engineers, methodology owners, deployment operators, and QA reviewers
-- **Outcome**: an analyst can build one immutable workbook from a model-ready accepted snapshot and download it from Model Builder
+- **Outcome**: an analyst can build and inspect one immutable worksheet model from a model-ready accepted snapshot, with an optional XLSX export
 - **Scope**: canonical Full Credit handoffs, model readiness, asynchronous export, persistence, API access, UI states, deployment dependencies, and verification
 - **Open questions**: none; the approved decisions appear in this design
 
 ## Approved product contract
 
-CP-MODEL builds only from an accepted `FULL_CREDIT` run at `Full` depth. The accepted snapshot, not the latest run, supplies model authority. Screen runs and other pathways remain visible but return `NOT_READY` with exact missing prerequisites.
+CP-MODEL builds only from an accepted `FULL_CREDIT` run at `Full` depth. The accepted snapshot, not the latest run, supplies model authority. Screen runs and other pathways remain visible but return `NOT_READY` with exact missing prerequisites. The primary CAOS model is the immutable structured output of CP-MODEL's Python IR and calculation engine, displayed as a read-only worksheet in Model Builder. A validated XLSX is an optional export of that model, not the model's identity or availability gate.
 
 Builds run in the background. A build fingerprint combines the accepted snapshot digest, required handoff digests, Deploy V build identity, and CP-MODEL renderer digest. Repeating the request with the same fingerprint returns the existing queued, running, failed, or successful build. Accepting a different snapshot creates a new immutable build.
 
-The product retains all successful builds. It never overwrites a workbook or relabels an older build as current. Model Builder identifies which build matches the visible accepted snapshot.
+The product retains all successful builds. It never overwrites a model or optional export, or relabels an older build as current. Model Builder identifies which build matches the visible accepted snapshot.
 
 ## Authority boundary
 
@@ -59,7 +59,7 @@ The run fails when a required module cannot author a valid handoff. It does not 
 
 The activation does not override provider-processing governance. A deployment must still authorize external processing of case evidence and keep the provider key in the worker. Without that authority or key, canonical Full Credit execution fails before any model can become ready.
 
-Three focused components own the new behavior. `CanonicalModuleRunner` authors and validates the five upstream handoffs. `ModelReadinessService` resolves one accepted snapshot and its immutable fingerprint. `ModelBuildRuntime` claims jobs and publishes workbooks. Existing workflow, store, and HTTP modules call these concrete components without adding provider or storage interfaces.
+Three focused components own the new behavior. `CanonicalModuleRunner` authors and validates the five upstream handoffs. `ModelReadinessService` resolves one accepted snapshot and its immutable fingerprint. `ModelBuildRuntime` claims jobs, persists worksheet payloads, and optionally publishes XLSX exports. Existing workflow, store, and HTTP modules call these concrete components without adding provider or storage interfaces.
 
 ## Model readiness resolver
 
@@ -74,16 +74,18 @@ The resolver checks:
 - Every handoff names CP-MODEL as a downstream consumer where required
 - Artifact digests and upstream lineage match the accepted snapshot
 - `validate_cp_model_inputs.py` accepts the complete handoff set
-- LibreOffice and the vendored CP-MODEL runtime are available
+- The vendored CP-MODEL IR/calculation runtime is available
 
 The resolver returns one of these states:
 
 - `NOT_READY`: a prerequisite is absent or invalid
-- `READY_TO_BUILD`: the accepted snapshot passes every input and runtime gate
-- `QUEUED`: one build waits for a worker
-- `BUILDING`: one worker owns an unexpired lease
-- `READY`: the immutable workbook passed publication QA
-- `FAILED`: the worker reached a bounded export failure
+- `READY_TO_BUILD`: the accepted snapshot passes every input and calculation-runtime gate
+- `QUEUED`: one model calculation waits for a worker
+- `BUILDING`: one calculation worker owns an unexpired lease
+- `READY`: the immutable structured model passed semantic and persistence QA
+- `FAILED`: the worker reached a bounded input or calculation failure
+
+XLSX export is a nested lifecycle on a ready model: `NOT_REQUESTED`, `QUEUED`, `EXPORTING`, `READY`, or `FAILED`. Export failure never demotes the structured model.
 
 `NOT_READY` includes stable error codes and safe details such as missing module IDs or validator messages. It never includes source text, provider responses, credentials, filesystem paths, or stack traces.
 
@@ -92,13 +94,14 @@ The resolver returns one of these states:
 The API adds these case-scoped routes:
 
 - `GET /api/cases/{case_id}/models`: return readiness, the current build, and immutable build history
-- `POST /api/cases/{case_id}/models`: return the existing fingerprint match or create one queued build
+- `POST /api/cases/{case_id}/models`: return the existing fingerprint match or create one queued calculation
 - `GET /api/cases/{case_id}/models/{build_id}`: return one build's bounded status and QA metadata
-- `GET /api/cases/{case_id}/models/{build_id}/download`: stream one ready workbook
+- `POST /api/cases/{case_id}/models/{build_id}/exports`: idempotently queue the optional XLSX export
+- `GET /api/cases/{case_id}/models/{build_id}/download`: stream one ready XLSX export
 
 Every route calls the existing case membership gate. Queueing also requires case write authority. Build IDs never select filesystem paths directly.
 
-Downloads use the governed filename, the XLSX media type, attachment disposition, `X-Content-Type-Options: nosniff`, and `Cache-Control: no-store`. A download request fails unless the build belongs to the case, has status `READY`, and its recorded file hash and size still match the vault object.
+Downloads use the governed filename, the XLSX media type, attachment disposition, `X-Content-Type-Options: nosniff`, and `Cache-Control: no-store`. A download request fails unless the build belongs to the case, the model and its export both have status `READY`, and the recorded file hash and size still match the vault object.
 
 The old singular `GET /api/cases/{case_id}/model` route can delegate to the list/readiness service for one compatibility release. It no longer returns `BLOCKED` or mentions signed authority.
 
@@ -114,40 +117,45 @@ Each model record stores:
 - Input fingerprint and lifecycle status
 - Actor and queued, started, completed, or failed timestamps
 - Bounded error code and detail
-- Governed output filename, relative vault key, byte size, and SHA-256
-- CP-MODEL QA payload, formula count, semantic-check count, recalculation engine, warnings, and limitations
+- Structured model payload, payload SHA-256, worksheet schema version, and bounded cell/lineage inventory
+- CP-MODEL QA payload, semantic-check count, warnings, and limitations
+- Optional export lifecycle, governed filename, relative vault key, byte size, workbook SHA-256, formula count, and recalculation engine
 
 The database enforces one row per input fingerprint and case. The model job table supports queued, claimed, succeeded, and failed states with a worker ID, attempt token, and lease expiry.
 
 MemoryStore mirrors the same behavior for local execution and contract tests. PostgresStore claims, renews, finalizes, and recovers model jobs through database transactions. A stale worker cannot change model state or publish metadata.
 
-## Workbook construction and publication
+## Model calculation and optional workbook publication
 
-The model worker performs these steps:
+The model worker performs these steps without LibreOffice:
 
 1. Claim the queued build with a fenced lease
 2. Re-read the pinned model record and accepted artifacts from durable state
 3. Recompute and compare every input and renderer digest
 4. Write canonical handoffs into a unique private temporary directory
-5. Call the vendored `build_cp_model` entry point with the resolved `soffice` binary
-6. Let CP-MODEL generate formulas, calculate independent expectations, run LibreOffice, reload both formula and cached-value views, and validate the binary
-7. Hash the completed workbook and publish it with exclusive creation under `models/{case_id}/{build_id}/`
-8. Commit `READY` metadata and the audit event through the fenced model-job transaction
+5. Call vendored `build_ir` and `calculate`
+6. Serialize Credit Snapshot, Model, and KPI worksheet cells from the typed IR/calculation book, including semantic IDs and source lineage
+7. Hash the bounded structured payload
+8. Commit `READY` model metadata, payload, and audit event through the fenced model-job transaction
+
+An explicit export job re-reads the same ready model and canonical inputs, calls vendored `build_cp_model` with the worker-resolved `soffice`, validates formulas and cached values against the independent Python expectations, then publishes exclusively under `models/{case_id}/{build_id}/`. It commits export metadata separately through the same model-job fence.
 
 The final filename remains `[IssuerID]_CP-MODEL-v3_[FirstPeriod]-[LastPeriod]_[YYYYMMDD].xlsx`. The worker never accepts a filename, output directory, or LibreOffice command from an API request.
 
-If publication succeeds but the final metadata transaction fails, the build remains non-ready and the unreferenced build-specific file is inaccessible through the API. A retry with the same build identity verifies and adopts that exact file or fails on a mismatch. It never overwrites it.
+If XLSX publication succeeds but final export metadata fails, the structured model remains ready while the unreferenced file is inaccessible through the API. A retry with the same export identity verifies and adopts that exact file or fails on a mismatch. It never overwrites it.
 
 ## Model Builder interface
 
 Model Builder replaces the authority placeholder with one focused workspace:
 
+- Read-only worksheet tabs for Credit Snapshot, Model, and KPIs using server-calculated values
+- Keyboard-operable row/column navigation, sticky headers, aligned numeric cells, and one-interaction evidence lineage
 - Accepted snapshot identity and source-set version
 - Required handoff checklist with module, status, digest, and blocker
 - Current build state and concise worker progress
 - QA identity with renderer hash, recalculation engine, formula count, semantic-check count, warnings, and limitations
-- One primary action: **Build model**, **Retry build**, or **Download workbook**
-- Compact immutable history with snapshot digest, completion time, workbook hash, and download action
+- One primary model action: **Build model** or **Retry build**, plus an explicit **Export XLSX** / **Download XLSX** control after the model is ready
+- Compact immutable history with snapshot digest, completion time, payload hash, and optional export identity/action
 
 The page polls while the build is queued or running and stops in a terminal state. It disables duplicate submission while preserving server-side idempotency. Text and glyphs accompany every status color, focus remains visible, and live updates use a polite status region. Reduced-motion preferences disable any running-state pulse.
 
@@ -155,13 +163,13 @@ Model Builder never presents `READY_TO_BUILD` as a completed model. Failed and n
 
 ## Report integration
 
-Report freezing may include a model only when the selected model build is `READY` and matches the report's accepted snapshot. The frozen report stores the model build ID, workbook hash, and input fingerprint.
+Report freezing may include a model only when the selected model build is `READY` and matches the report's accepted snapshot. The frozen report stores the model build ID, model payload hash, and input fingerprint. If the report explicitly includes a ready XLSX export, it additionally stores the export ID and workbook hash.
 
 Approval recomputes the report fingerprint with the same model identity. A newer model or snapshot does not mutate a frozen report. The XLSX report appendix names and hashes the included CP-MODEL build instead of displaying the signed-authority placeholder.
 
 ## Deployment changes
 
-The production image installs headless LibreOffice from the pinned Debian base repositories. Image verification checks that `soffice` executes and that the CP-MODEL Python modules import with the installed `openpyxl` version.
+The production worker image installs headless LibreOffice from the pinned Debian base repositories for optional XLSX export. Core model calculation and the API do not require `soffice`. Image verification separately checks the Python-only model path and the worker export path.
 
 The app and worker continue to share the `/vault` volume. Only the worker needs the Anthropic key and invokes LibreOffice. The API never receives provider credentials. The read-only root filesystem, dropped capabilities, no-new-privileges setting, and private `/tmp` mount remain unchanged.
 
@@ -173,11 +181,13 @@ The system fails closed at every boundary:
 
 - Invalid or missing canonical handoff: `NOT_READY`
 - Missing provider configuration during upstream execution: the Full Credit run fails with `AGENT_PROVIDER_UNAVAILABLE`
-- Missing LibreOffice: `NOT_READY` with `MODEL_RUNTIME_UNAVAILABLE`
+- Missing LibreOffice: the ready model remains available; only export becomes `FAILED` with `MODEL_EXPORT_RUNTIME_UNAVAILABLE`
 - Lease loss: the stale worker stops without committing state
-- CP-MODEL input, formula, recalculation, or binary failure: `FAILED` with the governed diagnostic code
+- CP-MODEL input or calculation failure: model `FAILED` with the governed diagnostic code
+- XLSX formula, recalculation, or binary failure: export `FAILED` while the model remains `READY`
 - Existing output collision or hash mismatch: `FAILED` without overwrite
-- Database finalization failure: no ready metadata and no downloadable workbook
+- Model finalization failure: no ready model metadata
+- Export finalization failure: no downloadable workbook; the ready model remains available
 - Missing or changed vault file: download fails closed and records an integrity failure
 
 Logs, API errors, audit events, and model records exclude source text, prompts, provider bodies, credentials, absolute paths, and raw exception strings.
@@ -218,9 +228,9 @@ The implementation retains Deploy V integrity verification, canonical module val
 
 1. Activate and validate canonical Full Credit handoffs, including the CP-2B projection
 2. Add readiness resolution, model records, leased jobs, and worker execution
-3. Add model API and immutable download
-4. Replace the Model Builder placeholder
-5. Enable report inclusion for matching ready builds
-6. Add LibreOffice to the production image and run deployment verification
+3. Add model worksheet API and optional immutable export/download
+4. Replace the Model Builder placeholder with worksheet tabs
+5. Enable report inclusion for matching ready model payloads
+6. Isolate LibreOffice to the export worker and run deployment verification
 
 Each stage leaves the prior fail-closed behavior intact until its tests pass. The final stage removes the signed-authority placeholder only after the complete end-to-end path succeeds.

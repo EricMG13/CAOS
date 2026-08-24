@@ -1027,7 +1027,8 @@ def test_cpdr_compose_defaults_are_deny_all_and_provider_key_is_worker_only() ->
     defaults = dict(line.split("=", 1) for line in env_example.splitlines() if "=" in line and not line.startswith("#"))
     services = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|^volumes:\n)", compose, flags=re.MULTILINE | re.DOTALL))
 
-    assert {name: defaults[name] for name in ("CPDR_AGENT_ENABLED", "CPDR_PILOT_CASE_IDS", "CPDR_PILOT_SUBJECTS", "ANTHROPIC_MODEL", "ANTHROPIC_API_KEY")} == {
+    assert {name: defaults[name] for name in ("CANONICAL_AGENT_ENABLED", "CPDR_AGENT_ENABLED", "CPDR_PILOT_CASE_IDS", "CPDR_PILOT_SUBJECTS", "ANTHROPIC_MODEL", "ANTHROPIC_API_KEY")} == {
+        "CANONICAL_AGENT_ENABLED": "false",
         "CPDR_AGENT_ENABLED": "false",
         "CPDR_PILOT_CASE_IDS": "",
         "CPDR_PILOT_SUBJECTS": "",
@@ -1035,6 +1036,7 @@ def test_cpdr_compose_defaults_are_deny_all_and_provider_key_is_worker_only() ->
         "ANTHROPIC_API_KEY": "",
     }
     shared = {
+        "CANONICAL_AGENT_ENABLED: ${CANONICAL_AGENT_ENABLED:-false}",
         "CPDR_AGENT_ENABLED: ${CPDR_AGENT_ENABLED:-false}",
         "CPDR_PILOT_CASE_IDS: ${CPDR_PILOT_CASE_IDS:-}",
         "CPDR_PILOT_SUBJECTS: ${CPDR_PILOT_SUBJECTS:-}",

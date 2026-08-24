@@ -38,6 +38,7 @@ class Settings:
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_timeout_seconds: float = 150.0
+    canonical_agent_enabled: bool = False
     cpdr_agent_enabled: bool = False
     cpdr_pilot_case_ids: tuple[str, ...] = ()
     cpdr_pilot_subjects: tuple[str, ...] = ()
@@ -65,6 +66,7 @@ class Settings:
             clamav_port=clamav_port,
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            canonical_agent_enabled=_strict_bool("CANONICAL_AGENT_ENABLED", False),
             cpdr_agent_enabled=_strict_bool("CPDR_AGENT_ENABLED", False),
             cpdr_pilot_case_ids=_bounded_csv("CPDR_PILOT_CASE_IDS"),
             cpdr_pilot_subjects=_bounded_csv("CPDR_PILOT_SUBJECTS"),

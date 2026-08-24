@@ -3948,3 +3948,22 @@ Decision under review: replace the signed-authority placeholder with canonical F
 | RT-2026-08-24-131 | New-hire reviewer | "Generalize the agent runtime" could turn the existing workflow class into a second monolith with provider, model-readiness, and workbook-publication logic interleaved. | High | Resolved in design | The design names three concrete boundaries: canonical module authoring, accepted-snapshot readiness, and leased workbook execution. They reuse existing controls but retain separate state and tests; no speculative interface or provider client is added. |
 
 Decision: accept the architecture for implementation planning. The design removes one obsolete host block without weakening bundle integrity, canonical input validation, exclusive publication, case authorization, or report snapshot identity.
+
+## 2026-08-24 — Browser-first CP-MODEL architecture correction
+
+Decision under review: make the in-application worksheet the primary CP-MODEL
+surface and reduce LibreOffice from a model-runtime prerequisite to an optional
+XLSX export dependency.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-132 | Product-contract reviewer | Treating the downloadable workbook as the model makes CAOS depend on a desktop-office engine even though CP-MODEL was designed as a copilot calculation workflow. It also leaves Model Builder as a status page instead of an analytical workspace. | Critical | Resolved in architecture | The primary immutable artifact is now the vendored `CreditModelIR` plus Python `CalculationBook`, serialized into a bounded model snapshot. Model Builder renders Credit Snapshot, Model, and KPIs as worksheet tabs from that persisted snapshot. |
+| RT-2026-08-24-133 | Calculation-integrity reviewer | Reimplementing formulas in React would create a second calculation engine whose numbers can drift from the exported workbook. | Critical | Resolved in architecture | The browser receives server-calculated cells, formula text, semantic IDs, and lineage. It never evaluates credit formulas. Both the browser snapshot and optional workbook originate from the same vendored IR/calculation pass; export QA compares workbook caches with those independent expectations. |
+| RT-2026-08-24-134 | Immutability reviewer | A spreadsheet-looking surface may imply direct editing and allow a user to mutate a model bound to an accepted snapshot. | High | Resolved in scope | The first worksheet surface is read-only. Accepted-snapshot cells and provenance are immutable. Editable scenarios require a separately versioned assumption workflow and are not smuggled into this deployment. |
+| RT-2026-08-24-135 | Availability reviewer | If LibreOffice remains in readiness, an export-tool outage makes a fully calculated in-app model unavailable. | High | Resolved in state model | Calculation readiness and export readiness are separate. A model becomes `READY` after input, IR, semantic, serialization, and persistence gates pass. XLSX export has its own `NOT_REQUESTED`, `QUEUED`, `EXPORTING`, `READY`, and `FAILED` lifecycle; export failure never demotes the in-app model. |
+| RT-2026-08-24-136 | Deployment reviewer | Installing LibreOffice in the API container increases image and process attack surface for requests that never export. | High | Resolved in deployment boundary | The API serves persisted JSON only and receives neither provider credentials nor office-process authority. Only the background worker invokes LibreOffice for an explicit export, under the existing non-root, read-only-root, private-`/tmp`, dropped-capability controls. |
+| RT-2026-08-24-137 | Report-integrity reviewer | Binding reports only to a workbook hash makes report freezing impossible before export and lets optional binary state define analytical identity. | High | Resolved in contract | Reports bind to model ID, accepted snapshot, input fingerprint, and model payload hash. If an XLSX export is included, its export ID and workbook hash are additional immutable evidence, not the model's identity. |
+
+Decision: accept the browser-first correction. CAOS uses the vendored Python IR
+and calculation book as model authority; LibreOffice remains a worker-only XLSX
+publication verifier and cannot block an otherwise valid in-application model.

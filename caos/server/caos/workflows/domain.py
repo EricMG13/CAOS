@@ -14,6 +14,13 @@ from ..artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid
 from ..config import Settings
 from ..contracts import Depth, digest
 from ..methodology.bundle import DeployVBundle, MethodologyError
+from ..methodology.canonical import (
+    CANONICAL_MODULES,
+    CanonicalModuleOutput,
+    CanonicalModuleRunner,
+    canonical_generation_state,
+    is_canonical_full_credit,
+)
 from ..methodology.cpdr import CPDRValidationError, confidence_inputs, render_cpdr_markdown, validate_cpdr_payload
 from ..methodology.prompt import compile_cpdr_prompts
 from ..sources.domain import Vault, current_source_set
@@ -93,6 +100,126 @@ def _build_cpdr_envelope(
     }
 
 
+def _source_manifest(
+    store: MemoryStore,
+    run: dict[str, Any],
+    source_ids: list[str],
+    fail: Any,
+) -> list[dict[str, Any]]:
+    manifest: list[dict[str, Any]] = []
+    manifest_bytes = 2
+    manifest_blocks = 0
+    with store.lock:
+        for source_id in source_ids:
+            source = store.sources.get(source_id)
+            if not source or source.get("case_id") != run["case_id"] or source.get("withdrawn"):
+                fail("AGENT_AUTHORITY_MISMATCH", "pinned source is unavailable")
+            blocks = source.get("blocks") or []
+            source_digest = source.get("sha256")
+            if (
+                not isinstance(source_digest, str)
+                or len(source_digest) != 64
+                or any(character not in "0123456789abcdef" for character in source_digest)
+            ):
+                fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
+            filename = source.get("filename", source_id)
+            media_type = source.get("media_type", "application/octet-stream")
+            if (
+                not _manifest_text_is_bounded(source_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
+                or not _manifest_text_is_bounded(filename, MAX_CPDR_MANIFEST_FILENAME_CHARS)
+                or not _manifest_text_is_bounded(media_type, MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS)
+            ):
+                fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
+            manifest_source = {
+                "source_id": source_id,
+                "digest": source_digest,
+                "filename": filename,
+                "media_type": media_type,
+                "blocks": [],
+            }
+            encoded_empty_source = json.dumps(
+                manifest_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            )
+            source_bytes = len(encoded_empty_source.encode("utf-8"))
+            for block in blocks:
+                manifest_blocks += 1
+                if manifest_blocks > MAX_CPDR_MANIFEST_BLOCKS:
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest block ceiling exceeded")
+                if not isinstance(block, dict):
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest block is invalid")
+                manifest_block = {
+                    "block_id": block.get("block_id"),
+                    "locator": block.get("locator"),
+                    "extractor_version": block.get("extractor_version"),
+                    "confidence": block.get("confidence"),
+                }
+                if (
+                    not _manifest_text_is_bounded(manifest_block["block_id"], MAX_CPDR_MANIFEST_FIELD_CHARS)
+                    or not _manifest_locator_is_bounded(manifest_block["locator"])
+                    or not _manifest_text_is_bounded(manifest_block["extractor_version"], MAX_CPDR_MANIFEST_FIELD_CHARS)
+                    or not _manifest_text_is_bounded(manifest_block["confidence"], MAX_CPDR_MANIFEST_FIELD_CHARS)
+                ):
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
+                encoded_block = json.dumps(
+                    manifest_block, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                )
+                source_bytes += len(encoded_block.encode("utf-8")) + (1 if manifest_source["blocks"] else 0)
+                if manifest_bytes + source_bytes + (1 if manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
+                    fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
+                manifest_source["blocks"].append(manifest_block)
+            if manifest_bytes + source_bytes + (1 if manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
+                fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
+            manifest_bytes += source_bytes + (1 if manifest else 0)
+            manifest.append(manifest_source)
+    return manifest
+
+
+def _read_pinned_evidence(
+    store: MemoryStore,
+    run: dict[str, Any],
+    source_set: dict[str, Any],
+    source_id: str,
+    block_ids: list[str],
+    fail: Any,
+) -> list[dict[str, Any]]:
+    if not block_ids or len(block_ids) > 50 or len(block_ids) != len(set(block_ids)):
+        fail("AGENT_OUTPUT_INVALID", "evidence block IDs must be unique and bounded")
+    with store.lock:
+        pinned = store.source_set_by_id(source_set["id"])
+        source = store.sources.get(source_id)
+        if not pinned or source_id not in pinned["source_ids"]:
+            fail("AGENT_AUTHORITY_MISMATCH", "source is not pinned to this run")
+        if not source or source.get("case_id") != run["case_id"]:
+            fail("AGENT_AUTHORITY_MISMATCH", "cross-case evidence read")
+        if source.get("withdrawn"):
+            fail("AGENT_AUTHORITY_MISMATCH", "withdrawn evidence source")
+        source_blocks = source.get("blocks") or []
+        by_id = {block.get("block_id"): block for block in source_blocks if isinstance(block, dict)}
+        if len(by_id) != len(source_blocks) or any(block_id not in by_id for block_id in block_ids):
+            fail("AGENT_OUTPUT_INVALID", "evidence block is absent")
+        source_digest = source.get("sha256")
+        if (
+            not isinstance(source_digest, str)
+            or len(source_digest) != 64
+            or any(character not in "0123456789abcdef" for character in source_digest)
+        ):
+            fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
+        return [
+            {
+                "source_id": source_id,
+                "source_digest": source_digest,
+                "origin_family": source_digest,
+                "authority_class": "unclassified",
+                "block_id": block_id,
+                "locator": by_id[block_id].get("locator"),
+                "extractor_version": by_id[block_id].get("extractor_version"),
+                "confidence": by_id[block_id].get("confidence"),
+                "text": by_id[block_id].get("text", ""),
+            }
+            for block_id in block_ids
+        ]
+
+
 class _LeaseFence:
     def __init__(self) -> None:
         self.lost = threading.Event()
@@ -128,7 +255,10 @@ class WorkflowRuntime:
         # ponytail: process-local cap; add a DB reservation when multi-worker capacity needs a measured global budget.
         self._node_slots = threading.BoundedSemaphore(4)
         # ponytail: process-local cap; add a durable global reservation before running more than one worker process.
-        self._cpdr_provider_slots = threading.BoundedSemaphore(2)
+        self._provider_slots = threading.BoundedSemaphore(2)
+        # ponytail: serial state updates; split per-module budgets if canonical generation throughput becomes material.
+        self._canonical_generation_lock = threading.Lock()
+        self.canonical_runner = CanonicalModuleRunner(bundle) if settings.canonical_agent_enabled else None
         self._futures: dict[str, Future[Any]] = {}
         self._futures_lock = threading.Lock()
 
@@ -139,6 +269,14 @@ class WorkflowRuntime:
         source_set = current_source_set(self.store, case_id)
         plan = self.bundle.compile(pathway, depth, source_set["id"] if source_set else None, focus_questions, source_set["version"] if source_set else None)
         run = self.store.create_run(case_id, actor, plan, [], upgraded_from_run_id)
+        if self.settings.canonical_agent_enabled and is_canonical_full_credit(plan):
+            self.store.update_run(
+                run["id"],
+                canonical_generation=canonical_generation_state(
+                    self.settings.anthropic_model,
+                    run["created_at"][:10],
+                ),
+            )
         if pathway == "DEEP_RESEARCH":
             case = self.store.get_case(case_id)
             if not case or research_brief is None:
@@ -259,6 +397,29 @@ class WorkflowRuntime:
                 self.store.emit_fenced,
                 "run.failed",
                 {"code": code, "module_id": "CP-DR"},
+            )
+
+        def fail_canonical_node(node: dict[str, Any]) -> None:
+            error = {
+                "code": "CANONICAL_GENERATION_FAILED",
+                "module_id": node["module_id"],
+                "message": "Canonical Full Credit generation failed.",
+            }
+            fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
+            fenced_call(self.store.update_run_fenced, status="failed", error=error)
+            fenced_call(
+                self.store.emit_fenced,
+                "node.failed",
+                {
+                    "node_id": node["id"],
+                    "module_id": node["module_id"],
+                    "code": error["code"],
+                },
+            )
+            fenced_call(
+                self.store.emit_fenced,
+                "run.failed",
+                {"code": error["code"], "module_id": node["module_id"]},
             )
 
         heartbeat_thread = threading.Thread(target=heartbeat, name=f"{worker}-heartbeat", daemon=True)
@@ -401,6 +562,12 @@ class WorkflowRuntime:
                         except AgentError as exc:
                             if lease_fence.lost.is_set():
                                 return
+                            if node["module_id"] in CANONICAL_MODULES and run.get("canonical_generation"):
+                                try:
+                                    fail_canonical_node(node)
+                                except JobFencedError:
+                                    return
+                                return
                             research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
                             research["phase"] = "failed"
                             if node["module_id"] == "CP-DR" and research.get("attempts"):
@@ -428,6 +595,12 @@ class WorkflowRuntime:
                                     fenced_call(self.store.update_run_fenced, status="failed", error=error, research=research)
                                     fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": "CP-DR", "code": "AGENT_OUTPUT_INVALID"})
                                     fenced_call(self.store.emit_fenced, "run.failed", {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR"})
+                                except JobFencedError:
+                                    return
+                                return
+                            if node["module_id"] in CANONICAL_MODULES and run.get("canonical_generation"):
+                                try:
+                                    fail_canonical_node(node)
                                 except JobFencedError:
                                     return
                                 return
@@ -466,6 +639,21 @@ class WorkflowRuntime:
                 raise WorkflowError("UPSTREAM_ARTIFACT_MISSING")
             upstream_artifacts.append({"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]})
         input_fingerprint = digest({"plan": plan["plan_digest"], "module": node["module_id"], "source_set": source_set, "source_ids": source_ids, "upstream_artifacts": upstream_artifacts})
+        if node["module_id"] in CANONICAL_MODULES and run.get("canonical_generation"):
+            if fenced_call is None or lease_check is None:
+                raise JobFencedError("missing fenced canonical execution context")
+            with self._canonical_generation_lock:
+                return self._execute_canonical_module(
+                    run,
+                    node,
+                    actor,
+                    source_set,
+                    source_ids,
+                    upstream_artifacts,
+                    input_fingerprint,
+                    fenced_call,
+                    lease_check,
+                )
         if node["module_id"] == "CP-DR":
             research = copy.deepcopy(run.get("research"))
             if not research:
@@ -564,6 +752,305 @@ class WorkflowRuntime:
             "created_at": run["created_at"],
         }
         return artifact
+
+    def _execute_canonical_module(
+        self,
+        run: dict[str, Any],
+        node: dict[str, Any],
+        actor: str,
+        source_set: dict[str, Any],
+        source_ids: list[str],
+        upstream_artifacts: list[dict[str, Any]],
+        input_fingerprint: str,
+        fenced_call: Any,
+        lease_check: Any,
+    ) -> dict[str, Any]:
+        latest = self.store.get_run(run["id"]) or run
+        generation = copy.deepcopy(latest.get("canonical_generation") or {})
+        limits = generation.get("budget_limits") or {}
+        used = generation.get("budget_used") or {}
+        active_checkpoint = time.monotonic()
+
+        def persist_generation() -> None:
+            lease_check()
+            generation["budget_used"] = used
+            fenced_call(
+                self.store.update_run_fenced,
+                canonical_generation=copy.deepcopy(generation),
+            )
+
+        def fail(code: str, message: str) -> None:
+            raise AgentError(code, message)
+
+        def check_budget() -> None:
+            lease_check()
+            if used.get("active_minutes", 0) >= limits.get("active_minutes", 0):
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+
+        def add_active_time(elapsed: float) -> None:
+            nonlocal active_checkpoint
+            lease_check()
+            used["active_minutes"] = used.get("active_minutes", 0) + max(0.0, elapsed) / 60
+            active_checkpoint = time.monotonic()
+            persist_generation()
+            check_budget()
+
+        def charge_checkpoint() -> None:
+            nonlocal active_checkpoint
+            current = time.monotonic()
+            elapsed = max(0.0, current - active_checkpoint)
+            active_checkpoint = current
+            if elapsed:
+                used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
+                persist_generation()
+            check_budget()
+
+        def remaining_active_time() -> float:
+            charge_checkpoint()
+            remaining = limits["active_minutes"] * 60 - used["active_minutes"] * 60
+            if remaining <= 0:
+                fail("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
+            return min(float(self.settings.anthropic_timeout_seconds), remaining)
+
+        try:
+            if not self.settings.canonical_agent_enabled or self.canonical_runner is None:
+                fail("AGENT_PROVIDER_UNAVAILABLE", "canonical Full Credit generation is disabled")
+            if not self.settings.anthropic_api_key:
+                fail("AGENT_PROVIDER_UNAVAILABLE", "ANTHROPIC_API_KEY is not configured")
+            self.bundle.verify()
+            if generation.get("model") != self.settings.anthropic_model:
+                fail("AGENT_AUTHORITY_MISMATCH", "model identity mismatch")
+            current_set = current_source_set(self.store, run["case_id"])
+            if not current_set or (
+                current_set.get("id"), current_set.get("version")
+            ) != (source_set.get("id"), source_set.get("version")):
+                fail("AGENT_AUTHORITY_MISMATCH", "source-set identity mismatch")
+            if generation.get("inflight_request_digest"):
+                fail("AGENT_BUDGET_EXCEEDED", "unresolved provider request from a prior lease")
+            case = self.store.get_case(run["case_id"])
+            if not case:
+                fail("AGENT_AUTHORITY_MISMATCH", "case identity is unavailable")
+
+            upstream_full: list[dict[str, Any]] = []
+            for item in upstream_artifacts:
+                artifact = self.store.get_artifact(item["artifact_id"])
+                if not artifact or artifact.get("digest") != item["digest"] or not isinstance(artifact.get("markdown"), str):
+                    fail("AGENT_AUTHORITY_MISMATCH", "validated upstream Markdown is unavailable")
+                upstream_full.append({**item, "markdown": artifact["markdown"]})
+
+            manifest = _source_manifest(self.store, run, source_ids, fail)
+            charge_checkpoint()
+            returned_evidence: dict[tuple[str, str], dict[str, str]] = {}
+            authority_digest = ""
+            prompt_digest = ""
+            base_attempt = {
+                "run_id": run["id"],
+                "node_id": node["id"],
+                "module_id": node["module_id"],
+                "attempt": node["attempt"] + 1,
+                "model": generation["model"],
+                "authority_digest": authority_digest,
+                "prompt_digest": prompt_digest,
+                "source_set_digest": digest(source_set),
+                "upstream_digest": digest([item["digest"] for item in upstream_artifacts]),
+            }
+
+            def record(kind: str, **details: Any) -> None:
+                allowed: dict[str, Any] = {}
+                for key, value in details.items():
+                    if isinstance(value, (str, int, float, bool)) or value is None:
+                        allowed[key] = value[:200] if isinstance(value, str) else value
+                    elif (
+                        isinstance(value, list)
+                        and len(value) <= 50
+                        and all(isinstance(item, str) and len(item) <= 160 for item in value)
+                    ):
+                        allowed[key] = list(value)
+                if kind == "terminal":
+                    generation["attempts"].append({**base_attempt, "kind": "terminal", **allowed})
+                    generation["attempts"] = generation["attempts"][-100:]
+                    persist_generation()
+                    return
+                check_budget()
+                if kind == "provider_retry":
+                    if used["provider_retries"] + 1 > limits["provider_retries"]:
+                        fail("AGENT_BUDGET_EXCEEDED", "provider retry budget exhausted")
+                    used["provider_retries"] += 1
+                elif kind == "repair_reserve":
+                    if used["repairs"] + 1 > limits["repairs"]:
+                        fail("AGENT_BUDGET_EXCEEDED", "repair budget exhausted")
+                    used["repairs"] += 1
+                if len(generation["attempts"]) >= 100:
+                    fail("AGENT_BUDGET_EXCEEDED", "attempt metadata budget exhausted")
+                generation["attempts"].append({**base_attempt, "kind": kind[:40], **allowed})
+                persist_generation()
+
+            def reserve(request_digest: str, input_tokens: int, output_tokens: int, retry: bool) -> None:
+                charge_checkpoint()
+                inflight = generation.get("inflight_request_digest")
+                if retry:
+                    if inflight != request_digest:
+                        fail("AGENT_AUTHORITY_MISMATCH", "provider retry request changed")
+                    return
+                if inflight:
+                    fail("AGENT_BUDGET_EXCEEDED", "unresolved in-flight request")
+                for key, amount in (
+                    ("turns", 1),
+                    ("input_tokens", input_tokens),
+                    ("output_tokens", output_tokens),
+                ):
+                    if used[key] + amount > limits[key]:
+                        fail("AGENT_BUDGET_EXCEEDED", f"{key} budget exhausted")
+                used["turns"] += 1
+                used["input_tokens"] += input_tokens
+                used["output_tokens"] += output_tokens
+                generation["inflight_request_digest"] = request_digest
+                persist_generation()
+
+            def reconcile(
+                request_digest: str,
+                reserved_input: int,
+                reserved_output: int,
+                actual_input: int,
+                actual_output: int,
+            ) -> None:
+                lease_check()
+                if generation.get("inflight_request_digest") != request_digest:
+                    fail("AGENT_AUTHORITY_MISMATCH", "in-flight request digest mismatch")
+                used["input_tokens"] += actual_input - reserved_input
+                used["output_tokens"] += actual_output - reserved_output
+                generation["inflight_request_digest"] = None
+                persist_generation()
+                if used["input_tokens"] > limits["input_tokens"] or used["output_tokens"] > limits["output_tokens"]:
+                    fail("AGENT_BUDGET_EXCEEDED", "actual token usage exceeded the run budget")
+
+            def read_evidence(source_id: str, block_ids: list[str]) -> list[dict[str, Any]]:
+                check_budget()
+                if used["evidence_reads"] + 1 > limits["evidence_reads"]:
+                    fail("AGENT_BUDGET_EXCEEDED", "evidence read budget exhausted")
+                result = _read_pinned_evidence(
+                    self.store,
+                    run,
+                    source_set,
+                    source_id,
+                    block_ids,
+                    fail,
+                )
+                returned_bytes = len(json.dumps(result, sort_keys=True).encode("utf-8"))
+                if used["evidence_bytes"] + returned_bytes > limits["evidence_bytes"]:
+                    fail("AGENT_BUDGET_EXCEEDED", "evidence byte budget exhausted")
+                used["evidence_reads"] += 1
+                used["evidence_bytes"] += returned_bytes
+                returned_evidence.update(
+                    {
+                        (source_id, item["block_id"]): {
+                            "source_digest": item["source_digest"],
+                            "origin_family": item["origin_family"],
+                            "authority_class": item["authority_class"],
+                            "locator": json.dumps(item["locator"], sort_keys=True, separators=(",", ":")),
+                            "extractor_version": str(item["extractor_version"]),
+                            "confidence": str(item["confidence"]),
+                        }
+                        for item in result
+                    }
+                )
+                persist_generation()
+                record("evidence", tool_name="read_evidence", source_id=source_id, block_ids=block_ids)
+                return result
+
+            host_identity = {
+                "module_id": node["module_id"],
+                "run_id": run["id"],
+                "case_id": run["case_id"],
+                "issuer_name": case["issuer"],
+                "issuer_id": run["case_id"].replace("_", "-"),
+                "reporting_period": generation["reporting_period"],
+                "analysis_date": run["created_at"][:10],
+                "profile_id": run["plan"]["profile_id"],
+                "selection_id": run["plan"]["selection_id"],
+                "source_set_id": source_set["id"],
+                "source_set_version": source_set["version"],
+                "upstream_digests": [item["digest"] for item in upstream_artifacts],
+            }
+            system, user = self.canonical_runner.prompts(
+                node["module_id"], host_identity, manifest, upstream_full
+            )
+            charge_checkpoint()
+            authority_digest = digest(system)
+            prompt_digest = digest(user)
+            base_attempt["authority_digest"] = authority_digest
+            base_attempt["prompt_digest"] = prompt_digest
+            run_context = {**run, "canonical_generation": generation}
+
+            def validate(value: dict[str, Any]) -> Any:
+                return self.canonical_runner.canonicalize(
+                    node["module_id"],
+                    value,
+                    run=run_context,
+                    case=case,
+                    source_set=source_set,
+                    upstream_artifacts=upstream_full,
+                    returned_evidence=returned_evidence,
+                    authority_digest=authority_digest,
+                )
+
+            gateway = AnthropicGateway(
+                self.settings.anthropic_api_key,
+                self.settings.anthropic_model,
+                self.settings.anthropic_timeout_seconds,
+            )
+            built = gateway.run(
+                system=system,
+                user=user,
+                read_evidence=read_evidence,
+                validate=validate,
+                lease_check=check_budget,
+                reserve=reserve,
+                reconcile=reconcile,
+                record=record,
+                active_time=add_active_time,
+                semaphore=self._provider_slots,
+                output_model=CanonicalModuleOutput,
+                max_tokens=generation["module_output_tokens"][node["module_id"]],
+                remaining_time=remaining_active_time,
+            )
+            record(
+                "handoff",
+                output_digest=digest(built["payload"]),
+                filename=built["filename"],
+                confidence_score=built["confidence"]["confidence_score"],
+            )
+            completed = set(generation.get("completed_modules") or [])
+            completed.add(node["module_id"])
+            generation["completed_modules"] = sorted(completed)
+            generation["phase"] = "complete" if completed == set(CANONICAL_MODULES) else "generating"
+            persist_generation()
+            artifact = {
+                "id": self.store._id("art"),
+                "case_id": run["case_id"],
+                "run_id": run["id"],
+                "module_id": node["module_id"],
+                "created_by": actor,
+                "payload": built["payload"],
+                "markdown": built["markdown"],
+                "filename": built["filename"],
+                "digest": digest(built["payload"]),
+                "input_fingerprint": input_fingerprint,
+                "created_at": run["created_at"],
+                "_completion_active_time": add_active_time,
+            }
+            if "derived" in built:
+                artifact["derived"] = built["derived"]
+            return artifact
+        except JobFencedError:
+            raise
+        except Exception as exc:
+            generation["phase"] = "failed"
+            try:
+                persist_generation()
+            except JobFencedError:
+                raise
+            raise WorkflowError("CANONICAL_GENERATION_FAILED") from exc
 
     def _execute_cpdr(
         self,
@@ -743,113 +1230,21 @@ class WorkflowRuntime:
             if used["input_tokens"] > limits["input_tokens"] or used["output_tokens"] > limits["output_tokens"]:
                 fail("AGENT_BUDGET_EXCEEDED", "actual token usage exceeded the run budget")
 
-        source_manifest: list[dict[str, Any]] = []
-        manifest_bytes = 2
-        manifest_blocks = 0
-        with self.store.lock:
-            for source_id in source_ids:
-                source = self.store.sources.get(source_id)
-                if not source or source.get("case_id") != run["case_id"] or source.get("withdrawn"):
-                    fail("AGENT_AUTHORITY_MISMATCH", "pinned source is unavailable")
-                blocks = source.get("blocks") or []
-                source_digest = source.get("sha256")
-                if (
-                    not isinstance(source_digest, str)
-                    or len(source_digest) != 64
-                    or any(character not in "0123456789abcdef" for character in source_digest)
-                ):
-                    fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
-                filename = source.get("filename", source_id)
-                media_type = source.get("media_type", "application/octet-stream")
-                if (
-                    not _manifest_text_is_bounded(source_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
-                    or not _manifest_text_is_bounded(filename, MAX_CPDR_MANIFEST_FILENAME_CHARS)
-                    or not _manifest_text_is_bounded(media_type, MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS)
-                ):
-                    fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
-                manifest_source = {
-                    "source_id": source_id,
-                    "digest": source_digest,
-                    "filename": filename,
-                    "media_type": media_type,
-                    "blocks": [],
-                }
-                encoded_empty_source = json.dumps(manifest_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                source_bytes = len(encoded_empty_source.encode("utf-8"))
-                for block in blocks:
-                    manifest_blocks += 1
-                    if manifest_blocks > MAX_CPDR_MANIFEST_BLOCKS:
-                        fail("AGENT_BUDGET_EXCEEDED", "source manifest block ceiling exceeded")
-                    if not isinstance(block, dict):
-                        fail("AGENT_BUDGET_EXCEEDED", "source manifest block is invalid")
-                    block_id = block.get("block_id")
-                    locator = block.get("locator")
-                    extractor_version = block.get("extractor_version")
-                    confidence = block.get("confidence")
-                    if (
-                        not _manifest_text_is_bounded(block_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
-                        or not _manifest_locator_is_bounded(locator)
-                        or not _manifest_text_is_bounded(extractor_version, MAX_CPDR_MANIFEST_FIELD_CHARS)
-                        or not _manifest_text_is_bounded(confidence, MAX_CPDR_MANIFEST_FIELD_CHARS)
-                    ):
-                        fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
-                    manifest_block = {
-                        "block_id": block_id,
-                        "locator": locator,
-                        "extractor_version": extractor_version,
-                        "confidence": confidence,
-                    }
-                    encoded_block = json.dumps(manifest_block, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                    source_bytes += len(encoded_block.encode("utf-8")) + (1 if manifest_source["blocks"] else 0)
-                    if manifest_bytes + source_bytes + (1 if source_manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
-                        fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
-                    manifest_source["blocks"].append(manifest_block)
-                if manifest_bytes + source_bytes + (1 if source_manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
-                    fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
-                manifest_bytes += source_bytes + (1 if source_manifest else 0)
-                source_manifest.append(manifest_source)
+        source_manifest = _source_manifest(self.store, run, source_ids, fail)
         charge_active_checkpoint()
 
         def read_evidence(source_id: str, block_ids: list[str]) -> list[dict[str, Any]]:
             check_budget()
-            if not block_ids or len(block_ids) > 50 or len(block_ids) != len(set(block_ids)):
-                fail("AGENT_OUTPUT_INVALID", "evidence block IDs must be unique and bounded")
             if used["evidence_reads"] + 1 > limits["evidence_reads"]:
                 fail("AGENT_BUDGET_EXCEEDED", "evidence read budget exhausted")
-            with self.store.lock:
-                pinned = self.store.source_set_by_id(source_set["id"])
-                source = self.store.sources.get(source_id)
-                if not pinned or source_id not in pinned["source_ids"]:
-                    fail("AGENT_AUTHORITY_MISMATCH", "source is not pinned to this run")
-                if not source or source.get("case_id") != run["case_id"]:
-                    fail("AGENT_AUTHORITY_MISMATCH", "cross-case evidence read")
-                if source.get("withdrawn"):
-                    fail("AGENT_AUTHORITY_MISMATCH", "withdrawn evidence source")
-                source_blocks = source.get("blocks") or []
-                by_id = {block.get("block_id"): block for block in source_blocks}
-                if len(by_id) != len(source_blocks) or any(block_id not in by_id for block_id in block_ids):
-                    fail("AGENT_OUTPUT_INVALID", "evidence block is absent")
-                source_digest = source.get("sha256")
-                if (
-                    not isinstance(source_digest, str)
-                    or len(source_digest) != 64
-                    or any(character not in "0123456789abcdef" for character in source_digest)
-                ):
-                    fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
-                result = [
-                    {
-                        "source_id": source_id,
-                        "source_digest": source_digest,
-                        "origin_family": source_digest,
-                        "authority_class": "unclassified",
-                        "block_id": block_id,
-                        "locator": by_id[block_id].get("locator"),
-                        "extractor_version": by_id[block_id].get("extractor_version"),
-                        "confidence": by_id[block_id].get("confidence"),
-                        "text": by_id[block_id].get("text", ""),
-                    }
-                    for block_id in block_ids
-                ]
+            result = _read_pinned_evidence(
+                self.store,
+                run,
+                source_set,
+                source_id,
+                block_ids,
+                fail,
+            )
             returned_bytes = len(json.dumps(result, sort_keys=True).encode("utf-8"))
             if used["evidence_bytes"] + returned_bytes > limits["evidence_bytes"]:
                 fail("AGENT_BUDGET_EXCEEDED", "evidence byte budget exhausted")
@@ -858,9 +1253,9 @@ class WorkflowRuntime:
             returned_evidence.update(
                 {
                     (source_id, item["block_id"]): {
-                        "source_digest": source_digest,
-                        "origin_family": source_digest,
-                        "authority_class": "unclassified",
+                        "source_digest": item["source_digest"],
+                        "origin_family": item["origin_family"],
+                        "authority_class": item["authority_class"],
                         "locator": json.dumps(item["locator"], sort_keys=True, separators=(",", ":")),
                         "extractor_version": str(item["extractor_version"]),
                         "confidence": str(item["confidence"]),
@@ -941,7 +1336,7 @@ class WorkflowRuntime:
             reconcile=reconcile,
             record=record,
             active_time=add_active_time,
-            semaphore=self._cpdr_provider_slots,
+            semaphore=self._provider_slots,
             remaining_time=remaining_active_time,
         )
         confidence = run_host_operation(lambda: self.bundle.cpdr_confidence(confidence_inputs(payload, returned_evidence)))

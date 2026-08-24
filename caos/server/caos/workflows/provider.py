@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable
 
 import anthropic
+from pydantic import BaseModel
 
 from ..methodology.cpdr import CPDRPayload
 from ..store import JobFencedError
@@ -73,14 +74,15 @@ class AnthropicGateway:
         record: Callable[..., None],
         active_time: Callable[[float], None],
         semaphore: Any,
+        output_model: type[BaseModel] = CPDRPayload,
         max_tokens: int = 2_000,
         remaining_time: Callable[[], float] | None = None,
     ) -> Any:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         try:
-            schema = anthropic.transform_schema(CPDRPayload.model_json_schema())
+            schema = anthropic.transform_schema(output_model.model_json_schema())
         except (TypeError, ValueError) as exc:
-            raise AgentError("AGENT_OUTPUT_INVALID", "cannot transform CP-DR output schema") from exc
+            raise AgentError("AGENT_OUTPUT_INVALID", "cannot transform agent output schema") from exc
         retry_used = False
         repair_used = False
         tools_enabled = True

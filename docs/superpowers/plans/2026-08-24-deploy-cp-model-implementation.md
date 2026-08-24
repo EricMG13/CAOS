@@ -1,6 +1,6 @@
 # Execute the CP-MODEL deployment
 
-This plan implements the approved design in `docs/superpowers/specs/2026-08-24-deploy-cp-model-design.md`. Completion means an accepted Full Credit run can produce validated canonical handoffs, queue one immutable CP-MODEL build, persist its metadata, and download the validated workbook through Model Builder.
+This plan implements the approved design in `docs/superpowers/specs/2026-08-24-deploy-cp-model-design.md`. Completion means an accepted Full Credit run can produce validated canonical handoffs, queue one immutable CP-MODEL calculation, persist its structured worksheet payload, display it in Model Builder, and optionally export a validated workbook.
 
 ## Phase 0: Use only verified repository and vendor APIs
 
@@ -23,6 +23,8 @@ Use these vendored CP-MODEL APIs:
 
 ```python
 BundlePaths(cp1, cp1a, cp1b, cp2, cp2b, cp2g=None)
+build_ir(bundle, quarter_count=None) -> CreditModelIR
+calculate(ir) -> CalculationBook
 BuildRequest(bundle, output_dir, quarter_count=None, soffice_path=None)
 build_cp_model(request: BuildRequest) -> BuildResult
 validate_cp_model_bundle(
@@ -59,16 +61,17 @@ References:
 - CP-MODEL is not exposed through `DeployVBundle`
 - Renderer identity is private before a build
 - The exporter cannot validate or adopt an existing workbook after metadata failure
+- The current host has no serializer for CP-MODEL's typed IR/calculation results
 - CP-2B has no standalone completeness validator
 - No valid CP-MODEL handoff fixture exists
-- The production image has no LibreOffice
+- The production image has no LibreOffice for optional XLSX export
 
 ### Anti-pattern guards
 
 - Do not edit integrity-pinned vendored files
 - Do not pass CP-2A Markdown as `BundlePaths.cp2b`
 - Do not weaken `validate_cp_model_bundle`
-- Do not invent a workbook from generic host placeholder artifacts
+- Do not invent a model from generic host placeholder artifacts
 - Do not add a queue service, provider SDK, workbook library, or frontend dependency
 - Do not accept output paths, filenames, commands, or artifact identity from a request
 
@@ -188,7 +191,7 @@ A fake-provider Full Credit run persists validated canonical artifacts and a com
 
 ### Objective
 
-Persist immutable build metadata and separately leased model jobs in memory and PostgreSQL.
+Persist immutable structured model payloads, optional export metadata, and separately leased jobs in memory and PostgreSQL.
 
 ### Files
 
@@ -203,13 +206,15 @@ Persist immutable build metadata and separately leased model jobs in memory and 
 1. Run GitNexus impact for `MemoryStore`, `PostgresStore`, `_snapshot`, `_restore`, `_merge_state`, `_persist_connection`, and migration entry points.
 2. Generalize migration discovery to apply sorted numeric SQL files once through `schema_migrations`. Keep `001` idempotent and test repeated execution.
 3. Add `model_builds` and `model_build_jobs` with:
-   - case, run, snapshot, source set, artifact, renderer, fingerprint, status, actor, timestamps, output, QA, and bounded error fields
+   - case, run, snapshot, source set, artifact, calculation-runtime, fingerprint, status, actor, timestamps, QA, and bounded error fields
+   - structured worksheet payload, payload hash, worksheet schema version, and bounded lineage inventory
+   - nested optional export status, governed vault metadata, workbook hash, formula QA, and recalculation engine
    - unique `(case_id, input_fingerprint)`
    - model-job state, attempt token, worker, lease, and claim index
 4. Add `model_builds` and `model_jobs` buckets to MemoryStore and PostgresStore snapshot/restore/merge.
 5. Add concrete methods for queue/idempotency, list/get, claim, renew, current-token check, and fenced success/failure finalization.
 6. Copy the workflow lease's database-time, advisory-lock, `FOR UPDATE SKIP LOCKED`, takeover, and rollback behavior, but query the model-job table.
-7. Commit `READY` or `FAILED` build state plus audit in one fenced transaction.
+7. Commit `READY` or `FAILED` model state plus audit in one fenced transaction; update export state separately without demoting a ready model.
 8. Prove concurrent identical queue requests converge on one build in memory and real PostgreSQL.
 
 ### Copy-ready references
@@ -239,11 +244,11 @@ Run the PostgreSQL subset with `CAOS_TEST_DATABASE_URL` when available.
 
 Both stores implement the same lifecycle, ordered migrations apply twice without drift, and concurrency/fencing tests pass.
 
-## Phase 4: Implement readiness and asynchronous workbook execution
+## Phase 4: Implement readiness and asynchronous Python model execution
 
 ### Objective
 
-Resolve one accepted snapshot, queue its immutable fingerprint, and publish one validated workbook.
+Resolve one accepted snapshot, queue its immutable fingerprint, and persist one validated structured worksheet model without LibreOffice.
 
 ### Files
 
@@ -256,13 +261,13 @@ Resolve one accepted snapshot, queue its immutable fingerprint, and publish one 
 ### Implementation
 
 1. Run GitNexus impact for `accepted_snapshot`, `create_app`, `worker.main`, and executor ownership before edits.
-2. Implement `ModelReadinessService` as the only readiness source. Check visible accepted snapshot, exact Full Credit identities, CP-0/source-set lineage, required artifacts, CP-2B derivation, full input validation, renderer identity, and LibreOffice availability.
+2. Implement `ModelReadinessService` as the only readiness source. Check visible accepted snapshot, exact Full Credit identities, CP-0/source-set lineage, required artifacts, CP-2B derivation, full input validation, and Python calculation-runtime identity. Do not check LibreOffice.
 3. Return stable states and bounded blockers: `NOT_READY`, `READY_TO_BUILD`, `QUEUED`, `BUILDING`, `READY`, or `FAILED`.
-4. Compute the fingerprint from case, accepted run/snapshot/source set, required artifact digests, Deploy V build ID, renderer version/hash, and optional CP-2G digest.
+4. Compute the fingerprint from case, accepted run/snapshot/source set, required artifact digests, Deploy V build ID, Python calculation-runtime version/hash, worksheet schema version, and optional CP-2G digest.
 5. Add `ModelBuildRuntime` on the existing executor. Claim/heartbeat/fence like analytical runs.
-6. Materialize canonical Markdown under a private temporary directory. Call `build_cp_model(BuildRequest(...))` directly and store `BuildResult` metadata plus byte size.
-7. Publish under the server-derived relative key `models/{case_id}/{build_id}/{governed_filename}` with exclusive creation.
-8. Add a host recovery path for a metadata-failure orphan without relying on private renderer APIs. Rebuild from the same immutable inputs and renderer into a fresh private directory; the new `BuildResult` supplies recalculation, sheet, formula, cached-value, and binary QA. If the orphan bytes hash to the same validated result, adopt them. Otherwise move the orphan to a server-owned quarantine name and exclusively publish the newly validated workbook. Never expose or adopt either file until fenced metadata finalization succeeds.
+6. Call vendored `build_ir` and `calculate` directly. Serialize only the three visible workbook views—Credit Snapshot, Model, and KPIs—from typed IR/calculation results with semantic cell IDs, formats, and source lineage.
+7. Hash and persist the bounded structured payload and semantic QA in the fenced model transaction. The database payload is the model authority; no model file is required.
+8. On metadata-finalization failure, safely rerun the deterministic calculation from the same immutable inputs. There is no orphan file to adopt on the core model path.
 9. Extend the production worker loop to submit analytical and model work with typed future keys. Catch completed-future exceptions so one failed task cannot terminate polling.
 10. In development, schedule the model runtime immediately after durable queue creation, matching run behavior.
 
@@ -271,31 +276,31 @@ Resolve one accepted snapshot, queue its immutable fingerprint, and publish one 
 - Accepted visible snapshot: `caos/server/caos/artifacts/domain.py:499`
 - Runtime scheduling and heartbeat: `caos/server/caos/workflows/domain.py:122`, `:191`
 - Worker polling: `caos/server/worker.py:10`
-- Vendored build and exclusive publication: `cp_model_v3/builder.py:318`, `:349`
+- Vendored IR and calculation: `cp_model_v3/builder.py`, `cp_model_v3/calculations.py`
 
 ### Verification
 
 ```bash
-caos/server/.venv/bin/python -m pytest caos/tests/test_cp_model.py -q -k 'readiness or fingerprint or runtime or publish or orphan or worker'
+caos/server/.venv/bin/python -m pytest caos/tests/test_cp_model.py -q -k 'readiness or fingerprint or runtime or worksheet or payload or worker'
 ```
 
 ### Anti-pattern guards
 
 - Do not treat the latest unaccepted run as model authority
 - Do not rebuild an identical ready fingerprint
-- Do not mark metadata ready before recalculation and binary validation complete
+- Do not mark metadata ready before Python calculation and semantic validation complete
 - Do not expose absolute paths or raw exceptions
-- Do not overwrite an existing workbook
+- Do not make LibreOffice or a generated file a model-readiness dependency
 
 ### Exit gate
 
-One accepted canonical snapshot progresses through queue/build/ready, identical requests reuse it, stale workers fail silently, and failure leaves no downloadable model.
+One accepted canonical snapshot progresses through queue/build/ready, identical requests reuse it, stale workers fail silently, and its worksheet payload is available without LibreOffice.
 
-## Phase 5: Add case-scoped API, download integrity, and report inclusion
+## Phase 5: Add case-scoped model/export API and report inclusion
 
 ### Objective
 
-Expose model lifecycle and immutable downloads, then bind ready models into frozen reports.
+Expose model worksheet data and optional immutable XLSX export, then bind ready model payloads into frozen reports.
 
 ### Files
 
@@ -308,12 +313,12 @@ Expose model lifecycle and immutable downloads, then bind ready models into froz
 ### Implementation
 
 1. Run API impact for the existing singular model route and symbol impact for `freeze_report`, `approve`, and `render_xlsx`.
-2. Add plural list/queue/status/download routes from the approved design. Keep singular GET as a compatibility readiness alias.
-3. Apply `require_case(..., write=True)` to queue/retry and read membership to list/status/download.
+2. Add plural list/queue/status, worksheet payload, export queue, and download routes from the approved design. Keep singular GET as a compatibility readiness alias.
+3. Apply `require_case(..., write=True)` to model queue/retry and export queue/retry; apply read membership to list/status/payload/download.
 4. Resolve only database-recorded relative vault keys under `settings.storage_dir`. Reject traversal, symlinks outside the root, wrong case/build, non-ready status, missing file, size mismatch, or SHA-256 mismatch.
 5. Stream XLSX with governed disposition, correct media type, `nosniff`, and `no-store`. Record a bounded download audit event.
 6. Replace `FreezeReportRequest.include_model` with an optional `model_build_id` while retaining compatible false/no-model input if needed by existing clients.
-7. Freeze only a `READY` model matching the accepted snapshot. Persist model build ID, workbook hash, and input fingerprint into report content and report fingerprint.
+7. Freeze only a `READY` model matching the accepted snapshot. Persist model build ID, payload hash, and input fingerprint into report content and report fingerprint. Persist workbook identity only when the report explicitly includes a ready export.
 8. Recompute the same model identity at approval. A newer snapshot or build cannot mutate the frozen report.
 9. Replace the XLSX signed-authority appendix row with included model identity/hash or an explicit not-included row.
 10. Test reader/write roles, outsiders, cross-case build IDs, tampered files, stale models, freeze rollback, approval mismatch, and export.
@@ -342,13 +347,13 @@ caos/server/.venv/bin/python run_sec_audit.py
 
 ### Exit gate
 
-API and report tests prove case isolation, immutable integrity-checked download, idempotent queueing, and exact report/model snapshot identity.
+API and report tests prove case isolation, immutable payload identity, optional integrity-checked download, idempotent queueing, and exact report/model snapshot identity.
 
 ## Phase 6: Replace the Model Builder placeholder
 
 ### Objective
 
-Expose readiness, one primary action, build progress, QA, and immutable history without adding frontend dependencies.
+Expose readiness, worksheet tabs, build progress, QA, optional export, and immutable history without adding frontend dependencies.
 
 ### Files
 
@@ -366,10 +371,11 @@ Expose readiness, one primary action, build progress, QA, and immutable history 
 4. Poll only while status is `QUEUED` or `BUILDING`; clear timers on terminal state, case switch, and unmount.
 5. Disable duplicate queue actions, rely on server idempotency, and refresh after POST.
 6. Render accepted snapshot/source set, required handoff checklist, exact safe blockers, current build status, QA metadata, and immutable history.
-7. Keep one primary action: **Build model**, **Retry build**, or **Download workbook**.
-8. Use text plus glyph/status, polite atomic live updates, visible focus, responsive table regions, and reduced-motion behavior already present in CSS.
-9. Add routed browser fixtures for all six states, polling termination, duplicate submit, history, cross-case stale response, keyboard use, narrow overflow, and reduced motion.
-10. Add a dynamic ready-state axe fixture and replace production inventory's blocked-state assertion and singular endpoint probe.
+7. For a ready model, render read-only Credit Snapshot, Model, and KPI tabs from server-calculated cells. Preserve aligned numbers, sticky row/column labels, keyboard access, and one-interaction source lineage. Do not evaluate formulas in React.
+8. Keep one primary model action: **Build model** or **Retry build**. After readiness, expose a separate **Export XLSX**, **Retry export**, or **Download XLSX** control.
+9. Use text plus glyph/status, polite atomic live updates, visible focus, responsive table regions, and reduced-motion behavior already present in CSS.
+10. Add routed browser fixtures for all model and export states, worksheet tab/navigation/lineage, polling termination, duplicate submit, history, cross-case stale response, narrow overflow, and reduced motion.
+11. Add a dynamic ready-state axe fixture and replace production inventory's blocked-state assertion and singular endpoint probe.
 
 ### Copy-ready references
 
@@ -398,6 +404,7 @@ Run the combined FastAPI build for axe and production inventory according to `CL
 ### Anti-pattern guards
 
 - Do not use the JSON request helper for XLSX bytes
+- Do not add a browser formula engine or editable spreadsheet surface
 - Do not keep polling in `READY`, `FAILED`, or `NOT_READY`
 - Do not use color alone or add decorative motion
 - Do not rewrite historical QA proof files as current evidence
@@ -406,11 +413,11 @@ Run the combined FastAPI build for axe and production inventory according to `CL
 
 All states and actions work against routed fixtures, build/type/lint pass, and rendered Model Builder has zero axe violations.
 
-## Phase 7: Install LibreOffice and verify the production deployment
+## Phase 7: Isolate optional LibreOffice export and verify production
 
 ### Objective
 
-Make the same image execute CP-MODEL under production hardening and preserve models through backup and restore.
+Keep the API and core model path LibreOffice-free, execute optional XLSX export under production hardening, and preserve model payloads and exports through backup and restore.
 
 ### Files
 
@@ -425,11 +432,11 @@ Make the same image execute CP-MODEL under production hardening and preserve mod
 ### Implementation
 
 1. Run impact analysis for deployment verifier symbols and inspect current image CI before editing.
-2. Install the minimum headless LibreOffice packages in the digest-pinned Debian image. Record the exact installed package/version evidence; do not claim apt repositories are version-pinned unless they are.
+2. Install the minimum headless LibreOffice packages only in the worker image. Record the exact installed package/version evidence; do not claim apt repositories are version-pinned unless they are.
 3. Copy the canonical CP-MODEL fixture into an explicit image-only fixture directory, then extend image verification to locate and execute `soffice --version`, import `openpyxl`, load the vendored CP-MODEL package, and run that fixture export. Do not assume the server-only Docker copy contains `caos/tests`.
-4. Give the verifier an explicit source-only mode because nightly host checks do not have LibreOffice. Keep the image mode mandatory in image CI.
+4. Make the Python-only model verifier mandatory on every supported host. Give XLSX verification an explicit worker-image mode; host checks and the API image do not require LibreOffice.
 5. Assert the image runs as UID 10001 and preserve read-only root, dropped capabilities, no-new-privileges, private `/tmp`, shared `/vault`, and worker-only provider key.
-6. Prove backup includes model bytes and database records. Extend restore verification to compare restored workbook hash/size with restored model metadata and perform an authenticated download smoke when the disposable stack is available.
+6. Prove backup includes database model payloads and any optional export bytes. Extend restore verification to compare restored payload hashes and, when present, workbook hash/size with model metadata; perform worksheet-read and authenticated-download smokes when the disposable stack is available.
 7. Remove signed-authority prose from current product/runtime documentation. Preserve historical proof artifacts and add a superseding current validation record.
 
 ### Verification
@@ -452,7 +459,7 @@ Run the disposable Compose migration, app, worker, build, download, backup, and 
 
 ### Exit gate
 
-The production image builds and performs one real recalculated workbook export as non-root; backup/restore preserves metadata and exact bytes; no current signed-authority blocker remains.
+The production API/model path succeeds without LibreOffice; the worker image performs one real recalculated workbook export as non-root; backup/restore preserves model payloads and any exact export bytes; no current signed-authority blocker remains.
 
 ## Phase 8: Required post-edit reviews and completion audit
 
@@ -466,8 +473,8 @@ Prove every approved requirement against current code and runtime evidence.
 2. Run frontend lint, typecheck, production build, workbench browser checks, and combined-app axe.
 3. Run the route security audit and Deploy V integrity/taxonomy checks.
 4. Run real PostgreSQL model job, fencing, and migration tests.
-5. Run the real LibreOffice workbook fixture in the production image.
-6. Run backup/restore and authenticated download integrity proof.
+5. Run the Python-only worksheet fixture without LibreOffice and the real XLSX fixture in the worker image.
+6. Run backup/restore, worksheet payload, and optional authenticated download integrity proof.
 7. Search current source and docs for obsolete blockers:
 
 ```bash
@@ -485,14 +492,15 @@ rg -n 'signed Deploy V CP-MODEL correction|required|CP_MODEL_AUTHORITY_BLOCKED|O
 Completion requires direct proof for:
 
 - Canonical accepted Full Credit artifacts and CP-2B projection
-- Full validator success and real LibreOffice workbook QA
+- Full validator success and Python-only worksheet QA
+- Optional real LibreOffice workbook QA isolated to export
 - Immutable/idempotent build persistence
 - Memory and PostgreSQL lease/fencing recovery
-- Case-safe status and integrity-checked download
+- Case-safe status/payload access and optional integrity-checked download
 - Matching report freeze/approval identity
 - All six Model Builder states and accessibility
 - Production image/runtime hardening
-- Backup and restore of model metadata and exact workbook bytes
+- Backup and restore of model payloads and any optional exact workbook bytes
 - Absence of current signed-authority blocks
 - Clean focused and broad regression suites
 
