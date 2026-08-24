@@ -134,7 +134,11 @@ visible focus ring.
 - **Land work, don't stack it.** Unmerged branches are this repo's dominant source of friction: they rot at the rate `main` moves, so a branch left open for two weeks is a guaranteed conflict, and CI red you didn't cause becomes indistinguishable from CI red you did. Before starting new work, inspect open PRs and local branches, then decide whether to finish, rebase, or close existing work. **Cut branches from `origin/main`, never local `main`** (`git fetch origin && git switch -c <name> origin/main`), and **rebase before every push**. Prefer finishing an open branch over opening another.
 - **Never leave uncommitted work in a `/tmp` or `/private/tmp` worktree.** macOS purges those paths, taking the work with them and leaving a broken worktree entry. Put throwaway worktrees under `.claude/worktrees/`, and commit before you walk away.
 - **Turbopack Dev Cache**: Ensure `turbopackFileSystemCacheForDev: false` remains in `next.config.js` to prevent persistent development server cache crashes and high disk write overhead.
-- **Accessibility Verification**: Use the local axe-core runner `node caos/frontend/scripts/a11y-axe.mjs` for actual accessibility validation rather than relying on static regex-based audits which are prone to false positives.
+- **Accessibility Verification**: Use the local axe-core runner `node caos/frontend/scripts/a11y-axe.mjs` for actual accessibility validation rather than relying on static regex-based audits which are prone to false positives. Point `CAOS_URL` at the combined app (static export served by FastAPI, as
+  `caos/scripts/build_frontend.sh` then `caos/server/run.py` produce); against a
+  `next dev` server the pending-plan fixture fails on a harness mismatch, not a real
+  defect. Seed a case and pass `CAOS_CASE_ID` too — an empty register never overflows,
+  so empty-state runs miss scrollable-region and table defects entirely.
 - **FastAPI Server Environment**: Execute the server suite and check scripts with the project virtual environment when one exists (`caos/server/.venv` or `caos/server/.venv311`); otherwise install `caos/server/requirements.txt` + `requirements-dev.txt` into a fresh venv. Do not downgrade the FastAPI pin in `requirements.txt` (currently `0.139.*` — it clears the starlette CVE set).
 - **Dependency changes**: keep `requirements.txt` and `requirements-dev.txt` aligned with the supported FastAPI range, run the server checks in a clean environment, and review transitive upgrades before shipping.
 
@@ -153,7 +157,7 @@ permanently integrated during a later review pass.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **CAOS** (3866 symbols, 12534 relationships, 212 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **CAOS** (5154 symbols, 14657 relationships, 287 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
