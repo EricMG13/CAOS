@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-23
 
-**Status:** Ready for implementation
+**Status:** MVP implemented and locally verified; post-MVP activation controls stored
 
 **Approved design:** [Hybrid agent runtime design](../specs/2026-08-23-hybrid-agent-runtime-design.md)
 
@@ -18,6 +18,13 @@ The implementation stops at CP-DR. It does not add an agent framework, provider
 abstraction, dynamic DAG, web search, MCP, managed agents, model memory, shell,
 or code execution.
 
+The MVP is complete when the disabled-by-default implementation satisfies the
+Phase 0–6 exit gates and the Phase 7 local automated gate. Governance approval,
+live-provider smoke testing, the twenty-case shadow evaluation, opt-in
+activation, and live rollback remain stored below as mandatory post-MVP
+activation controls; they do not block MVP creation and must not be inferred
+from MVP completion.
+
 ## Execution rules
 
 - Execute phases in order. Each phase must leave the branch testable and may be
@@ -30,8 +37,8 @@ or code execution.
   run `confidence-review` and fix confirmed issues.
 - Before every commit, run GitNexus `detect_changes(scope="staged")`, inspect the
   affected flows, and stage only the explicit phase files.
-- Keep the feature flag off through Phases 0–6. Production activation is an
-  operational decision in Phase 7, not a code default.
+- Keep the feature flag off throughout MVP creation. Production activation is a
+  separate post-MVP operational decision, not a code default or an MVP gate.
 - Never send production documents to CI or a developer provider account.
 
 ## Phase map
@@ -45,7 +52,7 @@ or code execution.
 | 4 | Bounded Anthropic tool loop and canonical CP-DR artifact | Phase 3 |
 | 5 | Run Console brief, plan review, and unavailable states | Phase 4 |
 | 6 | Disabled deployment foundation and operational metadata | Phase 5 |
-| 7 | Full verification, shadow evaluation, opt-in pilot | Phase 6 |
+| 7 | Full local MVP verification and stored post-MVP activation controls | Phase 6 |
 
 ## Phase 0: Freeze authority and allowed APIs
 
@@ -779,12 +786,13 @@ The production image and Compose stack pass with CP-DR disabled, the provider
 key is worker-only, and an operator can enable only a named user or case without
 rebuilding the image.
 
-## Phase 7: Verify, evaluate, and pilot
+## Phase 7: Verify the MVP and store activation controls
 
 ### Objective
 
-Prove correctness and research value before any user-visible production
-activation.
+Prove local MVP correctness while keeping production activation disabled, and
+preserve the governance, live-provider, evaluation, pilot, and rollback checks
+that must run after MVP creation and before user-visible production activation.
 
 ### Full automated gate
 
@@ -812,7 +820,9 @@ Run `rewrite-tournament`, `confidence-review`, and GitNexus staged
 `detect_changes()` after the complete implementation, even if each phase already
 ran them.
 
-### Live-provider smoke test
+### Stored post-MVP live-provider smoke test
+
+This is not an MVP completion gate. It remains mandatory before activation.
 
 After ZDR and commercial processing approval:
 
@@ -825,7 +835,9 @@ After ZDR and commercial processing approval:
 5. Force a wrong tool argument, timeout, invalid citation, lost lease, and
    malformed output; confirm explicit failure and no fallback artifact.
 
-### Twenty-case shadow evaluation
+### Stored post-MVP twenty-case shadow evaluation
+
+This is not an MVP completion gate. It remains mandatory before activation.
 
 Use 20 sanitized, representative source sets. Keep reviewer identities and case
 mapping outside the repository.
@@ -853,7 +865,10 @@ Activation requires all of the following:
 Any critical grounding, privacy, case-isolation, authorization, methodology, or
 lease-fencing failure blocks activation regardless of aggregate scores.
 
-### Opt-in pilot and rollback
+### Stored post-MVP opt-in pilot and rollback
+
+This is not an MVP completion gate. It remains mandatory before broader
+adoption.
 
 - Enable only the named subjects/cases that passed governance review.
 - Keep plan approval and snapshot acceptance mandatory.
@@ -866,8 +881,10 @@ lease-fencing failure blocks activation regardless of aggregate scores.
 
 ### Exit gate
 
-The shadow gates pass, governance approves activation, the opt-in pilot remains
-bounded, and rollback has been exercised successfully.
+The local automated gate passes, the feature remains disabled and deny-all by
+default, and every deferred activation control remains recorded. MVP completion
+does not authorize or imply live-provider use, shadow-evaluation success,
+production activation, or exercised live rollback.
 
 ## Definition of done
 
@@ -880,5 +897,7 @@ bounded, and rollback has been exercised successfully.
 - Only canonical validator-passing CP-DR artifacts can reach snapshot acceptance.
 - The provider secret exists only in the worker.
 - Disabled and rollback states are explicit; no placeholder success is emitted.
-- The automated, live smoke, shadow, accessibility, security, and rollback gates
-  all pass before broader adoption.
+- The automated, accessibility, security, and rollback-state gates pass for the
+  MVP while the feature remains disabled and deny-all by default.
+- The stored governance, live smoke, shadow, opt-in pilot, and live rollback
+  controls all pass before production activation or broader adoption.
