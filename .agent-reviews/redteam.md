@@ -4006,3 +4006,23 @@ optional XLSX export, Model Builder controls, and report binding.
 Decision: accept the implementation. The in-app worksheet is the primary model,
 LibreOffice remains optional and worker-only, and no signed-authority blocker
 remains in live runtime or product documentation.
+
+## 2026-08-24 — Leveraged-loan RV workbook ingestion implementation gate
+
+Decision under review: ship the fixed-template, loan-only workbook importer,
+immutable active universe, immediate source-data screener, and CP-3 handoff.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-156 | Workbook-boundary attacker | A valid-looking XLSX can hide active content, external relationships, decompression work, oversized sheets, or non-finite values behind the expected headers. | Critical | Resolved and verified | Package inspection rejects macros, external links, embedded/active objects, malformed archives, and existing source ZIP ceilings remain in force. The importer additionally caps worksheets, rows, columns, strings, and findings; opens with formulas and links disabled; and accepts only finite-or-null numerics. Focused rejection fixtures pass. |
+| RT-2026-08-24-157 | Transaction reviewer | A rejected replacement or concurrent source withdrawal could activate a universe whose source is no longer authoritative, or erase the prior valid screen. | Critical | Resolved and verified | Activation is atomic and immutable, rejected imports never replace the active version, and the shared store boundary rechecks case ownership plus current source withdrawal state inside the same lock/transaction used for activation. Withdrawal atomically deactivates its universe and rolls back if the source update fails. Race and rollback regressions pass. |
+| RT-2026-08-24-158 | Methodology-authority reviewer | Binding CP-3 only to an ID and digest would force it to reparse or separately fetch rows, violating the one-normalization boundary and risking locator drift. | Critical | Resolved and verified | CP-3 receives the active universe identity, digest, workbook date, exact normalized rows, and source locators from the pinned source set. Its fingerprint binds the immutable identity and digest; a regression compares the complete CP-3 input with the active API rows. |
+| RT-2026-08-24-159 | Browser-concurrency reviewer | A slow refresh or upload from Case A could overwrite Case B's screener after the analyst changes cases. | High | Resolved and verified | The RV view is keyed by case identity, so a case change unmounts the prior request state; refresh effects abort in flight and the new case starts empty. The compiled production UI and browser upload journey pass. |
+| RT-2026-08-24-160 | Credit-semantics reviewer | Immediate display could relabel loan measures as bond analytics or imply a recommendation before CP-3. | Critical | Resolved and verified | The screen is explicitly `SOURCE DATA · UNANALYZED`, displays only the fixed leveraged-loan fields, labels prices/changes in points, margin/DM in bps, and YTM in percent, and emits no valuation signal or recommendation. The browser journey verifies the loan-metric labels. |
+| RT-2026-08-24-161 | Accessibility reviewer | A dense 27-column table can become unusable at narrow widths or convey signed movement only through color. | High | Resolved and verified | The table remains a labelled keyboard-focusable horizontal region, signed values retain explicit plus/minus text, native controls have visible labels/focus, and responsive filters collapse without clipping. RV-specific axe checks at desktop, tablet, and mobile widths report zero violations. |
+| RT-2026-08-24-162 | Deployment reviewer | Static migration and memory-store success do not prove the new constraints against a real PostgreSQL transaction or the full Caddy/ClamAV path. | High | Environment-gated | Migration `003` is additive, Compose renders successfully, the optional two-store PostgreSQL concurrency test is present, and the combined FastAPI/static-app upload journey passes. This workstation has no Docker daemon or `CAOS_TEST_DATABASE_URL`; production rollout must run the migration and existing Caddy/ClamAV smoke before traffic moves. |
+
+Decision: accept the implementation for commit and deployment packaging. Do not
+add bond fields, flexible spreadsheet mapping, a pricing engine, virtualized
+grid, or pre-CP-3 signals. Production activation remains gated on the existing
+real-PostgreSQL and Caddy/ClamAV deployment smoke in an environment with Docker.

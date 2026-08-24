@@ -638,7 +638,27 @@ class WorkflowRuntime:
             if not dependency_artifact:
                 raise WorkflowError("UPSTREAM_ARTIFACT_MISSING")
             upstream_artifacts.append({"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]})
-        input_fingerprint = digest({"plan": plan["plan_digest"], "module": node["module_id"], "source_set": source_set, "source_ids": source_ids, "upstream_artifacts": upstream_artifacts})
+        fingerprint_input = {"plan": plan["plan_digest"], "module": node["module_id"], "source_set": source_set, "source_ids": source_ids, "upstream_artifacts": upstream_artifacts}
+        loan_universe_identity = None
+        loan_universe_rows = None
+        if node["module_id"] == "CP-3":
+            active_loan_universe = self.store.active_loan_universe(run["case_id"], include_rows=True)
+            if active_loan_universe and active_loan_universe["source_id"] in source_ids:
+                loan_universe_identity = {
+                    field: active_loan_universe[field]
+                    for field in (
+                        "id",
+                        "source_id",
+                        "workbook_date",
+                        "template_version",
+                        "importer_version",
+                        "universe_digest",
+                        "row_count",
+                    )
+                }
+                loan_universe_rows = active_loan_universe["rows"]
+            fingerprint_input["loan_universe"] = loan_universe_identity
+        input_fingerprint = digest(fingerprint_input)
         if node["module_id"] in CANONICAL_MODULES and run.get("canonical_generation"):
             if fenced_call is None or lease_check is None:
                 raise JobFencedError("missing fenced canonical execution context")
@@ -736,6 +756,12 @@ class WorkflowRuntime:
             "narrative": {"takeaway": summary, "basis": "Typed payload generated from the pinned Deploy V route and immutable source-set identity.", "exceptions": "Worksheet calculation runs after accepted-run handoff in Model Builder; this artifact emits no workbook values." if node["module_id"] == "CP-2G" else "No model provider call is required for this deterministic host slice."},
             "visual": {"kind": visual_kind, "accessible_table": True, "period": "LTM", "units": "governed source units", "freshness": "source-set pinned", "takeaway": summary, "basis": "Typed artifact and pinned source lineage", "evidence_refs": source_ids, "input_fingerprint": input_fingerprint},
         }
+        if node["module_id"] == "CP-3":
+            payload["lineage"]["loan_universe"] = copy.deepcopy(loan_universe_identity)
+            payload["provenance"]["loan_universe"] = copy.deepcopy(loan_universe_identity)
+            if loan_universe_identity:
+                payload["inputs"] = {"loan_universe": {"identity": copy.deepcopy(loan_universe_identity), "rows": copy.deepcopy(loan_universe_rows)}}
+                payload["narrative"]["basis"] = "Relative-value inputs use the active normalized loan universe bound to the pinned workbook source and canonical universe digest."
         payload = self.bundle.validate_payload(payload, node["module_id"])
         markdown = self.bundle.render_markdown(payload)
         artifact = {

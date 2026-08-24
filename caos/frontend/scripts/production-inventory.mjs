@@ -179,9 +179,8 @@ async function inventoryLoadedRoute(context, role, slug, title) {
     } else if (slug === "deep-dive") {
       await page.getByRole("link", { name: "Open source rail" }).first().waitFor();
     } else if (slug === "rv-screener") {
-      await page.getByRole("button", { name: "Add row" }).waitFor();
-      await page.getByRole("button", { name: "Version market universe" }).waitFor();
-      await page.getByText("50 excluded rows", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Upload CP-3 workbook" }).waitFor();
+      await page.getByText("Upload the fixed CP-3 workbook to activate a leveraged-loan universe.", { exact: true }).waitFor();
     } else if (slug === "command-center") {
       await page.getByRole("heading", { name: "Synthetic Dense Issuer" }).waitFor();
     } else if (slug === "model-builder") {
@@ -334,19 +333,8 @@ try {
     assert.equal((await (await analystApi.get(`/api/cases/${journeyCase.id}/snapshot`)).json()).switch_required, false);
 
     await journeyPage.goto(`${baseURL}/rv-screener/?case=${journeyCase.id}`, { waitUntil: "networkidle" });
-    await journeyPage.getByRole("button", { name: "Add row" }).click();
-    await journeyPage.getByRole("button", { name: "Remove row" }).last().click();
-    await journeyPage.getByLabel("Instrument").fill("Synthetic 1L 2030");
-    await journeyPage.getByLabel("Observation date").fill("2026-08-22");
-    await journeyPage.getByLabel("Source version").fill(`synthetic-${suffix}`);
-    await journeyPage.getByLabel("Spread (bps)").fill("425");
-    await journeyPage.getByLabel("Maturity").fill("2030-12-31");
-    await journeyPage.getByLabel("Duration").fill("3.5");
-    const rvResponse = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/rv`) && response.request().method() === "POST");
-    await journeyPage.getByRole("button", { name: "Version market universe" }).click();
-    assert.equal((await rvResponse).status(), 201);
-    await journeyPage.getByText("Market universe versioned.", { exact: true }).waitFor();
-    await journeyPage.getByRole("cell", { name: "Synthetic 1L 2030" }).waitFor();
+    await journeyPage.getByRole("button", { name: "Upload CP-3 workbook" }).waitFor();
+    await journeyPage.getByText("Upload the fixed CP-3 workbook to activate a leveraged-loan universe.", { exact: true }).waitFor();
 
     await journeyPage.goto(`${baseURL}/report-studio/?case=${journeyCase.id}`, { waitUntil: "networkidle" });
     await journeyPage.getByLabel("Core thesis").fill("Synthetic issuer has stable leverage and adequate liquidity.");
@@ -405,7 +393,7 @@ try {
     { slug: "sources", endpoint: `/api/cases/${emptyCase.id}/sources`, url: `${baseURL}/sources/?case=${emptyCase.id}`, emptyText: "No source objects in this case." },
     { slug: "run-console", endpoint: `/api/runs/${firstRun.id}`, url: `${baseURL}/run-console/?case=${journeyCase.id}&run=${firstRun.id}`, emptyURL: `${baseURL}/run-console/?case=${emptyCase.id}`, emptyText: "No current execution. Select a purpose and depth to create an immutable plan." },
     { slug: "deep-dive", endpoint: `/api/cases/${emptyCase.id}/snapshot`, url: `${baseURL}/deep-dive/?case=${emptyCase.id}`, emptyText: "No accepted snapshot. Run the selected route, inspect exceptions, then accept it explicitly." },
-    { slug: "rv-screener", endpoint: `/api/cases/${emptyCase.id}/rv`, url: `${baseURL}/rv-screener/?case=${emptyCase.id}`, emptyText: "Version a comparable market universe to see eligible rows." },
+    { slug: "rv-screener", endpoint: `/api/cases/${emptyCase.id}/rv/loan-universes/active`, url: `${baseURL}/rv-screener/?case=${emptyCase.id}`, emptyText: "Upload the fixed CP-3 workbook to activate a leveraged-loan universe." },
     { slug: "command-center", endpoint: `/api/cases/${emptyCase.id}/lens`, url: `${baseURL}/command-center/?case=${emptyCase.id}`, emptyText: "No accepted snapshot yet. Posture becomes reviewable after an explicit acceptance." },
     { slug: "model-builder", endpoint: `/api/cases/${emptyCase.id}/models`, url: `${baseURL}/model-builder/?case=${emptyCase.id}`, emptyText: "ACCEPTED FULL CREDIT REQUIRED", emptyEndpoint: null },
     { slug: "report-studio", endpoint: `/api/cases/${emptyCase.id}/reports`, url: `${baseURL}/report-studio/?case=${emptyCase.id}`, emptyText: "No frozen report for this case." },
@@ -424,7 +412,7 @@ try {
     "/api/cases",
     `/api/cases/${denseCaseId}`,
     `/api/cases/${denseCaseId}/sources`,
-    `/api/cases/${denseCaseId}/rv`,
+    `/api/cases/${denseCaseId}/rv/loan-universes/active`,
     `/api/cases/${denseCaseId}/snapshot`,
     `/api/cases/${denseCaseId}/runs`,
   ];

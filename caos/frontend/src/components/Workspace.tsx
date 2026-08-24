@@ -15,7 +15,11 @@ type ResearchPlan = { methodology_build_id: string; brief_digest: string; source
 type RunRecord = { id: string; case_id: string; status: string; plan: { pathway: string; depth: string; profile_id: string; selection_id: string }; nodes: { id: string; module_id: string; status: string; artifact_id?: string | null }[]; error?: { code?: string; message?: string } | null; research?: { phase?: string; proposed_plan_hash?: string | null; approved_plan_hash?: string | null; proposed_plan?: ResearchPlan | null } | null };
 type SourceRecord = { id: string; filename: string; sha256: string; blocks: { block_id: string; locator: Record<string, unknown>; text?: string }[] };
 type ArtifactRecord = { id: string; module_id: string; digest: string; markdown?: string; created_at?: string; payload?: { summary?: string; evidence_refs?: string[]; narrative?: { takeaway?: string; basis?: string }; visual?: { freshness?: string; units?: string } } };
-type RVRowDraft = { instrument: string; observation_date: string; source_version: string; currency: string; price: string; yield_bps: string; spread_bps: string; seniority: string; maturity: string; duration: string };
+type LoanLocator = { sheet: string; row: number };
+type LoanRow = { instrument_key: string; company: string | null; borrower_name: string | null; business_description: string | null; sector: string; sub_sector: string | null; sub_group: string | null; public_private: string | null; bloomberg_loan_id: string | null; figi: string | null; loan_type: string | null; ranking: string | null; ratings: string | null; size_mn: number | null; margin_bps: number | null; maturity_date: string | null; bid_points: number | null; ask_points: number | null; change_1d_points: number | null; change_1w_points: number | null; change_1m_points: number | null; change_3m_points: number | null; change_6m_points: number | null; change_1yr_points: number | null; change_ytd_points: number | null; mid_ytm_pct: number | null; mid_3y_dm_bps: number | null; source_locators: LoanLocator[] };
+type LoanUniverse = { id: string; source_id: string; source_filename: string; source_sha256: string; workbook_date: string | null; template_version: string; importer_version: string; universe_digest: string; row_count: number; version: number; status: string; activated_at: string };
+type LoanUniverseResponse = { status: "ACTIVE" | "NO_ACTIVE_UNIVERSE"; universe: LoanUniverse | null; rows: LoanRow[] };
+type LoanFinding = { code: string; detail: string; sheet?: string | null; row?: number | null; column?: string | null };
 type ReportDraft = { thesis?: string; instrument?: string; recommendation?: string; evidenceIds?: string };
 type EvidenceOption = { id: string; kind: "Snapshot" | "Artifact" | "Source"; label: string };
 type ModelBuild = { id: string; case_id: string; accepted_run_id: string; accepted_snapshot_id: string; source_set_id: string; input_fingerprint: string; status: "QUEUED" | "BUILDING" | "READY" | "FAILED"; queued_at: string; started_at?: string | null; completed_at?: string | null; error?: { code: string; detail: string } | null; export: { status: "NOT_REQUESTED" | "QUEUED" | "EXPORTING" | "READY" | "FAILED"; error?: { code: string; detail: string } | null; filename?: string; sha256?: string; size?: number }; qa?: { status: string; semantic_check_count: number; formula_count: number; worksheet_cell_count: number; validation_warnings?: string[]; limitation_flags?: string[] }; payload_digest?: string };
@@ -421,7 +425,7 @@ export default function Workspace({ destination, children }: { destination?: Des
       case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} sourceId={routeSourceId} upload={upload} pendingAction={pendingAction} onOpenEvidence={(evidenceId, source) => setDrawer({ kind: "evidence", evidenceId, source })} />;
       case "Run Console": return <RunConsole caseId={caseId} selectedCase={selectedCase} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} approveResearchPlan={approveResearchPlan} pendingAction={pendingAction} />;
       case "Deep-Dive": return <DeepDive selectedCase={selectedCase} question={routeQuestion} caseId={caseId} pendingAction={pendingAction} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} />;
-      case "RV Screener": return <RVView caseId={caseId} />;
+      case "RV Screener": return <RVView key={caseId} caseId={caseId} />;
       case "Command Center": return <CommandView caseId={caseId} question={routeQuestion} />;
       case "Model Builder": return <ModelView caseId={caseId} role={role} />;
       case "Report Studio": return <ReportView acceptedSnapshot={authority?.accepted ?? null} caseId={caseId} role={role} selectedCase={selectedCase} />;
@@ -679,40 +683,97 @@ function DeepDive({ selectedCase, question, caseId, pendingAction, run, runLoadi
   return <div className="grid deep-dive-layout">{question && <section className="context-strip span-12"><strong>Evidence request</strong><p>{question}</p></section>}<section className="panel span-8"><div className="panel-header"><h2>Accepted analysis</h2><span className="panel-meta">Visible authority</span></div><div className="panel-body flow">{snapshot ? <><div className="callout"><strong>Visible accepted snapshot</strong><br /><span className="mono">{snapshot.digest}</span><br /><span className="muted">Source set v{snapshot.source_set_version ?? "—"} · accepted {formatDate(snapshot.accepted_at)}</span></div><h3>Artifact register</h3><div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table"><table><caption className="muted">Typed artifacts bound to this snapshot</caption><thead><tr><th scope="col">Module</th><th scope="col">Artifact digest</th><th scope="col">Evidence</th></tr></thead><tbody>{snapshot.artifacts.map((artifact) => <tr key={artifact.id}><td className="mono">{artifact.module_id}</td><td className="mono">{artifact.digest.slice(0, 16)}…</td><td><Link href={withQuery("/sources/", { case: selectedCase?.id, artifact: artifact.id })}>Open source rail</Link></td></tr>)}</tbody></table></div>{view?.switch_required && <div className="callout warning">A newer accepted execution exists. This view remains on the selected snapshot until you switch it explicitly.<div className="top-actions"><button className="button small" type="button" onClick={switchSnapshot}>Switch visible snapshot</button></div></div>}{message && <p className="muted" role="status">{message}</p>}</> : loading || loadError ? <LoadState loading={loading} error={loadError} /> : <ActionState title="Analysis unavailable" detail="No accepted snapshot. Run the selected route, inspect exceptions, then accept it explicitly." action="Open Run Console" href={withQuery("/run-console", { case: selectedCase?.id })} />}</div></section><section className="panel span-4 evidence-rail"><div className="panel-header"><h2>Evidence rail</h2></div><div className="panel-body flow">{snapshot ? <><p className="muted">Pinned to source set v{snapshot.source_set_version ?? "—"}, accepted {formatDate(snapshot.accepted_at)}.</p><ul className="evidence-rail-list">{snapshot.artifacts.map((artifact) => <li key={artifact.id}><Link href={withQuery("/sources/", { case: selectedCase?.id, artifact: artifact.id })}><span className="mono">{artifact.module_id}</span></Link><div className="muted mono">{artifact.digest.slice(0, 16)}…</div></li>)}</ul></> : <p className="muted">No accepted snapshot, so no evidence is bound yet.</p>}</div></section><InlineRun caseId={caseId} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} pendingAction={pendingAction} /></div>;
 }
 
+const loanColumns: { key: keyof LoanRow; label: string; numeric?: boolean; signed?: boolean }[] = [
+  { key: "company", label: "Company" }, { key: "borrower_name", label: "Borrower" }, { key: "business_description", label: "Business description" }, { key: "sector", label: "Sector" }, { key: "sub_sector", label: "Sub-sector" }, { key: "sub_group", label: "Sub-group" }, { key: "public_private", label: "Public / private" },
+  { key: "bloomberg_loan_id", label: "Bloomberg" }, { key: "figi", label: "FIGI" },
+  { key: "loan_type", label: "Loan type" }, { key: "ranking", label: "Ranking" }, { key: "ratings", label: "Ratings" }, { key: "size_mn", label: "Size ($mn)", numeric: true }, { key: "margin_bps", label: "Margin (bps)", numeric: true }, { key: "maturity_date", label: "Maturity" },
+  { key: "bid_points", label: "Bid (pts)", numeric: true }, { key: "ask_points", label: "Ask (pts)", numeric: true }, { key: "change_1d_points", label: "Δ 1D (pts)", numeric: true, signed: true }, { key: "change_1w_points", label: "Δ 1W (pts)", numeric: true, signed: true }, { key: "change_1m_points", label: "Δ 1M (pts)", numeric: true, signed: true }, { key: "change_3m_points", label: "Δ 3M (pts)", numeric: true, signed: true }, { key: "change_6m_points", label: "Δ 6M (pts)", numeric: true, signed: true }, { key: "change_1yr_points", label: "Δ 1YR (pts)", numeric: true, signed: true }, { key: "change_ytd_points", label: "Δ YTD (pts)", numeric: true, signed: true }, { key: "mid_ytm_pct", label: "Mid YTM (%)", numeric: true }, { key: "mid_3y_dm_bps", label: "Mid 3Y DM (bps)", numeric: true },
+];
+
+function loanCell(value: LoanRow[keyof LoanRow], signed = false) {
+  if (value === null || value === undefined || value === "") return "N/A";
+  if (typeof value !== "number") return String(value);
+  const formatted = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
+  return signed && value > 0 ? `+${formatted}` : formatted;
+}
+
 function RVView({ caseId }: { caseId: string }) {
-  const [rv, setRv] = useState<{ status: string; rows: { instrument: string; system_signal: string | null; spread_bps?: number; yield_bps?: number; price?: number }[]; excluded: { row: { instrument: string }; reasons: string[] }[] } | null>(null);
-  const [rows, setRows] = useState<RVRowDraft[]>([{ instrument: "", observation_date: "", source_version: "", currency: "USD", price: "", yield_bps: "", spread_bps: "", seniority: "1L", maturity: "", duration: "" }]);
+  const [rv, setRv] = useState<LoanUniverseResponse | null>(null);
+  const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [message, setMessage] = useState("");
+  const [findings, setFindings] = useState<LoanFinding[]>([]);
   const [pending, setPending] = useState(false);
-  const refresh = async () => {
+  const [search, setSearch] = useState("");
+  const [sector, setSector] = useState("");
+  const [rating, setRating] = useState("");
+  const [ranking, setRanking] = useState("");
+  const [loanType, setLoanType] = useState("");
+  const [maturityFrom, setMaturityFrom] = useState("");
+  const [maturityTo, setMaturityTo] = useState("");
+  const [marginMin, setMarginMin] = useState("");
+  const [marginMax, setMarginMax] = useState("");
+  const [dmMin, setDmMin] = useState("");
+  const [dmMax, setDmMax] = useState("");
+  const [sort, setSort] = useState<{ key: keyof LoanRow; direction: "asc" | "desc" }>({ key: "borrower_name", direction: "asc" });
+  const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!caseId) return;
     setLoading(true); setLoadError("");
-    try { setRv(await request<typeof rv>(`/api/cases/${caseId}/rv`)); }
-    catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Unable to load relative-value universe"); }
-    finally { setLoading(false); }
-  };
-  // RV data is an external synchronization boundary; refresh flags intentionally reset here.
-  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { void refresh(); }, [caseId]);
-  const updateRow = (index: number, key: keyof RVRowDraft, value: string) => setRows((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, [key]: value } : row));
-  const save = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setMessage("");
-    const invalid = rows.find((row) => !row.instrument || !row.observation_date || !row.source_version || row.currency.length !== 3 || !row.seniority || !row.maturity || !row.duration || (!row.price && !row.yield_bps && !row.spread_bps));
-    if (invalid) { setMessage("Each row needs identity, comparability dates, duration, and at least one market measure."); return; }
-    setPending(true);
-    const number = (value: string) => value.trim() ? Number(value) : undefined;
+    try { setRv(await request<LoanUniverseResponse>(`/api/cases/${caseId}/rv/loan-universes/active`, {}, signal)); }
+    catch (caught) { if (!(caught instanceof DOMException && caught.name === "AbortError")) setLoadError(caught instanceof Error ? caught.message : "Unable to load loan universe"); }
+    finally { if (!signal?.aborted) setLoading(false); }
+  }, [caseId]);
+  // The active universe is case-scoped external state.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setRv(null); setMessage(""); setFindings([]); const controller = new AbortController(); void refresh(controller.signal); return () => controller.abort(); }, [refresh]);
+  const filterOptions = useMemo(() => {
+    const values = (key: "sector" | "ratings" | "ranking" | "loan_type") => [...new Set((rv?.rows || []).map((row) => row[key]).filter((value): value is string => Boolean(value)))].sort();
+    return { sector: values("sector"), ratings: values("ratings"), ranking: values("ranking"), loan_type: values("loan_type") };
+  }, [rv]);
+  const filteredRows = useMemo(() => {
+    const inRange = (value: number | null, minimum: string, maximum: string) => value !== null && (!minimum || value >= Number(minimum)) && (!maximum || value <= Number(maximum));
+    const query = search.trim().toLowerCase();
+    return (rv?.rows || []).filter((row) =>
+      (!query || [row.company, row.borrower_name, row.bloomberg_loan_id, row.figi].some((value) => value?.toLowerCase().includes(query)))
+      && (!sector || row.sector === sector) && (!rating || row.ratings === rating) && (!ranking || row.ranking === ranking) && (!loanType || row.loan_type === loanType)
+      && (!maturityFrom || Boolean(row.maturity_date && row.maturity_date >= maturityFrom)) && (!maturityTo || Boolean(row.maturity_date && row.maturity_date <= maturityTo))
+      && (!marginMin && !marginMax || inRange(row.margin_bps, marginMin, marginMax)) && (!dmMin && !dmMax || inRange(row.mid_3y_dm_bps, dmMin, dmMax))
+    ).sort((left, right) => {
+      const a = left[sort.key]; const b = right[sort.key];
+      if (a === b) return left.instrument_key.localeCompare(right.instrument_key);
+      if (a === null || a === undefined) return 1;
+      if (b === null || b === undefined) return -1;
+      const order = typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), undefined, { numeric: true });
+      return sort.direction === "asc" ? order : -order;
+    });
+  }, [rv, search, sector, rating, ranking, loanType, maturityFrom, maturityTo, marginMin, marginMax, dmMin, dmMax, sort]);
+  const upload = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!file) return;
+    setPending(true); setMessage("Uploading and scanning workbook…"); setFindings([]);
     try {
-      const payload = { source_version: rows[0].source_version, rows: rows.map((row) => ({ ...row, currency: row.currency.toUpperCase(), price: number(row.price), yield_bps: number(row.yield_bps), spread_bps: number(row.spread_bps), duration: number(row.duration) })) };
-      await request(`/api/cases/${caseId}/rv`, { method: "POST", body: JSON.stringify(payload) });
-      setMessage("Market universe versioned."); await refresh();
-    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to version market universe"); }
+      const form = new FormData(); form.append("file", file);
+      const source = await request<SourceRecord>(`/api/cases/${caseId}/sources`, { method: "POST", body: form });
+      setMessage("Validating the fixed CP-3 workbook…");
+      const response = await fetch(`/api/cases/${caseId}/rv/loan-universes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_id: source.id }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = body.detail || {};
+        setFindings(Array.isArray(detail.findings) ? detail.findings : []);
+        throw new Error(detail.message || `Workbook import failed (${response.status})`);
+      }
+      setMessage(`Active loan universe v${body.version} · ${body.row_count} instruments.`); setFile(null);
+      await refresh();
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to import workbook"); }
     finally { setPending(false); }
   };
-  return <div className="grid">
-    <section className="panel span-8"><div className="panel-header"><h2>Relative value</h2><span className="eyebrow">SYSTEM SIGNAL / ANALYST SEPARATE</span></div><div className="panel-body table-wrap" tabIndex={0} role="region" aria-label="Scrollable table"><table><caption className="muted">Eligible rows are comparable on date, currency, source version, and basis.</caption><thead><tr><th scope="col">Instrument</th><th scope="col">Spread / yield</th><th scope="col">System signal</th><th scope="col">Analyst recommendation</th></tr></thead><tbody>{rv?.rows.map((row) => <tr key={row.instrument}><td>{row.instrument}</td><td className="num">{row.spread_bps ?? row.yield_bps ?? row.price ?? "—"}</td><td><span className="status">{row.system_signal || "N/A"}</span></td><td className="muted">Not written by system</td></tr>)}</tbody></table>{!rv?.rows.length && <LoadState loading={loading} error={loadError} empty="Version a comparable market universe to see eligible rows." />}{rv?.excluded.length ? <details className="excluded"><summary>{rv.excluded.length} excluded rows</summary><ul>{rv.excluded.map((item, index) => <li key={`${item.row.instrument}-${index}`}><strong>{item.row.instrument}</strong> — {item.reasons.join(", ")}</li>)}</ul></details> : null}</div></section>
-    <section className="panel span-4"><div className="panel-header"><h2>Version universe</h2><span className="eyebrow">BOUNDARY</span></div><div className="panel-body"><form onSubmit={save}><p id="rv-help" className="muted">Enter comparable rows as fields. Missing measures or comparability fields are excluded; system signal never becomes an analyst recommendation.</p>{rows.map((row, index) => <fieldset className="rv-row" key={index}><legend>Row {index + 1}</legend><div className="rv-grid"><div className="field"><label htmlFor={`rv-instrument-${index}`}>Instrument</label><input id={`rv-instrument-${index}`} name={`instrument-${index}`} autoComplete="off" value={row.instrument} onChange={(event) => updateRow(index, "instrument", event.target.value)} required /></div><div className="field"><label htmlFor={`rv-date-${index}`}>Observation date</label><input id={`rv-date-${index}`} name={`observation-date-${index}`} type="date" value={row.observation_date} onChange={(event) => updateRow(index, "observation_date", event.target.value)} required /></div><div className="field"><label htmlFor={`rv-source-${index}`}>Source version</label><input id={`rv-source-${index}`} name={`source-version-${index}`} autoComplete="off" value={row.source_version} onChange={(event) => updateRow(index, "source_version", event.target.value)} required /></div><div className="field"><label htmlFor={`rv-currency-${index}`}>Currency</label><input id={`rv-currency-${index}`} name={`currency-${index}`} autoComplete="off" maxLength={3} value={row.currency} onChange={(event) => updateRow(index, "currency", event.target.value.toUpperCase())} required /></div><div className="field"><label htmlFor={`rv-price-${index}`}>Price</label><input id={`rv-price-${index}`} name={`price-${index}`} type="number" inputMode="decimal" step="any" value={row.price} onChange={(event) => updateRow(index, "price", event.target.value)} /></div><div className="field"><label htmlFor={`rv-yield-${index}`}>Yield (bps)</label><input id={`rv-yield-${index}`} name={`yield-${index}`} type="number" inputMode="decimal" step="any" value={row.yield_bps} onChange={(event) => updateRow(index, "yield_bps", event.target.value)} /></div><div className="field"><label htmlFor={`rv-spread-${index}`}>Spread (bps)</label><input id={`rv-spread-${index}`} name={`spread-${index}`} type="number" inputMode="decimal" step="any" value={row.spread_bps} onChange={(event) => updateRow(index, "spread_bps", event.target.value)} /></div><div className="field"><label htmlFor={`rv-seniority-${index}`}>Seniority</label><input id={`rv-seniority-${index}`} name={`seniority-${index}`} autoComplete="off" value={row.seniority} onChange={(event) => updateRow(index, "seniority", event.target.value)} required /></div><div className="field"><label htmlFor={`rv-maturity-${index}`}>Maturity</label><input id={`rv-maturity-${index}`} name={`maturity-${index}`} type="date" value={row.maturity} onChange={(event) => updateRow(index, "maturity", event.target.value)} required /></div><div className="field"><label htmlFor={`rv-duration-${index}`}>Duration</label><input id={`rv-duration-${index}`} name={`duration-${index}`} type="number" inputMode="decimal" step="any" value={row.duration} onChange={(event) => updateRow(index, "duration", event.target.value)} required /></div></div>{rows.length > 1 && <button className="button small" type="button" onClick={() => setRows((previous) => previous.filter((_, rowIndex) => rowIndex !== index))}>Remove row</button>}</fieldset>)}<div className="row-actions"><button className="button small" type="button" onClick={() => setRows((previous) => [...previous, { ...previous[previous.length - 1], instrument: "", price: "", yield_bps: "", spread_bps: "" }])}>Add row</button><button className="button primary" type="submit" disabled={pending}>{pending ? "Versioning…" : "Version market universe"}</button></div>{message && <p className={message.startsWith("Unable") || message.startsWith("Each") ? "error" : "muted"} role="status">{message}</p>}</form></div></section>
+  const changeSort = (key: keyof LoanRow) => setSort((current) => ({ key, direction: current.key === key && current.direction === "asc" ? "desc" : "asc" }));
+  const messageIsError = Boolean(message && !pending && !message.startsWith("Active loan universe"));
+  return <div className="grid loan-rv">
+    <section className="panel span-12"><div className="panel-header"><h2>Leveraged-loan universe</h2><span className="eyebrow">SOURCE DATA · UNANALYZED</span></div><div className="panel-body loan-upload"><form onSubmit={upload}><div className="field"><label htmlFor="loan-workbook">Fixed CP-3 sector workbook (.xlsx)</label><input id="loan-workbook" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setFile(event.target.files?.[0] || null)} required /></div><button className="button primary" type="submit" disabled={pending || !file}>{pending ? "Importing…" : "Upload CP-3 workbook"}</button></form><p className="muted">All visible sector tabs are ingested. Values remain in workbook units: prices and changes in points, margin and discount margin in bps, yield in percent.</p>{message && <p className={messageIsError ? "error" : "muted"} role={messageIsError ? "alert" : "status"}>{message}</p>}{findings.length ? <ul className="loan-findings" role="alert">{findings.map((finding, index) => <li key={`${finding.code}-${index}`}><strong>{finding.code}</strong> {finding.sheet ? `${finding.sheet}${finding.row ? ` R${finding.row}` : ""}: ` : ""}{finding.detail}</li>)}</ul> : null}</div></section>
+    {rv?.universe ? <section className="panel span-12"><div className="panel-header"><h2>Active authority</h2><span className="status success">ACTIVE · v{rv.universe.version}</span></div><div className="panel-body loan-authority"><dl><dt>Workbook date</dt><dd>{rv.universe.workbook_date || "N/A"}</dd><dt>Source</dt><dd><Link href={withQuery("/sources/", { case: caseId, source: rv.universe.source_id })}>{rv.universe.source_filename}</Link></dd><dt>Instruments</dt><dd className="num">{rv.universe.row_count}</dd><dt>Template</dt><dd className="mono">{rv.universe.template_version}</dd><dt>Digest</dt><dd className="mono">{rv.universe.universe_digest}</dd></dl></div></section> : null}
+    <section className="panel span-12"><div className="panel-header"><h2>Loan screener</h2><span className="panel-meta">{filteredRows.length} / {rv?.rows.length || 0} instruments</span></div><div className="panel-body loan-filters"><div className="field"><label htmlFor="loan-search">Issuer / ID</label><input id="loan-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></div>{[["loan-sector", "Sector", sector, setSector, filterOptions.sector], ["loan-rating", "Rating", rating, setRating, filterOptions.ratings], ["loan-ranking", "Ranking", ranking, setRanking, filterOptions.ranking], ["loan-type", "Loan type", loanType, setLoanType, filterOptions.loan_type]] .map(([id, label, value, setter, values]) => <div className="field" key={id as string}><label htmlFor={id as string}>{label as string}</label><select id={id as string} value={value as string} onChange={(event) => (setter as (value: string) => void)(event.target.value)}><option value="">All</option>{(values as string[]).map((option) => <option key={option}>{option}</option>)}</select></div>)}<div className="field"><label htmlFor="loan-maturity-from">Maturity from</label><input id="loan-maturity-from" type="date" value={maturityFrom} onChange={(event) => setMaturityFrom(event.target.value)} /></div><div className="field"><label htmlFor="loan-maturity-to">Maturity to</label><input id="loan-maturity-to" type="date" value={maturityTo} onChange={(event) => setMaturityTo(event.target.value)} /></div>{[["loan-margin-min", "Min margin (bps)", marginMin, setMarginMin], ["loan-margin-max", "Max margin (bps)", marginMax, setMarginMax], ["loan-dm-min", "Min 3Y DM (bps)", dmMin, setDmMin], ["loan-dm-max", "Max 3Y DM (bps)", dmMax, setDmMax]].map(([id, label, value, setter]) => <div className="field" key={id as string}><label htmlFor={id as string}>{label as string}</label><input id={id as string} type="number" step="any" value={value as string} onChange={(event) => (setter as (value: string) => void)(event.target.value)} /></div>)}</div><div className="table-wrap loan-table-wrap" tabIndex={0} role="region" aria-label="Leveraged-loan screener; scroll horizontally to review all workbook fields">{rv?.rows.length ? <table className="loan-table"><caption className="sr-only">Active leveraged-loan universe. Column labels state the source unit.</caption><thead><tr className="loan-groups"><th scope="colgroup" colSpan={7}>Issuer profile</th><th scope="colgroup" colSpan={2}>Identifiers</th><th scope="colgroup" colSpan={6}>Loan terms</th><th scope="colgroup" colSpan={11}>Market data</th><th scope="colgroup" colSpan={1}>Source</th></tr><tr>{loanColumns.map((column) => <th scope="col" key={column.key} aria-sort={sort.key === column.key ? (sort.direction === "asc" ? "ascending" : "descending") : undefined}><button className="loan-sort" type="button" onClick={() => changeSort(column.key)}>{column.label}{sort.key === column.key ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>)}<th scope="col">Locator</th></tr></thead><tbody>{filteredRows.map((row) => <tr key={row.instrument_key}>{loanColumns.map((column) => { const value = row[column.key]; const change = column.signed && typeof value === "number" ? value > 0 ? "positive" : value < 0 ? "negative" : "flat" : ""; return <td key={column.key} className={`${column.numeric ? "num" : ""} ${change}`.trim()}>{loanCell(value, column.signed)}</td>; })}<td className="mono">{row.source_locators.map((locator) => `${locator.sheet} R${locator.row}`).join("; ")}</td></tr>)}</tbody></table> : <LoadState loading={loading} error={loadError} empty="Upload the fixed CP-3 workbook to activate a leveraged-loan universe." />}{rv?.rows.length && !filteredRows.length ? <div className="empty">No loans match the current filters.</div> : null}</div></section>
   </div>;
 }
 

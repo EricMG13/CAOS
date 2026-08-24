@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -26,6 +26,11 @@ from .artifacts.domain import (
     snapshot_diff,
 )
 from .artifacts.relative_value import compare_universe, save_universe
+from .artifacts.loan_universe import (
+    LoanUniverseImportRejected,
+    LoanUniverseSourceError,
+    import_loan_source,
+)
 from .config import Settings
 from .contracts import (
     DESTINATIONS,
@@ -36,6 +41,7 @@ from .contracts import (
     CreateCaseRequest,
     Depth,
     FreezeReportRequest,
+    LoanUniverseImportRequest,
     MemberRequest,
     MethodologyDraftRequest,
     NoteRequest,
@@ -222,6 +228,13 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             prior_source_set = store.source_sets.get(case_id)
             prior_withdrawn = source.get("withdrawn", False)
             prior_assumptions = copy.deepcopy(store.assumptions.get(case_id))
+            prior_loan_state = copy.deepcopy(
+                (
+                    store.rv_loan_universes,
+                    store.rv_loan_rows,
+                    store.rv_active_loan_universes,
+                )
+            )
             audit_start = len(store.audit)
             source["withdrawn"] = True
             current = store.source_sets.get(case_id)
@@ -231,6 +244,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 new_source_set_id = store._id("set")
                 store.register_source_set({"id": new_source_set_id, "case_id": case_id, "version": current["version"] + 1, "source_ids": active_source_ids, "created_by": who.subject, "created_at": now_iso()})
             mark_assumptions_stale(store, case_id, {source_id}, persist=False)
+            store._withdraw_loan_universe_for_source_locked(case_id, source_id, who.subject)
             store.audit_event("source.withdrawn", who.subject, case_id=case_id, source_id=source_id)
             try:
                 store.persist()
@@ -246,6 +260,11 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                     store.assumptions.pop(case_id, None)
                 else:
                     store.assumptions[case_id] = prior_assumptions
+                (
+                    store.rv_loan_universes,
+                    store.rv_loan_rows,
+                    store.rv_active_loan_universes,
+                ) = prior_loan_state
                 del store.audit[audit_start:]
                 raise
         return {key: value for key, value in source.items() if key != "vault_path"}
@@ -443,6 +462,45 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             return save_universe(store, case_id, who.subject, payload)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/cases/{case_id}/rv/loan-universes/active")
+    def active_loan_universe(case_id: str, request: Request) -> dict[str, Any]:
+        require_case(store, case_id, identity(request))
+        active = store.active_loan_universe(case_id)
+        if not active:
+            return {"status": "NO_ACTIVE_UNIVERSE", "universe": None, "rows": []}
+        rows = active.pop("rows")
+        return {"status": "ACTIVE", "universe": active, "rows": rows}
+
+    @app.post("/api/cases/{case_id}/rv/loan-universes", status_code=201)
+    def import_case_loan_universe(
+        case_id: str,
+        payload: LoanUniverseImportRequest,
+        request: Request,
+    ) -> Any:
+        who = identity(request)
+        require_case(store, case_id, who, write=True)
+        try:
+            record, created = import_loan_source(store, case_id, payload.source_id, who.subject)
+        except LoanUniverseImportRejected as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "RV_WORKBOOK_INVALID",
+                    "message": "Workbook rejected; the prior active universe is unchanged.",
+                    "universe_id": exc.record["id"],
+                    "findings": exc.record["findings"],
+                },
+            ) from exc
+        except LoanUniverseSourceError as exc:
+            status_code = {
+                "RV_SOURCE_NOT_FOUND": 404,
+                "RV_SOURCE_TYPE_INVALID": 415,
+                "RV_SOURCE_WITHDRAWN": 409,
+                "RV_SOURCE_BYTES_UNAVAILABLE": 409,
+            }.get(exc.code, 422)
+            raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.detail}) from exc
+        return record if created else JSONResponse(status_code=200, content=record)
 
     @app.get("/api/cases/{case_id}/model")
     def model(case_id: str, request: Request) -> dict[str, Any]:

@@ -237,6 +237,10 @@ class RVUniverseRequest(StrictModel):
     rows: list[RVRow] = Field(min_length=1, max_length=500)
 
 
+class LoanUniverseImportRequest(StrictModel):
+    source_id: str = Field(min_length=1, max_length=120)
+
+
 class FreezeReportRequest(StrictModel):
     thesis_version: int = Field(ge=1)
     recommendation_version: int = Field(ge=1)

@@ -66,6 +66,9 @@ class MemoryStore:
         self.reports: dict[str, dict[str, Any]] = {}
         self.methodology_drafts: dict[str, dict[str, Any]] = {}
         self.rv_universes: dict[str, dict[str, Any]] = {}
+        self.rv_loan_universes: dict[str, dict[str, Any]] = {}
+        self.rv_loan_rows: dict[str, list[dict[str, Any]]] = {}
+        self.rv_active_loan_universes: dict[str, str] = {}
         self.audit: list[dict[str, Any]] = []
         self.events: dict[str, list[dict[str, Any]]] = {}
         self.event_conditions: dict[str, threading.Condition] = {}
@@ -876,6 +879,153 @@ class MemoryStore:
                 self.persist()
             return copy.deepcopy(value)
 
+    @staticmethod
+    def _loan_import_key(record: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            record["case_id"],
+            record["source_sha256"],
+            record["template_version"],
+            record["importer_version"],
+        )
+
+    def find_loan_universe_import(
+        self,
+        case_id: str,
+        source_sha256: str,
+        template_version: str,
+        importer_version: str,
+    ) -> dict[str, Any] | None:
+        key = (case_id, source_sha256, template_version, importer_version)
+        with self.lock:
+            for record in self.rv_loan_universes.values():
+                if self._loan_import_key(record) == key:
+                    return copy.deepcopy(record)
+        return None
+
+    def save_loan_universe_import(
+        self,
+        record: dict[str, Any],
+        rows: list[dict[str, Any]],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            prior = copy.deepcopy(
+                (
+                    self.rv_loan_universes,
+                    self.rv_loan_rows,
+                    self.rv_active_loan_universes,
+                    self.audit,
+                )
+            )
+            try:
+                saved, created = self._save_loan_universe_import_locked(record, rows, actor)
+                if created:
+                    self.persist()
+                return saved, created
+            except Exception:
+                (
+                    self.rv_loan_universes,
+                    self.rv_loan_rows,
+                    self.rv_active_loan_universes,
+                    self.audit,
+                ) = prior
+                raise
+
+    def _save_loan_universe_import_locked(
+        self,
+        record: dict[str, Any],
+        rows: list[dict[str, Any]],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        if record.get("status") not in {"ACTIVE", "REJECTED"}:
+            raise ValueError("RV_UNIVERSE_STATUS_INVALID")
+        source = self.sources.get(record.get("source_id"))
+        if not source or source.get("case_id") != record.get("case_id") or source.get("withdrawn"):
+            raise ValueError("RV_SOURCE_NOT_ACTIVE")
+        key = self._loan_import_key(record)
+        for existing in self.rv_loan_universes.values():
+            if self._loan_import_key(existing) == key:
+                return copy.deepcopy(existing), False
+        if record["status"] == "ACTIVE":
+            if record.get("row_count") != len(rows) or len({row.get("instrument_key") for row in rows}) != len(rows):
+                raise ValueError("RV_UNIVERSE_ROWS_INVALID")
+        elif rows:
+            raise ValueError("RV_REJECTED_UNIVERSE_HAS_ROWS")
+
+        saved = copy.deepcopy(record)
+        saved.setdefault("created_at", now_iso())
+        saved.setdefault("created_by", actor)
+        if saved["status"] == "ACTIVE":
+            versions = [
+                value.get("version", 0) or 0
+                for value in self.rv_loan_universes.values()
+                if value.get("case_id") == saved["case_id"]
+            ]
+            saved["version"] = max(versions, default=0) + 1
+            saved["activated_at"] = now_iso()
+            saved["superseded_at"] = None
+            saved["withdrawn_at"] = None
+            previous_id = self.rv_active_loan_universes.get(saved["case_id"])
+            previous = self.rv_loan_universes.get(previous_id) if previous_id else None
+            if previous:
+                previous["status"] = "SUPERSEDED"
+                previous["superseded_at"] = saved["activated_at"]
+            self.rv_active_loan_universes[saved["case_id"]] = saved["id"]
+            self.rv_loan_rows[saved["id"]] = copy.deepcopy(rows)
+            action = "rv.loan_universe.activated"
+        else:
+            saved["version"] = None
+            saved["activated_at"] = None
+            saved["superseded_at"] = None
+            saved["withdrawn_at"] = None
+            self.rv_loan_rows[saved["id"]] = []
+            action = "rv.loan_universe.rejected"
+        self.rv_loan_universes[saved["id"]] = saved
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": action,
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": saved["case_id"],
+                "source_id": saved["source_id"],
+                "universe_id": saved["id"],
+            }
+        )
+        return copy.deepcopy(saved), True
+
+    def active_loan_universe(self, case_id: str, *, include_rows: bool = True) -> dict[str, Any] | None:
+        with self.lock:
+            universe_id = self.rv_active_loan_universes.get(case_id)
+            record = self.rv_loan_universes.get(universe_id) if universe_id else None
+            if not record or record.get("status") != "ACTIVE":
+                return None
+            result = copy.deepcopy(record)
+            if include_rows:
+                result["rows"] = copy.deepcopy(self.rv_loan_rows.get(universe_id, []))
+            return result
+
+    def _withdraw_loan_universe_for_source_locked(self, case_id: str, source_id: str, actor: str) -> str | None:
+        universe_id = self.rv_active_loan_universes.get(case_id)
+        record = self.rv_loan_universes.get(universe_id) if universe_id else None
+        if not record or record.get("source_id") != source_id:
+            return None
+        record["status"] = "WITHDRAWN"
+        record["withdrawn_at"] = now_iso()
+        self.rv_active_loan_universes.pop(case_id, None)
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "rv.loan_universe.withdrawn",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": case_id,
+                "source_id": source_id,
+                "universe_id": universe_id,
+            }
+        )
+        return universe_id
+
 
 STORE = MemoryStore()
 
@@ -956,6 +1106,35 @@ class PostgresStore(MemoryStore):
                     self._state_revision = 0
             self._base_state = self._snapshot()
             connection.commit()
+
+    def save_loan_universe_import(
+        self,
+        record: dict[str, Any],
+        rows: list[dict[str, Any]],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                        row = cursor.fetchone()
+                        if row is None:
+                            raise RuntimeError("authoritative loan-universe state is unavailable")
+                        database_revision, database_state = row
+                        self._adopt_persisted(copy.deepcopy(database_state), database_revision)
+                        saved, created = self._save_loan_universe_import_locked(record, rows, actor)
+                        if not created:
+                            return saved, False
+                        state, revision, database_state, database_revision = self._persist_connection(connection)
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
+            return copy.deepcopy(saved), True
 
     def queue_model_build(
         self,
@@ -1485,7 +1664,7 @@ class PostgresStore(MemoryStore):
                     job["status"] = "finished"
 
     def _snapshot(self) -> dict[str, Any]:
-        return {name: copy.deepcopy(getattr(self, name)) for name in ("cases", "sources", "source_sets", "source_set_history", "runs", "nodes", "artifacts", "snapshots", "theses", "recommendations", "notes", "assumptions", "reports", "methodology_drafts", "rv_universes", "audit", "events", "jobs", "model_builds", "model_jobs")}
+        return {name: copy.deepcopy(getattr(self, name)) for name in ("cases", "sources", "source_sets", "source_set_history", "runs", "nodes", "artifacts", "snapshots", "theses", "recommendations", "notes", "assumptions", "reports", "methodology_drafts", "rv_universes", "rv_loan_universes", "rv_loan_rows", "rv_active_loan_universes", "audit", "events", "jobs", "model_builds", "model_jobs")}
 
     def _restore(self, state: dict[str, Any]) -> None:
         for name, value in state.items():
@@ -1536,6 +1715,57 @@ class PostgresStore(MemoryStore):
                     ),
                 )
 
+    def _sync_normalized_loan_universes(self, connection: Any, state: dict[str, Any]) -> None:
+        universes = state.get("rv_loan_universes", {})
+        rows = state.get("rv_loan_rows", {})
+        active = state.get("rv_active_loan_universes", {})
+        with connection.cursor() as cursor:
+            normalized_cases: set[str] = set()
+            for record in universes.values():
+                case = state.get("cases", {}).get(record["case_id"])
+                if not case:
+                    raise ValueError("loan universe references an absent case")
+                if case["id"] not in normalized_cases:
+                    cursor.execute(
+                        "INSERT INTO cases(id, name, issuer, sector, created_by, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                        (case["id"], case["name"], case["issuer"], case["sector"], case["created_by"], case["created_at"]),
+                    )
+                    normalized_cases.add(case["id"])
+
+            for case_id, active_id in active.items():
+                cursor.execute(
+                    "UPDATE rv_loan_universes SET status='SUPERSEDED', superseded_at=now(), "
+                    "record=jsonb_set(record, '{status}', '\"SUPERSEDED\"'::jsonb) "
+                    "WHERE case_id=%s AND status='ACTIVE' AND id<>%s",
+                    (case_id, active_id),
+                )
+
+            ordered = sorted(universes.values(), key=lambda record: record["id"] in set(active.values()))
+            for record in ordered:
+                cursor.execute(
+                    "INSERT INTO rv_loan_universes("
+                    "id, case_id, source_id, source_sha256, workbook_date, template_version, importer_version, "
+                    "universe_digest, row_count, version, status, record, created_by, created_at, activated_at, superseded_at, withdrawn_at"
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, record=EXCLUDED.record, "
+                    "version=EXCLUDED.version, activated_at=EXCLUDED.activated_at, "
+                    "superseded_at=EXCLUDED.superseded_at, withdrawn_at=EXCLUDED.withdrawn_at",
+                    (
+                        record["id"], record["case_id"], record["source_id"], record["source_sha256"],
+                        record.get("workbook_date"), record["template_version"], record["importer_version"],
+                        record.get("universe_digest"), record.get("row_count", 0), record.get("version"),
+                        record["status"], self._jsonb(record), record["created_by"], record["created_at"],
+                        record.get("activated_at"), record.get("superseded_at"), record.get("withdrawn_at"),
+                    ),
+                )
+                for loan_row in rows.get(record["id"], []):
+                    cursor.execute(
+                        "INSERT INTO rv_loan_rows(universe_id, instrument_key, record) VALUES (%s, %s, %s) "
+                        "ON CONFLICT (universe_id, instrument_key) DO NOTHING",
+                        (record["id"], loan_row["instrument_key"], self._jsonb(loan_row)),
+                    )
+
     def _persist_connection(self, connection: Any) -> tuple[dict[str, Any], int, dict[str, Any], int]:
         state = self._snapshot()
         with connection.cursor() as cursor:
@@ -1547,6 +1777,11 @@ class PostgresStore(MemoryStore):
             next_revision = current_revision + 1
             cursor.execute("UPDATE caos_state SET revision = %s, state = %s WHERE id = true", (next_revision, self._jsonb(json.loads(json.dumps(state)))))
         self._sync_normalized_runs(connection, state)
+        if any(
+            state.get(name, {}) != current_state.get(name, {})
+            for name in ("rv_loan_universes", "rv_loan_rows", "rv_active_loan_universes")
+        ):
+            self._sync_normalized_loan_universes(connection, state)
         return state, next_revision, current_state, current_revision
 
     def _adopt_persisted(self, state: dict[str, Any], revision: int) -> None:
