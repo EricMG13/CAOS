@@ -253,7 +253,7 @@ export default function Workspace({ destination, children }: { destination?: Des
   }, [caseId, cases, casesLoading, dispatchAuthority, hydrated, requestedCaseId, requestedRunId, runId, selectCase]);
 
   useEffect(() => {
-    // The visible authority and contextual drawer must clear at the external case boundary.
+    // Visible case authority and its drawer must clear at every reducer authority generation.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAuthority(null); setDrawer(null);
     if (!caseId || !caseIsAuthorized) return;
@@ -262,7 +262,7 @@ export default function Workspace({ destination, children }: { destination?: Des
     return () => controller.abort();
     // `refreshCase` deliberately resolves the current external authority.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caseId, caseIsAuthorized]);
+  }, [authorityState.generation, caseId, caseIsAuthorized]);
 
   useEffect(() => {
     document.title = `CAOS — ${active}`;

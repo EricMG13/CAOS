@@ -307,22 +307,24 @@ try {
     assert.deepEqual(await journeyPage.getByLabel("Purpose").locator("option").evaluateAll((options) => options.map((option) => option.value).sort()), expectedPathways);
     await journeyPage.getByLabel("Purpose").selectOption("EARNINGS_UPDATE");
     await journeyPage.getByLabel("Depth").selectOption("screen");
-    let markLateRunSeen;
-    let releaseLateRun;
-    const lateRunSeen = new Promise((resolve) => { markLateRunSeen = resolve; });
-    const lateRunBarrier = new Promise((resolve) => { releaseLateRun = resolve; });
+    const { promise: lateRunSeen, resolve: markLateRunSeen } = Promise.withResolvers();
+    const { promise: lateRunBarrier, resolve: releaseLateRun } = Promise.withResolvers();
+    const { promise: lateRunFulfilled, resolve: markLateRunFulfilled } = Promise.withResolvers();
+    let lateRunCaptured = false;
     const runResponseRoute = (candidate) => /^\/api\/runs\/[^/]+$/.test(candidate.pathname);
     await journeyPage.route(runResponseRoute, async (route) => {
       if (route.request().method() !== "GET") return route.continue();
       const response = await route.fetch();
       const body = await response.json();
-      if (body.case_id !== journeyCase.id) return route.fulfill({ response });
+      if (body.case_id !== journeyCase.id || lateRunCaptured) return route.fulfill({ response });
+      lateRunCaptured = true;
       markLateRunSeen();
       await lateRunBarrier;
       await route.fulfill({
         response,
         json: { ...body, status: "failed", error: { code: "CROSS_CASE_LATE_RESPONSE", message: "Late response from previous case" } },
       });
+      markLateRunFulfilled();
     });
     const startResponse = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/runs`) && response.request().method() === "POST");
     await journeyPage.getByRole("button", { name: "Compile and run" }).click();
@@ -333,7 +335,7 @@ try {
     await journeyPage.getByLabel("Select case").selectOption(denseCaseId);
     await journeyPage.getByRole("region", { name: "Accepted authority" }).getByText(`Synthetic Dense Issuer / ${denseDetail.name}`, { exact: true }).waitFor();
     releaseLateRun();
-    await journeyPage.waitForTimeout(100);
+    await lateRunFulfilled;
     assert.equal(await journeyPage.getByText("CROSS_CASE_LATE_RESPONSE", { exact: false }).count(), 0);
     assert.equal(new URL(journeyPage.url()).searchParams.get("case"), denseCaseId);
     await journeyPage.unroute(runResponseRoute);

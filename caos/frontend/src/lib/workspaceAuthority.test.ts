@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   initialAuthorityState,
   matchesAuthority,
@@ -8,6 +9,14 @@ import {
 } from "./workspaceAuthority.ts";
 
 const reduce = (event: Parameters<typeof workspaceAuthorityReducer>[1]) => workspaceAuthorityReducer(initialAuthorityState, event);
+
+test("case authority refresh follows every reducer generation", () => {
+  const workspace = readFileSync(new URL("../components/Workspace.tsx", import.meta.url), "utf8");
+  const effect = workspace.match(/void refreshCase\(caseId, controller\.signal\);[\s\S]*?\}, \[([^\]]+)\]\);/);
+
+  assert.ok(effect, "case authority refresh effect is present");
+  assert.match(effect[1], /\bauthorityState\.generation\b/);
+});
 
 test("hydrates route authority as a loading case/run boundary", () => {
   const state = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
