@@ -1079,25 +1079,24 @@ def test_worker_respects_poll_interval_while_job_is_active(monkeypatch: pytest.M
 
     class ActiveStore:
         def __init__(self) -> None:
-            self.lock = threading.Lock()
-            self.runs = {"run-1": {"id": "run-1", "created_by": "analyst", "status": "running"}}
-            self.refreshes = 0
+            self.reads = 0
 
-        def refresh(self) -> None:
-            self.refreshes += 1
-            if self.refreshes > 3:
+        def pending_runs(self) -> list[tuple[str, str]]:
+            self.reads += 1
+            if self.reads > 3:
                 raise StopIteration
+            return [("run-1", "analyst")]
+
+        def pending_model_jobs(self) -> list[tuple[str, str, str]]:
+            raise AssertionError("model jobs must not be read without a model runtime")
 
     class PendingFuture:
         def done(self) -> bool:
             return False
 
     class Runtime:
-        def __init__(self) -> None:
-            self.executor = SimpleNamespace(submit=lambda *_args: PendingFuture())
-
-        def _execute(self, *_args: object) -> None:
-            return None
+        def schedule(self, *_args: object) -> PendingFuture:
+            return PendingFuture()
 
     store = ActiveStore()
     sleeps: list[float] = []

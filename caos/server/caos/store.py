@@ -319,6 +319,29 @@ class MemoryStore:
     def refresh(self) -> None:
         """Persistence hook; the development adapter is already authoritative."""
 
+    def pending_runs(self) -> list[tuple[str, str]]:
+        with self.lock:
+            return [
+                (run["id"], run["created_by"])
+                for run in self.runs.values()
+                if run["status"] in {"queued", "running"}
+            ]
+
+    def pending_model_jobs(self) -> list[tuple[str, str, str]]:
+        with self.lock:
+            return [
+                (
+                    job["build_id"],
+                    job.get("actor")
+                    or self.model_builds[job["build_id"]]["created_by"],
+                    job["kind"],
+                )
+                for job in self.model_jobs.values()
+                if job.get("kind") in MODEL_JOB_KINDS
+                and job.get("status") in {"queued", "claimed"}
+                and job.get("build_id") in self.model_builds
+            ]
+
     def _id(self, prefix: str) -> str:
         return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
@@ -1330,6 +1353,32 @@ class PostgresStore(MemoryStore):
                     self._state_revision = 0
             self._base_state = self._snapshot()
             connection.commit()
+
+    def pending_runs(self) -> list[tuple[str, str]]:
+        with self._psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, created_by FROM runs "
+                    "WHERE status IN ('queued', 'running') ORDER BY created_at, id"
+                )
+                return list(cursor.fetchall())
+
+    def pending_model_jobs(self) -> list[tuple[str, str, str]]:
+        with self._psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT job.build_id, "
+                    "COALESCE(NULLIF(jsonb_extract_path_text("
+                    "state.state, 'model_jobs', job.build_id || ':' || job.kind, 'actor'"
+                    "), ''), build.created_by), job.kind "
+                    "FROM model_build_jobs AS job "
+                    "JOIN model_builds AS build ON build.id = job.build_id "
+                    "JOIN caos_state AS state ON state.id = true "
+                    "WHERE job.kind IN ('calculate', 'export') "
+                    "AND job.state IN ('queued', 'claimed') "
+                    "ORDER BY job.created_at, job.build_id, job.kind"
+                )
+                return list(cursor.fetchall())
 
     def save_loan_universe_import(
         self,

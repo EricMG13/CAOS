@@ -283,6 +283,9 @@ class WorkflowRuntime:
     def close(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
+    def schedule(self, run_id: str, actor: str) -> Any:
+        return self.executor.submit(self._execute, run_id, actor)
+
     def start_run(self, case_id: str, actor: str, pathway: str, depth: Depth, focus_questions: list[str], research_brief: dict[str, Any] | None = None, upgraded_from_run_id: str | None = None) -> dict[str, Any]:
         source_set = current_source_set(self.store, case_id)
         plan = self.bundle.compile(pathway, depth, source_set["id"] if source_set else None, focus_questions, source_set["version"] if source_set else None)
