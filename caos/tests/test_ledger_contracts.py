@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -326,6 +328,85 @@ def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
     assert ledger_set.sources.source_set(historical_set["id"]) == historical_set
 
 
+def test_source_reads_hide_adapter_fields_and_private_bytes_are_explicit(
+    ledger_set: Any, tmp_path: Path
+) -> None:
+    case = _case(ledger_set)
+    content = b"Debt 100"
+    vault_path = tmp_path / "stored-source"
+    vault_path.write_bytes(content)
+    proposal = _source(case["id"], sha256=hashlib.sha256(content).hexdigest())
+    proposal.update(vault_path=str(vault_path), bytes=len(content))
+
+    ingested = ledger_set.sources.ingest(proposal, ACTOR)
+    public = ledger_set.sources.get_source(ingested["id"])
+
+    assert public is not None
+    assert "vault_path" not in public
+    assert "withdrawn_at" not in public
+    assert (
+        ledger_set.sources.read_source_bytes(ingested["id"], len(content) + 1)
+        == content
+    )
+
+    ledger_set.sources.withdraw(case["id"], ingested["id"], ACTOR)
+    withdrawn = ledger_set.sources.get_source(ingested["id"])
+    assert withdrawn is not None and withdrawn["withdrawn"] is True
+    assert "vault_path" not in withdrawn
+    assert "withdrawn_at" not in withdrawn
+
+
+def test_governed_writes_commit_state_and_audit_together(ledger_set: Any) -> None:
+    case = _case(ledger_set)
+    source = ledger_set.sources.ingest(_source(case["id"]), ACTOR)
+    note = ledger_set.publications.create_note(case["id"], ACTOR, "Watch leverage")
+    assumption = ledger_set.publications.create_assumption(
+        case["id"], ACTOR, "Debt is 100", [source["id"]], ["CP-1"]
+    )
+    universe = ledger_set.publications.save_rv_universe(
+        case["id"], ACTOR, {"instruments": []}
+    )
+    draft = ledger_set.publications.create_methodology_draft(
+        {"module_id": "CP-1", "before": 1, "after": 2}, ACTOR
+    )
+    validated = ledger_set.publications.validate_methodology_draft(
+        draft["id"], "reviewer"
+    )
+    confirmed = ledger_set.publications.confirm_methodology_draft(
+        draft["id"], "reviewer", "signed"
+    )
+
+    audit = ledger_set.publications.list_audit()
+    actions = [event["action"] for event in audit]
+    assert {
+        "source.ingested",
+        "note.created",
+        "assumption.created",
+        "rv.universe_versioned",
+        "methodology.draft_created",
+        "methodology.draft_validated",
+        "methodology.draft_confirmed",
+    }.issubset(actions)
+    source_event = next(
+        event for event in audit if event["action"] == "source.ingested"
+    )
+    assert source_event["case_id"] == case["id"]
+    assert source_event["source_id"] == source["id"]
+    assert source_event["sha256"] == source["sha256"]
+    assert ledger_set.publications.list_notes(case["id"]) == [note]
+    assert ledger_set.publications.list_assumptions(case["id"]) == [assumption]
+    assert ledger_set.publications.get_rv_universe(case["id"]) == universe
+    assert validated["status"] == "VALIDATED"
+    assert confirmed["status"] == "CONFIRMED_PENDING_SIGNED_AUTHORITY"
+
+    before_failure = copy.deepcopy(ledger_set.publications.list_audit())
+    with pytest.raises(ValueError, match="EVIDENCE_CASE_MISMATCH"):
+        ledger_set.publications.create_assumption(
+            case["id"], ACTOR, "Unsupported", ["source_missing"], ["CP-1"]
+        )
+    assert ledger_set.publications.list_audit() == before_failure
+
+
 def test_pinned_evidence_is_validated_in_one_catalog_read(ledger_set: Any) -> None:
     case = _case(ledger_set)
     first = ledger_set.sources.ingest(_source(case["id"]), ACTOR)
@@ -380,6 +461,108 @@ def test_run_and_nodes_are_created_as_one_pending_transition(
     assert run["node_ids"] == [run["nodes"][0]["id"]]
     assert ledger_set.runs.get_case(case["id"])["current_execution_id"] == run["id"]
     assert ledger_set.runs.pending_runs() == [(run["id"], ACTOR)]
+
+
+def test_duplicate_run_modules_and_collapsed_snapshot_cardinality_are_rejected(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    source_set = ledger_set.sources.ingest(_source(case["id"]), ACTOR)["source_set"]
+    duplicate_nodes = [
+        {"module_id": "CP-1", "dependencies": [], "stage": 1},
+        {"module_id": "CP-1", "dependencies": [], "stage": 2},
+    ]
+    before_case = ledger_set.runs.get_case(case["id"])
+    before_audit = ledger_set.publications.list_audit()
+
+    with pytest.raises(ValueError, match="^DUPLICATE_RUN_MODULE$"):
+        ledger_set.runs.create_run_with_nodes(
+            case["id"],
+            ACTOR,
+            {"pathway": "EARNINGS_UPDATE", "source_set_id": source_set["id"]},
+            duplicate_nodes,
+        )
+
+    assert ledger_set.runs.list_runs(case["id"]) == []
+    assert ledger_set.runs.pending_runs() == []
+    assert ledger_set.runs.get_case(case["id"]) == before_case
+    assert ledger_set.publications.list_audit() == before_audit
+
+    run = ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "EARNINGS_UPDATE", "source_set_id": source_set["id"]},
+        [
+            {"module_id": "CP-1", "dependencies": [], "stage": 1},
+            {"module_id": "CP-2", "dependencies": ["CP-1"], "stage": 2},
+        ],
+    )
+    token = ledger_set.runs.claim(run["id"], "worker")
+    assert token is not None
+    artifact_refs = []
+    for node in run["nodes"]:
+        payload = {"module_id": node["module_id"]}
+        artifact = ledger_set.runs.complete_node(
+            run["id"],
+            token,
+            node["id"],
+            {
+                "case_id": case["id"],
+                "run_id": run["id"],
+                "module_id": node["module_id"],
+                "input_fingerprint": f"cardinality-{node['module_id']}",
+                "payload": payload,
+                "digest": digest(payload),
+                "markdown": f"# {node['module_id']}\n",
+                "created_by": ACTOR,
+                "created_at": "2026-08-24T00:00:00+00:00",
+            },
+            research=None,
+            event_data={"node_id": node["id"], "module_id": node["module_id"]},
+        )
+        artifact_refs.append(
+            {
+                "id": artifact["id"],
+                "module_id": artifact["module_id"],
+                "digest": artifact["digest"],
+            }
+        )
+    ledger_set.runs.finalize_success(run["id"], token, None, {"run_id": run["id"]})
+
+    for invalid_refs in ([artifact_refs[0]], [artifact_refs[0], artifact_refs[0]]):
+        invalid_payload = {
+            "case_id": case["id"],
+            "run_id": run["id"],
+            "source_set_id": source_set["id"],
+            "source_set_version": source_set["version"],
+            "artifacts": invalid_refs,
+            "accepted_at": "2026-08-24T00:00:00+00:00",
+        }
+        with pytest.raises(ValueError, match="RUN_NOT_READY"):
+            ledger_set.runs.accept_snapshot(
+                case["id"],
+                run["id"],
+                ACTOR,
+                {**invalid_payload, "digest": digest(invalid_payload)},
+            )
+        assert ledger_set.runs.get_case(case["id"])["accepted_snapshot_id"] is None
+        assert ledger_set.runs.get_run(run["id"])["accepted_snapshot_id"] is None
+
+    valid_payload = {
+        "case_id": case["id"],
+        "run_id": run["id"],
+        "source_set_id": source_set["id"],
+        "source_set_version": source_set["version"],
+        "artifacts": artifact_refs,
+        "accepted_at": "2026-08-24T00:00:00+00:00",
+    }
+    accepted = ledger_set.runs.accept_snapshot(
+        case["id"],
+        run["id"],
+        ACTOR,
+        {**valid_payload, "digest": digest(valid_payload)},
+    )
+    assert accepted["artifacts"] == artifact_refs
 
 
 def test_run_claim_has_one_winner(ledger_set: Any) -> None:
@@ -552,6 +735,58 @@ def test_node_completion_copy_failure_is_atomic_and_retryable(ledger_set: Any) -
     assert completed_run["nodes"][0]["artifact_id"] == completed["id"]
     assert completed_run["research"] == {"phase": "complete"}
     assert ledger_set.runs.events_after(run["id"])[-1]["event"] == "node.succeeded"
+
+
+def test_finalization_copy_failure_is_atomic_and_retryable(ledger_set: Any) -> None:
+    class CopyFailure:
+        def __deepcopy__(self, memo: dict[int, Any]) -> None:
+            raise RuntimeError("forced finalization copy failure")
+
+    _, run = _queued_run(ledger_set)
+    node = run["nodes"][0]
+    token = ledger_set.runs.claim(run["id"], "worker")
+    assert token is not None
+    artifact_payload = {"debt": 100}
+    ledger_set.runs.complete_node(
+        run["id"],
+        token,
+        node["id"],
+        {
+            "case_id": run["case_id"],
+            "run_id": run["id"],
+            "module_id": node["module_id"],
+            "created_by": ACTOR,
+            "payload": artifact_payload,
+            "markdown": "# CP-1\n\nDebt: 100\n",
+            "digest": digest(artifact_payload),
+            "input_fingerprint": "finalization-copy-failure",
+            "created_at": "2026-08-24T00:00:00+00:00",
+        },
+        research=None,
+        event_data={"node_id": node["id"], "module_id": node["module_id"]},
+    )
+    before_run = ledger_set.runs.get_run(run["id"])
+    before_events = ledger_set.runs.events_after(run["id"])
+
+    with pytest.raises(RuntimeError, match="forced finalization copy failure"):
+        ledger_set.runs.finalize_success(
+            run["id"],
+            token,
+            {"value": CopyFailure()},
+            {"run_id": run["id"]},
+        )
+
+    assert ledger_set.runs.get_run(run["id"]) == before_run
+    assert ledger_set.runs.events_after(run["id"]) == before_events
+    assert ledger_set.runs.is_current(run["id"], token) is True
+
+    ledger_set.runs.finalize_success(
+        run["id"], token, {"phase": "complete"}, {"run_id": run["id"]}
+    )
+    completed = ledger_set.runs.get_run(run["id"])
+    assert completed["status"] == "succeeded"
+    assert completed["research"] == {"phase": "complete"}
+    assert ledger_set.runs.events_after(run["id"])[-1]["event"] == "run.succeeded"
 
 
 def test_snapshot_acceptance_updates_case_and_run_together(

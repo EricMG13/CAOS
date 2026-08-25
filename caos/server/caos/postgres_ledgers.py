@@ -14,6 +14,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from .contracts import clean_json, digest
+from .ledgers import _validate_run_nodes
 from .migrations import apply_migrations
 from .store import (
     MAX_ACTIVE_JOBS,
@@ -33,7 +34,11 @@ def _new_id(prefix: str) -> str:
 
 def _public_source(source: Record) -> Record:
     return copy.deepcopy(
-        {key: value for key, value in source.items() if key != "vault_path"}
+        {
+            key: value
+            for key, value in source.items()
+            if key not in {"vault_path", "withdrawn_at"}
+        }
     )
 
 
@@ -340,6 +345,19 @@ class _PostgresSourceCatalog(_Adapter):
                 cursor.execute("SELECT record FROM sources WHERE id=%s", (source_id,))
                 row = cursor.fetchone()
                 return _public_source(row[0]) if row else None
+
+    def read_source_bytes(self, source_id: str, limit: int) -> bytes:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT vault_path FROM sources WHERE id=%s", (source_id,)
+                )
+                row = cursor.fetchone()
+        path = Path(row[0]) if row and isinstance(row[0], str) else None
+        if path is None or not path.is_file():
+            raise FileNotFoundError("SOURCE_BYTES_UNAVAILABLE")
+        with path.open("rb") as stored:
+            return stored.read(limit)
 
     def current_source_set(self, case_id: str) -> Record | None:
         connection = self._owner._transaction.get()
@@ -777,8 +795,11 @@ class _PostgresRunLedger(_Adapter):
         plan: Record,
         nodes: list[Record],
         upgraded_from_run_id: str | None = None,
+        initial: Record | None = None,
     ) -> Record:
-        created_at = now_iso()
+        _validate_run_nodes(nodes)
+        initial = copy.deepcopy(initial or {})
+        created_at = initial.pop("created_at", now_iso())
         run_id = _new_id("run")
         node_records = [
             {
@@ -807,6 +828,7 @@ class _PostgresRunLedger(_Adapter):
             "accepted_snapshot_id": None,
             "upgraded_from_run_id": upgraded_from_run_id,
             "error": None,
+            **initial,
         }
         with self._owner._connect() as connection:
             with connection.cursor() as cursor:
@@ -820,8 +842,8 @@ class _PostgresRunLedger(_Adapter):
                 cursor.execute(
                     "INSERT INTO runs(id, case_id, status, plan, accepted_snapshot_id, "
                     "created_by, created_at, error, current_node_id, upgraded_from_run_id, "
-                    "research, record) VALUES (%s, %s, %s, %s, NULL, %s, %s, NULL, "
-                    "NULL, %s, NULL, %s)",
+                    "research, record) VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, "
+                    "NULL, %s, %s, %s)",
                     (
                         run_id,
                         case_id,
@@ -829,7 +851,9 @@ class _PostgresRunLedger(_Adapter):
                         Jsonb(run["plan"]),
                         actor,
                         created_at,
+                        Jsonb(run.get("error")),
                         upgraded_from_run_id,
+                        Jsonb(run.get("research")),
                         Jsonb(run),
                     ),
                 )
@@ -1107,6 +1131,11 @@ class _PostgresRunLedger(_Adapter):
                 )
                 run.update(status="queued", error=None, research=research)
                 self._save_run(cursor, run)
+                cursor.execute(
+                    "UPDATE jobs SET state='queued', worker_id=NULL, attempt_token=NULL, "
+                    "lease_until=NULL, budget_reserved=0 WHERE run_id=%s AND node_id IS NULL",
+                    (run_id,),
+                )
                 self._audit(
                     cursor,
                     "research.plan_approved",
@@ -1188,11 +1217,23 @@ class _PostgresRunLedger(_Adapter):
                 candidate = copy.deepcopy(
                     completed_row[0] if completed_row else proposal
                 )
-                if completed_row is None:
+                replacing_invalid = bool(
+                    completed_row is not None
+                    and artifact_validator is not None
+                    and not artifact_validator(candidate)
+                )
+                if replacing_invalid:
+                    candidate = copy.deepcopy(proposal)
+                if completed_row is None or replacing_invalid:
                     candidate["id"] = _new_id("art")
                 if artifact_validator is not None and not artifact_validator(candidate):
                     raise ValueError("ARTIFACT_INVALID")
-                if completed_row is None:
+                if replacing_invalid:
+                    cursor.execute(
+                        "DELETE FROM artifacts WHERE id=%s",
+                        (completed_row[0]["id"],),
+                    )
+                if completed_row is None or replacing_invalid:
                     cursor.execute(
                         "INSERT INTO artifacts(id, run_id, module_id, digest, payload, "
                         "markdown, input_fingerprint, created_at, record) VALUES "
@@ -1237,16 +1278,15 @@ class _PostgresRunLedger(_Adapter):
     ) -> None:
         stored_research = copy.deepcopy(research) if research is not None else None
         event_payload = copy.deepcopy(event_data)
-        _remaining_finalization_seconds(deadline)
         with self._owner._connect() as connection:
             with connection.cursor() as cursor:
+                self._assert_job(cursor, run_id, attempt_token)
                 remaining = _remaining_finalization_seconds(deadline)
                 if remaining is not None:
                     cursor.execute(
                         "SELECT set_config('statement_timeout', %s, true)",
                         (f"{max(1, int(remaining * 1000 + 0.999))}ms",),
                     )
-                self._assert_job(cursor, run_id, attempt_token)
                 cursor.execute(
                     "SELECT record FROM runs WHERE id=%s FOR UPDATE", (run_id,)
                 )
@@ -1330,7 +1370,6 @@ class _PostgresRunLedger(_Adapter):
                     or source_set.get("case_id") != case_id
                     or source_set_id != run.get("plan", {}).get("source_set_id")
                     or proposal.get("source_set_version") != source_set.get("version")
-                    or case_row[1] != source_set_id
                 ):
                     raise ValueError("SOURCE_SET_CHANGED")
                 artifact_refs = proposal.get("artifacts")
@@ -1341,11 +1380,16 @@ class _PostgresRunLedger(_Adapter):
                     (run_id,),
                 )
                 nodes = [row[0] for row in cursor.fetchall()]
-                expected_ids = {node.get("artifact_id") for node in nodes}
+                expected_ids = [node.get("artifact_id") for node in nodes]
+                reference_ids = [
+                    item.get("id") if isinstance(item, dict) else None
+                    for item in artifact_refs
+                ]
                 if (
                     len(artifact_refs) != len(expected_ids)
                     or any(not isinstance(item, dict) for item in artifact_refs)
-                    or {item.get("id") for item in artifact_refs} != expected_ids
+                    or len(set(reference_ids)) != len(reference_ids)
+                    or set(reference_ids) != set(expected_ids)
                 ):
                     raise ValueError("RUN_NOT_READY")
                 artifact_ids = [item.get("id") for item in artifact_refs]
@@ -2064,7 +2108,6 @@ class _PostgresPublicationLedger(_Adapter):
                 proposal.update(
                     id=_new_id("rv"),
                     case_id=case_id,
-                    author=actor,
                     version=cursor.fetchone()[0] + 1,
                     created_at=now_iso(),
                 )

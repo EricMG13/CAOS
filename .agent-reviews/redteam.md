@@ -4449,3 +4449,43 @@ found by independent Task 3 review.
 
 Decision: accept the Task 3 corrections for re-review. The corrected focused
 gate passes 68/68 and the full real-PostgreSQL server suite passes 434/434.
+
+## 2026-08-25 — Normalized ledger production-caller cutover gate
+
+Decision under review: replace every production mutable-store caller with one
+of the four narrow ledger ports, while preserving the existing HTTP, workflow,
+publication, model, vault, and worker contracts.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-217 | Composition reviewer | A nominal cutover could keep a second production authority through `app.state.store`, a compatibility proxy, or a global memory store, making diagnostics and tests pass against a different state from the application. | Critical | Resolved and verified | `create_app` constructs exactly one `MemoryLedgerSet` or `PostgresLedgerSet`, binds only its four narrow ports, and exposes only `app.state.ledgers` as the storage diagnostic seam. Production scans find no `app.state.store`, concrete store dependency, compatibility proxy, or direct mutable bucket outside the adapter files. |
+| RT-2026-08-25-218 | API-contract reviewer | Renaming injected source, run, and model bindings can shadow route functions and silently redirect later closures to the handler itself, despite every individual function type-checking. | Critical | Resolved and verified | Colliding handlers are explicitly named `case_sources`, `case_runs`, and `case_models`; the captured bindings remain the narrow ports. The 24-response-contract module and both complete server-suite modes pass with unchanged response models and stable errors. |
+| RT-2026-08-25-219 | Research-resume reviewer | Approving a paused research plan can update the run but leave its coordinator job terminal or claimed, so the worker never sees the approved run. | Critical | Resolved and verified | Both adapters atomically reset the coordinator job to queued with cleared worker/token/lease/budget state when approval succeeds. Memory and real-PostgreSQL planning/runtime regressions prove the approved run becomes claimable exactly once. |
+| RT-2026-08-25-220 | Artifact-integrity reviewer | A corrupt artifact with the requested fingerprint can be reused forever or block retry through uniqueness, letting a succeeded node point at invalid evidence. | Critical | Resolved and verified | `complete_node` validates a fingerprint match before reuse; an invalid match is transactionally replaced with a new identity only after the proposed artifact passes validation. Cross-adapter regressions prove retryability and unchanged state on failed copy/validation. |
+| RT-2026-08-25-221 | Fencing reviewer | An already-expired finalization allowance can raise a timeout before checking the attempt token and therefore mask a stale worker as an ordinary timeout. | Critical | Resolved and verified | PostgreSQL finalization asserts the current attempt first, then applies the remaining allowance and transaction-local statement timeout. The memory/PostgreSQL regression proves an expired stale attempt raises `JobFencedError`; the full real-database suite passes 398/398. |
+| RT-2026-08-25-222 | Lineage reviewer | Snapshot acceptance can compare a completed run only with the latest source set, rejecting a valid pinned historical set after later evidence arrives. | High | Resolved and verified | Acceptance resolves and validates the run's pinned immutable source-set identity rather than substituting current case state. Historical-set, changed-set, missing-set, cross-case, artifact-digest, and acceptance-pointer tests pass through the ledger seam. |
+| RT-2026-08-25-223 | Confidentiality reviewer | Replacing response-model filtering with raw ledger dictionaries can leak internal vault paths or withdrawal timestamps in source routes and nested payloads. | Critical | Resolved and verified | Both source adapters return the same public projection with `vault_path` and `withdrawn_at` removed, while pinned evidence reads remain adapter-internal. Source-ingestion and HTTP response-contract suites prove the public shape; the vault path remains available only inside the adapter transition that needs it. |
+| RT-2026-08-25-224 | Coverage reviewer | Deleting tests that mutate legacy buckets can erase behavior coverage instead of replacing the obsolete setup seam. | High | Resolved and verified | HTTP, CP-DR, source, model, RV, and worker scenarios now seed through ledger APIs or explicit test-only doubles. Removed tests are limited to concrete `persist()`/bucket/claim implementation proofs and map to shared memory/PostgreSQL ledger contracts for atomic source withdrawal, publication versions and audit, node/finalization rollback, pending reads, claims, retries, takeover, and fencing. The final no-DSN and live-DSN suites pass 363/363 (35 environment skips) and 398/398 respectively. |
+
+Decision: accept the Task 4 cutover for independent review. The storage seam is
+the four-port ledger set only; legacy `store.py` remains inert compatibility
+code and is not a production authority. Task 5 may remove that dead legacy
+surface after its own caller and migration proof, without adding dual reads or
+fallbacks here.
+
+## 2026-08-25 — Normalized ledger Task 4 review correction
+
+Correction under review: close the public-source, route-conflict, and snapshot
+cardinality gaps found by independent review without reopening a raw adapter
+record or mutable bucket seam.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-225 | Source-boundary reviewer | `SourceCatalog.get_source()` can return `vault_path` and `withdrawn_at`; the strict source response then fails after withdrawal, while simply filtering in the route leaves every other caller exposed. | Critical | Resolved and verified | Both adapters now apply the shared public projection on every `get_source()` read. A separate narrow `read_source_bytes(source_id, limit)` capability lets the loan importer read bounded stored bytes without exposing a path. Shared memory/PostgreSQL contracts prove both private fields are absent before and after withdrawal and the explicit byte read still works; the authenticated withdrawn detail route returns 200 with the exact strict stored-source shape. |
+| RT-2026-08-25-226 | HTTP-error reviewer | Promoting a distinct note whose content already has an active promoted source raises the ledger's stable `ValueError` through FastAPI instead of returning a structured conflict. | High | Resolved and verified | The promotion route maps only `source content already active` to HTTP 409 with the existing source-conflict detail. `NOTE_NOT_FOUND` and author permission branches remain 404/403; same-note replay remains 200 with the original source identity. The route regression proves first success, replay, distinct conflict, and unchanged second note. |
+| RT-2026-08-25-227 | Lineage-cardinality reviewer | Memory accepts duplicate module nodes while PostgreSQL relies on a unique constraint, and set-based snapshot comparison can collapse multiple nodes onto one reference. | Critical | Resolved and verified | A shared pre-mutation validator rejects duplicate module IDs in both adapters with `DUPLICATE_RUN_MODULE`, before any run, node, job, case pointer, or audit write. Snapshot validation now compares reference count with the ordered node collection and independently rejects duplicate reference identities. The shared contract proves no partial authority after duplicate creation, rejects one-reference and duplicated-reference snapshots for a two-node run, and accepts the exact two-reference snapshot in memory and live PostgreSQL. |
+
+Decision: accept the corrections for independent re-review. The focused
+HTTP/loan/ledger gates pass 73 tests without PostgreSQL (25 explicit skips) and
+98 tests with PostgreSQL; the final complete suites pass 367 tests with 37
+environment skips and 404/404 against the live task database.

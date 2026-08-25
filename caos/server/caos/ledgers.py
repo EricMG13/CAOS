@@ -9,6 +9,12 @@ from typing import Any, Protocol
 Record = dict[str, Any]
 
 
+def _validate_run_nodes(nodes: list[Record]) -> None:
+    module_ids = [node.get("module_id") for node in nodes]
+    if len(module_ids) != len(set(module_ids)):
+        raise ValueError("DUPLICATE_RUN_MODULE")
+
+
 class SourceCatalog(Protocol):
     def ingest(self, source: Record, actor: str) -> Record: ...
 
@@ -19,6 +25,8 @@ class SourceCatalog(Protocol):
     def list_sources(self, case_id: str) -> list[Record]: ...
 
     def get_source(self, source_id: str) -> Record | None: ...
+
+    def read_source_bytes(self, source_id: str, limit: int) -> bytes: ...
 
     def current_source_set(self, case_id: str) -> Record | None: ...
 
@@ -78,6 +86,7 @@ class RunLedger(Protocol):
         plan: Record,
         nodes: list[Record],
         upgraded_from_run_id: str | None = None,
+        initial: Record | None = None,
     ) -> Record: ...
 
     def list_runs(self, case_id: str) -> list[Record]: ...

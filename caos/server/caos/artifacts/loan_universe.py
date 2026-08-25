@@ -15,6 +15,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
 
 from ..contracts import digest
+from ..ledgers import SourceCatalog
 
 
 TEMPLATE_VERSION = "cp3-sector-rv-v1"
@@ -160,11 +161,20 @@ def _validate_package(content: bytes, findings: _Findings) -> None:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             names = [name.lower() for name in archive.namelist()]
             if "[content_types].xml" not in names or "xl/workbook.xml" not in names:
-                findings.add("RV_PACKAGE_INVALID", "XLSX package is missing required workbook parts.")
+                findings.add(
+                    "RV_PACKAGE_INVALID",
+                    "XLSX package is missing required workbook parts.",
+                )
                 return
             for name in names:
-                if any(name == prefix or name.startswith(prefix) for prefix in FORBIDDEN_PACKAGE_PATHS):
-                    findings.add("RV_PACKAGE_ACTIVE_CONTENT", f"Unsupported active package content: {name}")
+                if any(
+                    name == prefix or name.startswith(prefix)
+                    for prefix in FORBIDDEN_PACKAGE_PATHS
+                ):
+                    findings.add(
+                        "RV_PACKAGE_ACTIVE_CONTENT",
+                        f"Unsupported active package content: {name}",
+                    )
             for info in archive.infolist():
                 if not info.filename.lower().endswith(".rels"):
                     continue
@@ -173,12 +183,23 @@ def _validate_package(content: bytes, findings: _Findings) -> None:
                     relationship.attrib.get("TargetMode", "").casefold() == "external"
                     for relationship in relationships.iter()
                 ):
-                    findings.add("RV_PACKAGE_EXTERNAL_LINK", "External package relationships are not allowed.")
+                    findings.add(
+                        "RV_PACKAGE_EXTERNAL_LINK",
+                        "External package relationships are not allowed.",
+                    )
                     break
             content_types = archive.read("[Content_Types].xml")
             if b"macroEnabled" in content_types or b"vbaProject" in content_types:
-                findings.add("RV_PACKAGE_MACRO", "Macro-enabled workbooks are not allowed.")
-    except (ElementTree.ParseError, KeyError, OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+                findings.add(
+                    "RV_PACKAGE_MACRO", "Macro-enabled workbooks are not allowed."
+                )
+    except (
+        ElementTree.ParseError,
+        KeyError,
+        OSError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+    ):
         findings.add("RV_PACKAGE_INVALID", "XLSX package is malformed.")
 
 
@@ -186,7 +207,9 @@ def _header_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _text(value: Any, findings: _Findings, *, sheet: str, row: int, column: str) -> str | None:
+def _text(
+    value: Any, findings: _Findings, *, sheet: str, row: int, column: str
+) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -194,28 +217,64 @@ def _text(value: Any, findings: _Findings, *, sheet: str, row: int, column: str)
     elif isinstance(value, bool):
         normalized = "TRUE" if value else "FALSE"
     elif isinstance(value, (int, float)):
-        normalized = str(int(value)) if isinstance(value, int) or value.is_integer() else str(value)
+        normalized = (
+            str(int(value))
+            if isinstance(value, int) or value.is_integer()
+            else str(value)
+        )
     else:
         normalized = str(value).strip()
     if len(normalized) > MAX_CELL_TEXT:
-        findings.add("RV_CELL_TEXT_LIMIT", "Cell text exceeds the 32 KB limit.", sheet=sheet, row=row, column=column)
+        findings.add(
+            "RV_CELL_TEXT_LIMIT",
+            "Cell text exceeds the 32 KB limit.",
+            sheet=sheet,
+            row=row,
+            column=column,
+        )
         return None
     return None if normalized.upper() in MISSING_TEXT else normalized
 
 
-def _number(value: Any, findings: _Findings, *, sheet: str, row: int, column: str) -> float | None:
-    if value is None or (isinstance(value, str) and value.strip().upper() in MISSING_TEXT):
+def _number(
+    value: Any, findings: _Findings, *, sheet: str, row: int, column: str
+) -> float | None:
+    if value is None or (
+        isinstance(value, str) and value.strip().upper() in MISSING_TEXT
+    ):
         return None
     if isinstance(value, bool):
-        findings.add("RV_NUMBER_INVALID", "Boolean value is not a market number.", sheet=sheet, row=row, column=column)
+        findings.add(
+            "RV_NUMBER_INVALID",
+            "Boolean value is not a market number.",
+            sheet=sheet,
+            row=row,
+            column=column,
+        )
         return None
     try:
-        normalized = float(value.replace(",", "").strip()) if isinstance(value, str) else float(value)
+        normalized = (
+            float(value.replace(",", "").strip())
+            if isinstance(value, str)
+            else float(value)
+        )
     except (TypeError, ValueError, OverflowError):
-        findings.add("RV_NUMBER_INVALID", "Market value is not numeric.", sheet=sheet, row=row, column=column)
+        findings.add(
+            "RV_NUMBER_INVALID",
+            "Market value is not numeric.",
+            sheet=sheet,
+            row=row,
+            column=column,
+        )
         return None
     if not math.isfinite(normalized):
-        findings.add("RV_NUMBER_NON_FINITE", "Market value must be finite.", sheet=sheet, row=row, column=column)
+        findings.add(
+            "RV_NUMBER_NON_FINITE",
+            "Market value must be finite.",
+            sheet=sheet,
+            row=row,
+            column=column,
+        )
         return None
     return normalized
 
@@ -253,8 +312,12 @@ def _date_value(
             except ValueError:
                 continue
     if parsed is None:
-        if value is not None and not (isinstance(value, str) and value.strip().upper() in MISSING_TEXT):
-            findings.add(code, "Date value is invalid.", sheet=sheet, row=row, column=column)
+        if value is not None and not (
+            isinstance(value, str) and value.strip().upper() in MISSING_TEXT
+        ):
+            findings.add(
+                code, "Date value is invalid.", sheet=sheet, row=row, column=column
+            )
         return None
     return parsed.isoformat()
 
@@ -264,7 +327,9 @@ def _find_headers(sheet: Any) -> tuple[list[tuple[int, int]], bool]:
     partial = False
     max_row = min(sheet.max_row or 0, HEADER_SCAN_ROWS)
     max_column = min(sheet.max_column or 0, MAX_COLUMNS)
-    for cells in sheet.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_column):
+    for cells in sheet.iter_rows(
+        min_row=1, max_row=max_row, min_col=1, max_col=max_column
+    ):
         values = [_header_text(cell.value) for cell in cells]
         canonical = set(values).intersection(HEADERS)
         partial = partial or ("Borrower Name" in values and len(canonical) >= 5)
@@ -274,8 +339,15 @@ def _find_headers(sheet: Any) -> tuple[list[tuple[int, int]], bool]:
     return matches, partial
 
 
-def _workbook_date(sheet: Any, header_row: int, findings: _Findings, epoch: datetime) -> str | None:
-    for cells in sheet.iter_rows(min_row=1, max_row=min(header_row, 20), min_col=1, max_col=min(sheet.max_column or 1, 12)):
+def _workbook_date(
+    sheet: Any, header_row: int, findings: _Findings, epoch: datetime
+) -> str | None:
+    for cells in sheet.iter_rows(
+        min_row=1,
+        max_row=min(header_row, 20),
+        min_col=1,
+        max_col=min(sheet.max_column or 1, 12),
+    ):
         for cell in cells:
             if _header_text(cell.value) != "Date":
                 continue
@@ -297,7 +369,11 @@ def _workbook_date(sheet: Any, header_row: int, findings: _Findings, epoch: date
                 )
                 if parsed:
                     return parsed
-    findings.add("RV_WORKBOOK_DATE_MISSING", "Worksheet is missing the fixed Date field.", sheet=sheet.title)
+    findings.add(
+        "RV_WORKBOOK_DATE_MISSING",
+        "Worksheet is missing the fixed Date field.",
+        sheet=sheet.title,
+    )
     return None
 
 
@@ -320,37 +396,71 @@ def _normalize_row(
         if field in NUMERIC_FIELDS:
             row[field] = _number(cell.value, findings, **location)
         elif field == "maturity_date":
-            row[field] = _date_value(cell.value, findings, epoch=epoch, code="RV_MATURITY_INVALID", **location)
+            row[field] = _date_value(
+                cell.value,
+                findings,
+                epoch=epoch,
+                code="RV_MATURITY_INVALID",
+                **location,
+            )
         else:
             row[field] = _text(cell.value, findings, **location)
     for identifier in ("figi", "bloomberg_loan_id"):
         if row[identifier]:
             row[identifier] = row[identifier].upper()
     if not row["borrower_name"]:
-        findings.add("RV_BORROWER_MISSING", "Borrower Name is required.", sheet=sheet.title, row=row_number, column=get_column_letter(start_column + 1))
+        findings.add(
+            "RV_BORROWER_MISSING",
+            "Borrower Name is required.",
+            sheet=sheet.title,
+            row=row_number,
+            column=get_column_letter(start_column + 1),
+        )
     if not row["figi"] and not row["bloomberg_loan_id"]:
-        findings.add("RV_INSTRUMENT_ID_MISSING", "FIGI or Bloomberg loan ID is required.", sheet=sheet.title, row=row_number)
+        findings.add(
+            "RV_INSTRUMENT_ID_MISSING",
+            "FIGI or Bloomberg loan ID is required.",
+            sheet=sheet.title,
+            row=row_number,
+        )
         row["instrument_key"] = f"INVALID:{sheet.title}:{row_number}"
     else:
-        row["instrument_key"] = f"FIGI:{row['figi']}" if row["figi"] else f"BBG:{row['bloomberg_loan_id']}"
+        row["instrument_key"] = (
+            f"FIGI:{row['figi']}" if row["figi"] else f"BBG:{row['bloomberg_loan_id']}"
+        )
     return row
 
 
-def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -> dict[str, Any]:
+def parse_loan_workbook(
+    content: bytes, *, source_id: str, source_sha256: str
+) -> dict[str, Any]:
     findings = _Findings()
     _validate_package(content, findings)
     if findings.items:
         raise LoanWorkbookValidationError(findings.items)
     try:
-        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True, keep_links=False)
+        workbook = load_workbook(
+            io.BytesIO(content), read_only=True, data_only=True, keep_links=False
+        )
     except Exception as exc:
         raise LoanWorkbookValidationError(
-            [{"code": "RV_PACKAGE_INVALID", "detail": "XLSX workbook cannot be opened.", "sheet": None, "row": None, "column": None}]
+            [
+                {
+                    "code": "RV_PACKAGE_INVALID",
+                    "detail": "XLSX workbook cannot be opened.",
+                    "sheet": None,
+                    "row": None,
+                    "column": None,
+                }
+            ]
         ) from exc
     try:
         sheets = workbook.worksheets
         if len(sheets) > MAX_WORKSHEETS:
-            findings.add("RV_WORKSHEET_LIMIT", f"Workbook exceeds the {MAX_WORKSHEETS}-worksheet limit.")
+            findings.add(
+                "RV_WORKSHEET_LIMIT",
+                f"Workbook exceeds the {MAX_WORKSHEETS}-worksheet limit.",
+            )
         rows: list[dict[str, Any]] = []
         raw_row_count = 0
         workbook_dates: list[tuple[str, str]] = []
@@ -359,15 +469,27 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
             if sheet.sheet_state != "visible":
                 continue
             if (sheet.max_column or 0) > MAX_COLUMNS:
-                findings.add("RV_COLUMN_LIMIT", f"Worksheet exceeds the {MAX_COLUMNS}-column limit.", sheet=sheet.title)
+                findings.add(
+                    "RV_COLUMN_LIMIT",
+                    f"Worksheet exceeds the {MAX_COLUMNS}-column limit.",
+                    sheet=sheet.title,
+                )
                 continue
             matches, partial = _find_headers(sheet)
             if len(matches) > 1:
-                findings.add("RV_MULTIPLE_TABLES", "Worksheet contains more than one issuer table.", sheet=sheet.title)
+                findings.add(
+                    "RV_MULTIPLE_TABLES",
+                    "Worksheet contains more than one issuer table.",
+                    sheet=sheet.title,
+                )
                 continue
             if not matches:
                 if partial:
-                    findings.add("RV_TEMPLATE_PARTIAL", "Worksheet contains a partial or changed issuer-table header.", sheet=sheet.title)
+                    findings.add(
+                        "RV_TEMPLATE_PARTIAL",
+                        "Worksheet contains a partial or changed issuer-table header.",
+                        sheet=sheet.title,
+                    )
                 continue
             recognized_sheets += 1
             header_row, start_column = matches[0]
@@ -382,25 +504,48 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
                 max_col=start_column + len(HEADERS) - 1,
             )
             for row_number, cells in enumerate(instrument_rows, start=header_row + 1):
-                if all(cell.value is None or (isinstance(cell.value, str) and not cell.value.strip()) for cell in cells):
+                if all(
+                    cell.value is None
+                    or (isinstance(cell.value, str) and not cell.value.strip())
+                    for cell in cells
+                ):
                     if seen_data:
                         break
                     continue
                 seen_data = True
                 raw_row_count += 1
                 if raw_row_count > MAX_ROWS:
-                    findings.add("RV_ROW_LIMIT", f"Workbook exceeds the {MAX_ROWS}-instrument-row limit.", sheet=sheet.title, row=row_number)
+                    findings.add(
+                        "RV_ROW_LIMIT",
+                        f"Workbook exceeds the {MAX_ROWS}-instrument-row limit.",
+                        sheet=sheet.title,
+                        row=row_number,
+                    )
                     break
-                rows.append(_normalize_row(sheet, row_number, cells, findings, workbook.epoch, start_column))
+                rows.append(
+                    _normalize_row(
+                        sheet, row_number, cells, findings, workbook.epoch, start_column
+                    )
+                )
         if recognized_sheets == 0:
-            findings.add("RV_TEMPLATE_MISSING", "Workbook contains no recognized visible sector worksheet.")
+            findings.add(
+                "RV_TEMPLATE_MISSING",
+                "Workbook contains no recognized visible sector worksheet.",
+            )
         elif raw_row_count == 0:
-            findings.add("RV_ROWS_MISSING", "Recognized sector worksheets contain no instrument rows.")
+            findings.add(
+                "RV_ROWS_MISSING",
+                "Recognized sector worksheets contain no instrument rows.",
+            )
         if workbook_dates:
             expected_date = workbook_dates[0][1]
             for sheet_name, sheet_date in workbook_dates[1:]:
                 if sheet_date != expected_date:
-                    findings.add("RV_WORKBOOK_DATE_CONFLICT", f"Worksheet date {sheet_date} does not match {expected_date}.", sheet=sheet_name)
+                    findings.add(
+                        "RV_WORKBOOK_DATE_CONFLICT",
+                        f"Worksheet date {sheet_date} does not match {expected_date}.",
+                        sheet=sheet_name,
+                    )
         else:
             expected_date = None
 
@@ -412,9 +557,20 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
             bloomberg = row.get("bloomberg_loan_id")
             if figi and bloomberg:
                 if figi in figi_to_bloomberg and figi_to_bloomberg[figi] != bloomberg:
-                    findings.add("RV_ID_CONFLICT", "FIGI maps to multiple Bloomberg loan IDs.", **row["source_locators"][0])
-                if bloomberg in bloomberg_to_figi and bloomberg_to_figi[bloomberg] != figi:
-                    findings.add("RV_ID_CONFLICT", "Bloomberg loan ID maps to multiple FIGIs.", **row["source_locators"][0])
+                    findings.add(
+                        "RV_ID_CONFLICT",
+                        "FIGI maps to multiple Bloomberg loan IDs.",
+                        **row["source_locators"][0],
+                    )
+                if (
+                    bloomberg in bloomberg_to_figi
+                    and bloomberg_to_figi[bloomberg] != figi
+                ):
+                    findings.add(
+                        "RV_ID_CONFLICT",
+                        "Bloomberg loan ID maps to multiple FIGIs.",
+                        **row["source_locators"][0],
+                    )
                 figi_to_bloomberg[figi] = bloomberg
                 bloomberg_to_figi[bloomberg] = figi
 
@@ -431,22 +587,43 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
             key = row["instrument_key"]
             identity = (figi, bloomberg)
             if key in identities and identities[key] != identity:
-                findings.add("RV_ID_CONFLICT", "Instrument key has conflicting identifiers.", **row["source_locators"][0])
+                findings.add(
+                    "RV_ID_CONFLICT",
+                    "Instrument key has conflicting identifiers.",
+                    **row["source_locators"][0],
+                )
             identities[key] = identity
             existing = normalized.get(key)
             if existing is None:
                 normalized[key] = row
                 continue
-            comparable = {name: value for name, value in row.items() if name != "source_locators"}
-            existing_comparable = {name: value for name, value in existing.items() if name != "source_locators"}
+            comparable = {
+                name: value for name, value in row.items() if name != "source_locators"
+            }
+            existing_comparable = {
+                name: value
+                for name, value in existing.items()
+                if name != "source_locators"
+            }
             if comparable != existing_comparable:
-                findings.add("RV_DUPLICATE_CONFLICT", "Duplicate instrument rows contain different values.", **row["source_locators"][0])
+                findings.add(
+                    "RV_DUPLICATE_CONFLICT",
+                    "Duplicate instrument rows contain different values.",
+                    **row["source_locators"][0],
+                )
             else:
                 existing["source_locators"].extend(row["source_locators"])
 
         if findings.items:
             raise LoanWorkbookValidationError(findings.items)
-        ordered_rows = sorted(normalized.values(), key=lambda row: (row["sector"], row["borrower_name"] or "", row["instrument_key"]))
+        ordered_rows = sorted(
+            normalized.values(),
+            key=lambda row: (
+                row["sector"],
+                row["borrower_name"] or "",
+                row["instrument_key"],
+            ),
+        )
         canonical = {
             "source_id": source_id,
             "source_sha256": source_sha256,
@@ -464,21 +641,25 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
         workbook.close()
 
 
-def source_bytes(source: dict[str, Any]) -> bytes:
-    path = Path(str(source.get("vault_path", "")))
-    if not path.is_file():
-        raise FileNotFoundError("RV_SOURCE_BYTES_UNAVAILABLE")
+def source_bytes(catalog: SourceCatalog, source: dict[str, Any]) -> bytes:
     expected_size = source.get("bytes")
-    if not isinstance(expected_size, int) or isinstance(expected_size, bool) or expected_size < 0:
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+    ):
         raise LoanUniverseSourceError(
             "RV_SOURCE_INTEGRITY_MISMATCH",
             "Stored workbook bytes do not match the immutable source digest.",
         )
-    with path.open("rb") as stored:
-        content = stored.read(expected_size + 1)
+    content = catalog.read_source_bytes(source["id"], expected_size + 1)
     expected = source.get("sha256")
     actual = hashlib.sha256(content).hexdigest()
-    if len(content) != expected_size or not isinstance(expected, str) or actual != expected:
+    if (
+        len(content) != expected_size
+        or not isinstance(expected, str)
+        or actual != expected
+    ):
         raise LoanUniverseSourceError(
             "RV_SOURCE_INTEGRITY_MISMATCH",
             "Stored workbook bytes do not match the immutable source digest.",
@@ -487,30 +668,41 @@ def source_bytes(source: dict[str, Any]) -> bytes:
 
 
 def import_loan_source(
-    store: Any,
+    catalog: SourceCatalog,
     case_id: str,
     source_id: str,
     actor: str,
 ) -> tuple[dict[str, Any], bool]:
-    def save(record: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+    def save(
+        record: dict[str, Any], rows: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], bool]:
         try:
-            return store.save_loan_universe_import(record, rows, actor)
+            return catalog.save_loan_universe_import(record, rows, actor)
         except ValueError as exc:
             if str(exc) == "RV_SOURCE_NOT_ACTIVE":
-                raise LoanUniverseSourceError("RV_SOURCE_WITHDRAWN", "Source was withdrawn before import completed.") from exc
+                raise LoanUniverseSourceError(
+                    "RV_SOURCE_WITHDRAWN",
+                    "Source was withdrawn before import completed.",
+                ) from exc
             raise
 
-    with store.lock:
-        stored_source = store.sources.get(source_id)
-        if not stored_source or stored_source.get("case_id") != case_id:
-            raise LoanUniverseSourceError("RV_SOURCE_NOT_FOUND", "Source was not found in this case.")
-        source = copy.copy(stored_source)
+    stored_source = catalog.get_source(source_id)
+    if not stored_source or stored_source.get("case_id") != case_id:
+        raise LoanUniverseSourceError(
+            "RV_SOURCE_NOT_FOUND", "Source was not found in this case."
+        )
+    source = copy.copy(stored_source)
     if source.get("withdrawn"):
-        raise LoanUniverseSourceError("RV_SOURCE_WITHDRAWN", "Withdrawn sources cannot become active loan universes.")
+        raise LoanUniverseSourceError(
+            "RV_SOURCE_WITHDRAWN",
+            "Withdrawn sources cannot become active loan universes.",
+        )
     if Path(str(source.get("filename", ""))).suffix.lower() != ".xlsx":
-        raise LoanUniverseSourceError("RV_SOURCE_TYPE_INVALID", "Loan universe source must be an XLSX workbook.")
+        raise LoanUniverseSourceError(
+            "RV_SOURCE_TYPE_INVALID", "Loan universe source must be an XLSX workbook."
+        )
 
-    existing = store.find_loan_universe_import(
+    existing = catalog.find_loan_universe_import(
         case_id,
         source["sha256"],
         TEMPLATE_VERSION,
@@ -523,15 +715,16 @@ def import_loan_source(
 
     try:
         parsed = parse_loan_workbook(
-            source_bytes(source),
+            source_bytes(catalog, source),
             source_id=source_id,
             source_sha256=source["sha256"],
         )
     except FileNotFoundError as exc:
-        raise LoanUniverseSourceError("RV_SOURCE_BYTES_UNAVAILABLE", "Stored workbook bytes are unavailable.") from exc
+        raise LoanUniverseSourceError(
+            "RV_SOURCE_BYTES_UNAVAILABLE", "Stored workbook bytes are unavailable."
+        ) from exc
     except LoanWorkbookValidationError as exc:
         rejected = {
-            "id": store._id("rvloan"),
             "case_id": case_id,
             "source_id": source_id,
             "source_filename": source["filename"],
@@ -548,7 +741,6 @@ def import_loan_source(
         raise LoanUniverseImportRejected(saved) from exc
 
     active = {
-        "id": store._id("rvloan"),
         "case_id": case_id,
         "source_id": source_id,
         "source_filename": source["filename"],

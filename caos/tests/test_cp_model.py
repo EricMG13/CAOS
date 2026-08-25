@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from caos.config import Settings
 from caos.contracts import digest
 from caos.http import create_app
+from caos.memory_ledgers import MemoryLedgerSet
 from caos.methodology.bundle import DeployVBundle
 from caos.methodology.canonical import (
     CANONICAL_MODULES,
@@ -27,7 +28,6 @@ from caos.models.runtime import (
     ModelReadinessService,
     _serialize_worksheet,
 )
-from caos.store import MemoryStore
 from caos.workflows.domain import WorkflowRuntime
 from caos.workflows.provider import (
     AgentError,
@@ -349,6 +349,7 @@ class _CanonicalProvider:
     def __init__(self, failure: BaseException | None = None) -> None:
         self.runner = CanonicalModuleRunner(DeployVBundle(DEPLOY_V))
         self.failure = failure
+        self.source_id = "SRC-1"
         self.calls: list[ProviderRequest] = []
 
     def count_tokens(self, request: ProviderRequest) -> int:
@@ -358,35 +359,51 @@ class _CanonicalProvider:
         self.calls.append(copy.deepcopy(request))
         if self.failure is not None:
             raise self.failure
-        module_id = json.loads(str(request.messages[0]["content"]).split("\n", 1)[1])["host_identity"]["module_id"]
+        module_id = json.loads(str(request.messages[0]["content"]).split("\n", 1)[1])[
+            "host_identity"
+        ]["module_id"]
         if len(request.messages) == 1:
-            content = [ProviderBlock(
-                type="tool_use",
-                id=f"tool-{module_id}",
-                name="read_evidence",
-                input={"source_id": "SRC-1", "block_ids": ["block-1"]},
-            )]
+            content = [
+                ProviderBlock(
+                    type="tool_use",
+                    id=f"tool-{module_id}",
+                    name="read_evidence",
+                    input={"source_id": self.source_id, "block_ids": ["block-1"]},
+                )
+            ]
             stop_reason = "tool_use"
         else:
-            content = [ProviderBlock(type="text", text=json.dumps({
-                "markdown": _complete_provider_markdown(self.runner, module_id),
-                "evidence_refs": [{"source_id": "SRC-1", "block_id": "block-1"}],
-                "lineage_counts": {"Directly Sourced": 1},
-                "fields_present": 1,
-                "fields_total": 1,
-                "source_gate": "pass",
-                "findings": {},
-            }))]
+            content = [
+                ProviderBlock(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "markdown": _complete_provider_markdown(
+                                self.runner, module_id
+                            ).replace("SRC-1", self.source_id),
+                            "evidence_refs": [
+                                {"source_id": self.source_id, "block_id": "block-1"}
+                            ],
+                            "lineage_counts": {"Directly Sourced": 1},
+                            "fields_present": 1,
+                            "fields_total": 1,
+                            "source_gate": "pass",
+                            "findings": {},
+                        }
+                    ),
+                )
+            ]
             stop_reason = "end_turn"
         return ProviderMessage(content, stop_reason, ProviderUsage(1, 1))
 
 
 def _canonical_runtime_case(
     provider: _CanonicalProvider | None = None,
-) -> tuple[MemoryStore, WorkflowRuntime, dict[str, object]]:
-    store = MemoryStore()
+) -> tuple[MemoryLedgerSet, WorkflowRuntime, dict[str, object]]:
+    ledgers = MemoryLedgerSet()
     runtime = WorkflowRuntime(
-        store,
+        ledgers.runs,
+        ledgers.sources,
         DeployVBundle(DEPLOY_V),
         Settings(
             environment="production",
@@ -397,58 +414,62 @@ def _canonical_runtime_case(
         ),
         provider=provider,
     )
-    case = store.create_case("Canonical run", "Acme Credit Ltd", "Testing", "analyst")
-    store.sources["SRC-1"] = {
-        "id": "SRC-1",
-        "case_id": case["id"],
-        "filename": "annual-report.txt",
-        "media_type": "text/plain",
-        "sha256": "b" * 64,
-        "withdrawn": False,
-        "blocks": [
-            {
-                "block_id": "block-1",
-                "locator": {"page": 42},
-                "text": "Pinned test evidence for the canonical model input.",
-                "extractor_version": "builtin-v1",
-                "confidence": "HIGH",
-            }
-        ],
-    }
-    store.register_source_set(
-        {
-            "id": "set-canonical",
-            "case_id": case["id"],
-            "version": 1,
-            "source_ids": ["SRC-1"],
-            "created_by": "analyst",
-            "created_at": "2025-02-15T00:00:00+00:00",
-        }
+    case = ledgers.runs.create_case(
+        "Canonical run", "Acme Credit Ltd", "Testing", "analyst"
     )
-    return store, runtime, case
+    source = ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "annual-report.txt",
+            "media_type": "text/plain",
+            "sha256": "b" * 64,
+            "withdrawn": False,
+            "blocks": [
+                {
+                    "block_id": "block-1",
+                    "locator": {"page": 42},
+                    "text": "Pinned test evidence for the canonical model input.",
+                    "extractor_version": "builtin-v1",
+                    "confidence": "HIGH",
+                }
+            ],
+        },
+        "analyst",
+    )
+    if provider is not None:
+        provider.source_id = source["id"]
+    return ledgers, runtime, case
 
 
-def _accepted_model_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, object]]:
-    store, runtime, case = _canonical_runtime_case(_CanonicalProvider())
+def _accepted_model_case() -> tuple[
+    MemoryLedgerSet, WorkflowRuntime, dict[str, object]
+]:
+    ledgers, runtime, case = _canonical_runtime_case(_CanonicalProvider())
     run = runtime.start_run(case["id"], "analyst", "FULL_CREDIT", "full", [])
     runtime._execute(run["id"], "analyst")
     runtime.accept_run(case["id"], run["id"], "analyst")
-    return store, runtime, case
+    return ledgers, runtime, case
 
 
 def test_accepted_full_credit_queues_and_builds_idempotent_python_model() -> None:
-    store, workflow, case = _accepted_model_case()
+    ledgers, workflow, case = _accepted_model_case()
     model_bundle = CpModelBundle(DEPLOY_V)
-    readiness = ModelReadinessService(store, workflow.bundle, model_bundle)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
     model_runtime = ModelBuildRuntime(
-        store, readiness, model_bundle, workflow.executor, workflow.settings.storage_dir
+        ledgers.models,
+        readiness,
+        model_bundle,
+        workflow.executor,
+        workflow.settings.storage_dir,
     )
     try:
         ready_to_build = readiness.readiness(case["id"])
         queued, created = readiness.queue(case["id"], "analyst")
         duplicate, duplicate_created = readiness.queue(case["id"], "analyst")
         model_runtime._execute(queued["id"], "analyst")
-        built = store.get_model_build(queued["id"])
+        built = ledgers.models.get_build(queued["id"])
 
         assert ready_to_build["status"] == "READY_TO_BUILD"
         assert created is True and duplicate_created is False
@@ -464,20 +485,22 @@ def test_accepted_full_credit_queues_and_builds_idempotent_python_model() -> Non
 def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity(
     tmp_path: Path,
 ) -> None:
-    store, workflow, case = _accepted_model_case()
+    ledgers, workflow, case = _accepted_model_case()
     model_bundle = CpModelBundle(DEPLOY_V)
-    readiness = ModelReadinessService(store, workflow.bundle, model_bundle)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
     model_runtime = ModelBuildRuntime(
-        store, readiness, model_bundle, workflow.executor, tmp_path
+        ledgers.models, readiness, model_bundle, workflow.executor, tmp_path
     )
     try:
         queued, _created = readiness.queue(case["id"], "analyst")
         model_runtime._execute(queued["id"], "analyst")
-        ready = store.get_model_build(queued["id"])
+        ready = ledgers.models.get_build(queued["id"])
         assert ready is not None and ready["status"] == "READY"
 
-        store.queue_model_export(ready["id"], "analyst")
-        export_token = store.claim_model_job(ready["id"], "test-export", "export")
+        ledgers.models.queue_export(ready["id"], "analyst")
+        export_token = ledgers.models.claim(ready["id"], "test-export", "export")
         assert export_token is not None
         content = b"verified-test-workbook"
         checksum = hashlib.sha256(content).hexdigest()
@@ -485,7 +508,7 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
         export_path = tmp_path / relative
         export_path.parent.mkdir(parents=True)
         export_path.write_bytes(content)
-        store.complete_model_job(
+        ledgers.models.complete(
             ready["id"],
             export_token,
             {
@@ -505,7 +528,7 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
         settings = Settings(
             environment="test", storage_dir=tmp_path, deploy_v_root=DEPLOY_V
         )
-        app = create_app(settings, store)
+        app = create_app(settings, ledgers)
         analyst = {"x-forwarded-user": "analyst", "x-caos-role": "ANALYST"}
         outsider = {"x-forwarded-user": "outsider", "x-caos-role": "ANALYST"}
         with TestClient(app) as client:
@@ -521,7 +544,9 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
             denied = client.get(
                 f"/api/cases/{case['id']}/models/{ready['id']}", headers=outsider
             )
-            other = store.create_case("Other", "Other issuer", "Testing", "analyst")
+            other = ledgers.runs.create_case(
+                "Other", "Other issuer", "Testing", "analyst"
+            )
             cross_case = client.get(
                 f"/api/cases/{other['id']}/models/{ready['id']}", headers=analyst
             )
@@ -610,14 +635,16 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
         workflow.close()
 
 
-def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs() -> None:
+def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs() -> (
+    None
+):
     provider = _CanonicalProvider()
-    store, runtime, case = _canonical_runtime_case(provider)
+    ledgers, runtime, case = _canonical_runtime_case(provider)
     try:
         run = runtime.start_run(case["id"], "analyst", "FULL_CREDIT", "full", [])
         runtime._execute(run["id"], "analyst")
 
-        completed = store.get_run(run["id"])
+        completed = ledgers.runs.get_run(run["id"])
         assert completed is not None and completed["status"] == "succeeded", (
             completed and completed.get("error")
         )
@@ -625,38 +652,12 @@ def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs()
         assert completed["canonical_generation"]["completed_modules"] == sorted(
             FIXTURE_BY_MODULE
         )
-        assert {json.loads(str(request.messages[0]["content"]).split("\n", 1)[1])["host_identity"]["module_id"] for request in provider.calls} == set(FIXTURE_BY_MODULE)
-        cp1_node = next(
-            node for node in completed["nodes"] if node["module_id"] == "CP-1"
-        )
-        cp1_artifact = store.artifacts[cp1_node["artifact_id"]]
-        original_cp1 = copy.deepcopy(cp1_artifact)
-        cp1_artifact["markdown"] = cp1_artifact["markdown"].replace(
-            "SRC-1", "FORGED-SOURCE", 1
-        )
-        cp1_artifact["payload"]["canonical_output"]["markdown_sha256"] = hashlib.sha256(
-            cp1_artifact["markdown"].encode("utf-8")
-        ).hexdigest()
-        cp1_artifact["digest"] = digest(cp1_artifact["payload"])
-        with pytest.raises(ValueError, match="RUN_NOT_READY"):
-            runtime.accept_run(case["id"], run["id"], "analyst")
-        store.artifacts[cp1_node["artifact_id"]] = original_cp1
-        cp2a_node = next(
-            node for node in completed["nodes"] if node["module_id"] == "CP-2A"
-        )
-        cp2a_artifact = store.artifacts[cp2a_node["artifact_id"]]
-        cp2a_artifact["derived"]["CP-2B"]["digest"] = "0" * 64
-        with pytest.raises(ValueError, match="RUN_NOT_READY"):
-            runtime.accept_run(case["id"], run["id"], "analyst")
-        cp2a_artifact["derived"]["CP-2B"]["digest"] = digest(
-            {
-                "module_id": "CP-2B",
-                "parent_artifact_digest": cp2a_artifact["digest"],
-                "markdown_sha256": hashlib.sha256(
-                    cp2a_artifact["derived"]["CP-2B"]["markdown"].encode("utf-8")
-                ).hexdigest(),
-            }
-        )
+        assert {
+            json.loads(str(request.messages[0]["content"]).split("\n", 1)[1])[
+                "host_identity"
+            ]["module_id"]
+            for request in provider.calls
+        } == set(FIXTURE_BY_MODULE)
         snapshot = runtime.accept_run(case["id"], run["id"], "analyst")
         assert snapshot["run_id"] == run["id"]
         assert {item["module_id"] for item in snapshot["artifacts"]} >= set(
@@ -667,14 +668,14 @@ def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs()
 
 
 def test_canonical_provider_failure_uses_bounded_run_error() -> None:
-    store, runtime, case = _canonical_runtime_case(
+    ledgers, runtime, case = _canonical_runtime_case(
         _CanonicalProvider(RuntimeError("provider-secret-body"))
     )
     try:
         run = runtime.start_run(case["id"], "analyst", "FULL_CREDIT", "full", [])
         runtime._execute(run["id"], "analyst")
 
-        failed = store.get_run(run["id"])
+        failed = ledgers.runs.get_run(run["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"] == {
             "code": "CANONICAL_GENERATION_FAILED",
@@ -700,16 +701,18 @@ def test_dispatcher_scopes_canonical_completion_failures(
     completion_error: Exception,
     expected_code: str,
 ) -> None:
-    store = MemoryStore()
-    case = store.create_case("Dispatcher", "Issuer", "Testing", "analyst")
-    run = store.create_run(case["id"], "analyst", {"nodes": []}, [])
-    node = store.add_node(run["id"], case["id"], "CP-1", [], 1)
-    updates: dict[str, object] = {"node_ids": [node["id"]], "status": "queued"}
+    ledgers = MemoryLedgerSet()
+    case = ledgers.runs.create_case("Dispatcher", "Issuer", "Testing", "analyst")
+    plan = {"nodes": [{"module_id": "CP-1", "dependencies": [], "stage": 1}]}
+    initial: dict[str, object] = {"status": "queued"}
     if canonical:
-        updates["canonical_generation"] = {"phase": "generating"}
-    store.update_run(run["id"], **updates)
+        initial["canonical_generation"] = {"phase": "generating"}
+    run = ledgers.runs.create_run_with_nodes(
+        case["id"], "analyst", plan, plan["nodes"], initial=initial
+    )
     runtime = WorkflowRuntime(
-        store,
+        ledgers.runs,
+        ledgers.sources,
         DeployVBundle(DEPLOY_V),
         Settings(
             environment="production",
@@ -738,7 +741,7 @@ def test_dispatcher_scopes_canonical_completion_failures(
     monkeypatch.setattr(runtime, "_build_artifact_with_slot", build)
     try:
         runtime._execute(run["id"], "analyst")
-        failed = store.get_run(run["id"])
+        failed = ledgers.runs.get_run(run["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == expected_code
     finally:

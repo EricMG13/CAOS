@@ -7,14 +7,14 @@ import time
 from caos.http import app
 
 
-def dispatch_pending(store, runtime, model_runtime, futures) -> None:
-    for run_id, actor in store.pending_runs():
+def dispatch_pending(runs, models, runtime, model_runtime, futures) -> None:
+    for run_id, actor in runs.pending_runs():
         key = ("workflow", run_id)
         if key in futures:
             continue
         futures[key] = runtime.schedule(run_id, actor)
     if model_runtime is not None:
-        for build_id, actor, kind in store.pending_model_jobs():
+        for build_id, actor, kind in models.pending_jobs():
             key = ("model", f"{build_id}:{kind}")
             if key in futures:
                 continue
@@ -37,14 +37,17 @@ def dispatch_pending(store, runtime, model_runtime, futures) -> None:
 def main() -> None:
     runtime = app.state.runtime
     model_runtime = getattr(app.state, "model_runtime", None)
-    store = app.state.store
+    ledgers = app.state.ledgers
     poll_seconds = float(os.getenv("WORKER_POLL_SECONDS", "1"))
     if not math.isfinite(poll_seconds) or poll_seconds < 0.01:
         poll_seconds = 0.01
     futures = {}
-    print("CAOS worker ready: PostgreSQL jobs are claimed with leases and fenced attempts.", flush=True)
+    print(
+        "CAOS worker ready: PostgreSQL jobs are claimed with leases and fenced attempts.",
+        flush=True,
+    )
     while True:
-        dispatch_pending(store, runtime, model_runtime, futures)
+        dispatch_pending(ledgers.runs, ledgers.models, runtime, model_runtime, futures)
         time.sleep(poll_seconds)
 
 

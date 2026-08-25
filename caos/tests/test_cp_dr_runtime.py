@@ -7,8 +7,7 @@ import os
 import shutil
 import threading
 import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +17,24 @@ import httpx2
 from anthropic.types import TextBlock, ToolUseBlock
 from caos.config import Settings
 from caos.contracts import digest
-from caos.artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid, create_note, promote_note
+from caos.artifacts.domain import (
+    build_snapshot_payload,
+    cpdr_artifact_is_valid,
+    create_note,
+    promote_note,
+)
 from caos.http import create_app
+from caos.memory_ledgers import MemoryLedgerSet
+from caos.postgres_ledgers import PostgresLedgerSet
 from caos.methodology.bundle import DeployVBundle, MethodologyError
-from caos.methodology.cpdr import CPDRPayload, CPDRValidationError, confidence_inputs, validate_cpdr_payload
+from caos.methodology.cpdr import (
+    CPDRPayload,
+    CPDRValidationError,
+    confidence_inputs,
+    validate_cpdr_payload,
+)
 from caos.methodology.prompt import compile_cpdr_prompts
-from caos.store import JobFencedError, MemoryStore, PostgresStore
+from caos.store import JobFencedError
 from caos.workflows import domain as workflow_domain
 from caos.workflows import provider as provider_module
 from caos.workflows.domain import WorkflowError, WorkflowRuntime, _LeaseFence
@@ -39,249 +50,303 @@ from caos.workflows.provider import (
 )
 
 
-DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
-WORKER_EVENTS = {"run.running", "node.running", "node.succeeded", "node.failed", "run.succeeded", "run.failed"}
+DEPLOY_V = (
+    Path(__file__).parents[1]
+    / "server"
+    / "caos"
+    / "methodology"
+    / "vendor"
+    / "deploy_v"
+)
+WORKER_EVENTS = {
+    "run.running",
+    "node.running",
+    "node.succeeded",
+    "node.failed",
+    "run.succeeded",
+    "run.failed",
+}
 
 
-def _queued_run(store: MemoryStore, *, dependencies: list[str] | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    case = store.create_case("Lease test", "Issuer", "Testing", "analyst")
-    run = store.create_run(case["id"], "analyst", {"nodes": []}, [])
-    node = store.add_node(run["id"], case["id"], "CP-TEST", dependencies, 1) if dependencies is not None else None
-    store.update_run(run["id"], node_ids=[node["id"]] if node else [], status="queued")
-    return store.runs[run["id"]], node
+class _RunLedgerDouble:
+    def __init__(self, ledger: object) -> None:
+        self.ledger = ledger
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.ledger, name)
 
 
-def _claim(store: MemoryStore) -> tuple[str, str]:
-    run, _ = _queued_run(store)
-    token = store.claim_job(run["id"], "worker")
+class _SourceCatalogDouble:
+    def __init__(self, ledger: object) -> None:
+        self.ledger = ledger
+        self.source_overrides: dict[str, dict[str, Any]] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.ledger, name)
+
+    def override_source(self, source_id: str, mutate: Any) -> dict[str, Any]:
+        source = self.ledger.get_source(source_id)
+        assert source is not None
+        mutate(source)
+        self.source_overrides[source_id] = source
+        return source
+
+    def get_source(self, source_id: str) -> dict[str, Any] | None:
+        if source_id in self.source_overrides:
+            return copy.deepcopy(self.source_overrides[source_id])
+        return self.ledger.get_source(source_id)
+
+    def read_pinned_evidence(
+        self,
+        case_id: str,
+        source_set_id: str,
+        source_id: str,
+        block_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        if source_id not in self.source_overrides:
+            return self.ledger.read_pinned_evidence(
+                case_id, source_set_id, source_id, block_ids
+            )
+        source_set = self.ledger.source_set(source_set_id)
+        source = self.source_overrides[source_id]
+        if (
+            not source_set
+            or source_set.get("case_id") != case_id
+            or source_id not in source_set.get("source_ids", [])
+            or source.get("case_id") != case_id
+            or source.get("withdrawn")
+        ):
+            raise ValueError("AGENT_AUTHORITY_MISMATCH")
+        blocks = {block.get("block_id"): block for block in source.get("blocks", [])}
+        if any(block_id not in blocks for block_id in block_ids):
+            raise ValueError("AGENT_OUTPUT_INVALID")
+        return [
+            {
+                "source_id": source_id,
+                "source_digest": source["sha256"],
+                "origin_family": source.get("origin_family", source["sha256"]),
+                "authority_class": source.get("authority_class", "unclassified"),
+                "block_id": block_id,
+                "locator": copy.deepcopy(blocks[block_id].get("locator")),
+                "extractor_version": blocks[block_id].get("extractor_version"),
+                "confidence": blocks[block_id].get("confidence"),
+                "text": blocks[block_id].get("text"),
+            }
+            for block_id in block_ids
+        ]
+
+
+def _mutate_research(
+    ledgers: MemoryLedgerSet,
+    run_id: str,
+    mutate: Any,
+) -> dict[str, Any]:
+    run = ledgers.runs.get_run(run_id)
+    assert run is not None
+    research = copy.deepcopy(run["research"])
+    mutate(research)
+    token = ledgers.runs.claim(run_id, "test-research-mutation")
     assert token is not None
-    return run["id"], token
+    ledgers.runs.update_run_fenced(run_id, token, research=research)
+    ledgers.runs.finish(run_id, token)
+    updated = ledgers.runs.get_run(run_id)
+    assert updated is not None
+    return updated
+
+
+def _complete_cpdr_node_for_test(
+    ledgers: MemoryLedgerSet,
+    approved: dict[str, Any],
+    cpdr_node: dict[str, Any],
+    artifact: dict[str, Any],
+    *,
+    reset_to_pending: bool = False,
+    finish_job: bool = True,
+) -> dict[str, Any]:
+    research = copy.deepcopy(approved["research"])
+    research["phase"] = "researching" if reset_to_pending else "complete"
+    token = ledgers.runs.claim(approved["id"], "test-artifact-seed")
+    assert token is not None
+    stored = ledgers.runs.complete_node(
+        approved["id"],
+        token,
+        cpdr_node["id"],
+        artifact,
+        research,
+        {"node_id": cpdr_node["id"], "module_id": "CP-DR"},
+    )
+    if reset_to_pending:
+        ledgers.runs.update_node_fenced(
+            approved["id"],
+            token,
+            cpdr_node["id"],
+            status="pending",
+            artifact_id=None,
+        )
+    if finish_job:
+        ledgers.runs.finish(approved["id"], token)
+    return stored
+
+
+def _queued_ledger_run(
+    ledgers: MemoryLedgerSet,
+    *,
+    dependencies: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    case = ledgers.runs.create_case("Lease test", "Issuer", "Testing", "analyst")
+    nodes = (
+        [{"module_id": "CP-TEST", "dependencies": dependencies, "stage": 1}]
+        if dependencies is not None
+        else []
+    )
+    run = ledgers.runs.create_run_with_nodes(
+        case["id"], "analyst", {"nodes": nodes}, nodes
+    )
+    return run, run["nodes"][0] if nodes else None
 
 
 def _artifact(run_id: str, module_id: str = "CP-TEST") -> dict[str, Any]:
-    return {"id": f"artifact-{run_id}", "run_id": run_id, "module_id": module_id, "input_fingerprint": "fingerprint"}
+    return {
+        "id": f"artifact-{run_id}",
+        "run_id": run_id,
+        "module_id": module_id,
+        "input_fingerprint": "fingerprint",
+    }
 
 
 def _postgres_url() -> str:
     database_url = os.getenv("CAOS_TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip("CAOS_TEST_DATABASE_URL is required for real PostgreSQL lease tests")
+        pytest.skip(
+            "CAOS_TEST_DATABASE_URL is required for real PostgreSQL lease tests"
+        )
     return database_url
 
 
-def _postgres_store(application_name: str | None = None) -> PostgresStore:
-    database_url = _postgres_url()
-    if application_name:
-        database_url = f"{database_url}{'&' if '?' in database_url else '?'}application_name={application_name}"
-    return PostgresStore(database_url)
-
-
-def test_memory_lease_renewal_extends_current_token() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    prior_expiry = store.jobs[run_id]["lease_until"]
-
-    assert store.renew_job(run_id, token) is True
-    assert store.jobs[run_id]["lease_until"] > prior_expiry
-
-
-def test_memory_lease_renewal_refuses_expired_and_stale_tokens() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    store.jobs[run_id]["lease_until"] = time.monotonic() - 1
-    expired_at = store.jobs[run_id]["lease_until"]
-
-    assert store.renew_job(run_id, token) is False
-    assert store.jobs[run_id]["lease_until"] == expired_at
-    replacement = store.claim_job(run_id, "replacement")
-    assert replacement is not None
-    assert store.renew_job(run_id, token) is False
-
-
-def test_memory_finish_job_requires_current_lease() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    store.jobs[run_id]["lease_until"] = time.monotonic() - 1
-    before = copy.deepcopy(store.jobs[run_id])
-
-    store.finish_job(run_id, token)
-
-    assert store.jobs[run_id] == before
-
-
-def test_memory_finish_job_releases_current_lease_reservation() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-
-    store.finish_job(run_id, token)
-
-    assert store.jobs[run_id]["status"] == "finished"
-    assert store.jobs[run_id]["budget_reserved"] == 0
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
-    assert store.job_is_current(run_id, token) is False
-    assert store.renew_job(run_id, token) is False
-    with pytest.raises(JobFencedError):
-        store.update_run_fenced(run_id, token, status="succeeded")
-    with pytest.raises(JobFencedError):
-        store.emit_fenced(run_id, token, "run.succeeded", {"run_id": run_id})
-    with pytest.raises(JobFencedError):
-        store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
-    with pytest.raises(JobFencedError):
-        store.put_artifact_fenced(run_id, token, _artifact(run_id))
-    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
-
-
-def test_memory_takeover_fences_all_worker_writes() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    store.jobs[run_id]["lease_until"] = time.monotonic() - 1
-    replacement = store.claim_job(run_id, "replacement")
-    assert replacement is not None
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
-
-    with pytest.raises(JobFencedError):
-        store.update_run_fenced(run_id, token, status="succeeded")
-    with pytest.raises(JobFencedError):
-        store.emit_fenced(run_id, token, "run.succeeded", {"run_id": run_id})
-    with pytest.raises(JobFencedError):
-        store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
-    with pytest.raises(JobFencedError):
-        store.put_artifact_fenced(run_id, token, _artifact(run_id))
-    store.finish_job(run_id, token)
-
-    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
-
-
-def test_memory_takeover_recovers_running_node_and_atomic_completion() -> None:
-    store = MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
+def test_replacement_finishes_run_after_atomic_completion_preceded_terminal_events() -> (
+    None
+):
+    ledgers = MemoryLedgerSet()
+    run, node = _queued_ledger_run(ledgers, dependencies=[])
     assert node is not None
-    source_set = {"id": f"set-{run['id']}", "case_id": run["case_id"], "version": 1, "source_ids": []}
-    store.register_source_set(source_set)
-    store.runs[run["id"]]["plan"]["source_set_id"] = source_set["id"]
-    store.update_run(run["id"], status="running")
-    store.update_node(node["id"], status="running", attempt=1)
-    first = store.claim_job(run["id"], "first")
-    assert first is not None
-    store.jobs[run["id"]]["lease_until"] = time.monotonic() - 1
-
-    replacement = store.claim_job(run["id"], "replacement")
-
-    assert replacement is not None
-    assert store.nodes[node["id"]]["status"] == "pending"
-    artifact = store.complete_node_fenced(run["id"], replacement, node["id"], _artifact(run["id"]), None)
-    assert store.nodes[node["id"]] == {**store.nodes[node["id"]], "status": "succeeded", "artifact_id": artifact["id"], "error": None}
-    assert store.artifacts[artifact["id"]]["input_fingerprint"] == "fingerprint"
-    retry = _artifact(run["id"])
-    retry["id"] = "art-retry"
-    assert store.complete_node_fenced(run["id"], replacement, node["id"], retry, None)["id"] == artifact["id"]
-    assert len(store.artifacts) == 1
-
-
-def test_memory_atomic_completion_rolls_back_artifact_node_and_research() -> None:
-    class FailingStore(MemoryStore):
-        fail_completion = False
-
-        def persist(self) -> None:
-            if self.fail_completion:
-                raise RuntimeError("completion persistence failed")
-
-    store = FailingStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    store.runs[run["id"]]["research"] = {"phase": "researching"}
-    token = store.claim_job(run["id"], "worker")
+    token = ledgers.runs.claim(run["id"], "first")
     assert token is not None
-    before = copy.deepcopy((store.artifacts, store.nodes[node["id"]], store.runs[run["id"]]))
-    store.fail_completion = True
-
-    with pytest.raises(RuntimeError, match="completion persistence failed"):
-        store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), {"phase": "complete"})
-
-    assert (store.artifacts, store.nodes[node["id"]], store.runs[run["id"]]) == before
-
-
-def test_replacement_finishes_run_after_atomic_completion_preceded_terminal_events() -> None:
-    store = MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    token = store.claim_job(run["id"], "first")
-    assert token is not None
-    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
-    store.finish_job(run["id"], token)
-    runtime = WorkflowRuntime(store, object(), Settings(environment="production", storage_dir=Path("/tmp/caos-terminal-recovery"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
+    payload: dict[str, Any] = {}
+    ledgers.runs.complete_node(
+        run["id"],
+        token,
+        node["id"],
+        {
+            **_artifact(run["id"]),
+            "case_id": run["case_id"],
+            "payload": payload,
+            "digest": digest(payload),
+        },
+        None,
+        {"node_id": node["id"]},
+    )
+    ledgers.runs.finish(run["id"], token)
+    runtime = WorkflowRuntime(
+        ledgers.runs,
+        ledgers.sources,
+        object(),
+        Settings(
+            environment="production",
+            storage_dir=Path("/tmp/caos-terminal-recovery"),
+            deploy_v_root=DEPLOY_V,
+        ),
+    )  # type: ignore[arg-type]
     try:
         runtime._execute(run["id"], "replacement")
-        completed = store.get_run(run["id"])
+        completed = ledgers.runs.get_run(run["id"])
         assert completed is not None and completed["status"] == "succeeded"
-        assert [item["event"] for item in store.events[run["id"]]][-1] == "run.succeeded"
+        assert completed["events"][-1]["event"] == "run.succeeded"
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("forgery", ["running_node", "missing_artifact", "wrong_artifact"])
+@pytest.mark.parametrize(
+    "forgery", ["running_node", "missing_artifact", "wrong_artifact"]
+)
 def test_snapshot_payload_rejects_forged_succeeded_run(forgery: str) -> None:
-    store = MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
+    ledgers = MemoryLedgerSet()
+    case = ledgers.runs.create_case("Snapshot", "Issuer", "Testing", "analyst")
+    source = ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "source.txt",
+            "media_type": "text/plain",
+            "bytes": 6,
+            "sha256": "c" * 64,
+            "vault_path": None,
+            "blocks": [],
+        },
+        "analyst",
+    )
+    nodes = [{"module_id": "CP-TEST", "dependencies": [], "stage": 1}]
+    run = ledgers.runs.create_run_with_nodes(
+        case["id"],
+        "analyst",
+        {"source_set_id": source["source_set"]["id"], "nodes": nodes},
+        nodes,
+    )
+    node = run["nodes"][0]
     assert node is not None
-    source_set = {"id": f"set-{run['id']}", "case_id": run["case_id"], "version": 1, "source_ids": []}
-    store.register_source_set(source_set)
-    store.runs[run["id"]]["plan"]["source_set_id"] = source_set["id"]
-    artifact = _artifact(run["id"])
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[run["id"]]["status"] = "succeeded"
+    token = ledgers.runs.claim(run["id"], "worker")
+    assert token is not None
+    payload: dict[str, Any] = {}
+    ledgers.runs.complete_node(
+        run["id"],
+        token,
+        node["id"],
+        {
+            **_artifact(run["id"]),
+            "case_id": case["id"],
+            "payload": payload,
+            "digest": digest(payload),
+        },
+        None,
+        {"node_id": node["id"]},
+    )
+    ledgers.runs.finalize_success(run["id"], token, None, {"run_id": run["id"]})
+    run = ledgers.runs.get_run(run["id"])
+    assert run is not None
+
+    class ForgedRuns(_RunLedgerDouble):
+        def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+            if forgery == "missing_artifact":
+                return None
+            value = self.ledger.get_artifact(artifact_id)  # type: ignore[attr-defined]
+            if value is not None and forgery == "wrong_artifact":
+                value["module_id"] = "OTHER"
+            return value
+
     if forgery == "running_node":
-        store.nodes[node["id"]]["status"] = "running"
-    elif forgery == "missing_artifact":
-        store.artifacts.pop(artifact["id"])
-    else:
-        store.artifacts[artifact["id"]]["module_id"] = "OTHER"
+        run["nodes"][0]["status"] = "running"
 
     with pytest.raises(ValueError, match="RUN_NOT_READY"):
-        build_snapshot_payload(store, store.get_run(run["id"]) or {})
+        build_snapshot_payload(ForgedRuns(ledgers.runs), ledgers.sources, run)
 
 
-def test_successful_fenced_event_wakes_waiter() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    condition = store.event_conditions[run_id]
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        waiting = pool.submit(store.wait_for_events, run_id, 0, 1.0)
-        deadline = time.monotonic() + 1
-        while not condition._waiters and time.monotonic() < deadline:  # type: ignore[attr-defined]
-            time.sleep(0.001)
-        assert condition._waiters  # type: ignore[attr-defined]
-        store.emit_fenced(run_id, token, "run.running", {"run_id": run_id})
-        assert waiting.result(timeout=1)[0]["event"] == "run.running"
-
-
-def test_fenced_audit_records_the_owning_run() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-
-    store.audit_event_fenced(run_id, token, "worker.checked", "worker")
-
-    assert store.audit[-1]["run_id"] == run_id
-
-
-def test_runtime_heartbeat_renews_once_and_is_joined(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_heartbeat_renews_once_and_is_joined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     renewed = threading.Event()
 
-    class HeartbeatStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
+    class HeartbeatRuns(_RunLedgerDouble):
+        def __init__(self, ledger: object) -> None:
+            super().__init__(ledger)
             self.renewals = 0
 
-        def renew_job(self, run_id: str, attempt_token: str) -> bool:
-            current = super().renew_job(run_id, attempt_token)
+        def renew(self, run_id: str, attempt_token: str) -> bool:
+            current = self.ledger.renew(run_id, attempt_token)  # type: ignore[attr-defined]
             self.renewals += 1
             renewed.set()
             return current
 
         def get_run(self, run_id: str) -> dict[str, Any] | None:
             assert renewed.wait(1)
-            return super().get_run(run_id)
+            return self.ledger.get_run(run_id)  # type: ignore[attr-defined,no-any-return]
 
     real_thread = threading.Thread
     created: list["TrackingThread"] = []
@@ -296,9 +361,15 @@ def test_runtime_heartbeat_renews_once_and_is_joined(monkeypatch: pytest.MonkeyP
             super().join(timeout)
             self.joined = True
 
-    store = HeartbeatStore()
-    run, _ = _queued_run(store)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-heartbeat"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
+    ledgers = MemoryLedgerSet()
+    run, _ = _queued_ledger_run(ledgers)
+    runs = HeartbeatRuns(ledgers.runs)
+    runtime = WorkflowRuntime(
+        runs,
+        ledgers.sources,
+        object(),
+        Settings(storage_dir=Path("/tmp/caos-heartbeat"), deploy_v_root=DEPLOY_V),
+    )  # type: ignore[arg-type]
     monkeypatch.setattr(workflow_domain, "HEARTBEAT_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(workflow_domain.threading, "Thread", TrackingThread)
     try:
@@ -307,14 +378,18 @@ def test_runtime_heartbeat_renews_once_and_is_joined(monkeypatch: pytest.MonkeyP
         runtime.close()
 
     assert workflow_domain.HEARTBEAT_INTERVAL_SECONDS == 0.01
-    assert store.renewals >= 1
+    assert runs.renewals >= 1
     assert len(created) == 1
     assert created[0].joined and not created[0].is_alive()
 
 
-def test_runtime_heartbeat_is_joined_when_execution_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    class ExplodingStore(MemoryStore):
-        def update_run_fenced(self, run_id: str, attempt_token: str, **changes: Any) -> None:
+def test_runtime_heartbeat_is_joined_when_execution_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExplodingRuns(_RunLedgerDouble):
+        def update_run_fenced(
+            self, run_id: str, attempt_token: str, **changes: Any
+        ) -> None:
             raise RuntimeError("write failed")
 
     real_thread = threading.Thread
@@ -330,9 +405,14 @@ def test_runtime_heartbeat_is_joined_when_execution_raises(monkeypatch: pytest.M
             super().join(timeout)
             self.joined = True
 
-    store = ExplodingStore()
-    run, _ = _queued_run(store)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-heartbeat-error"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
+    ledgers = MemoryLedgerSet()
+    run, _ = _queued_ledger_run(ledgers)
+    runtime = WorkflowRuntime(
+        ExplodingRuns(ledgers.runs),
+        ledgers.sources,
+        object(),
+        Settings(storage_dir=Path("/tmp/caos-heartbeat-error"), deploy_v_root=DEPLOY_V),
+    )  # type: ignore[arg-type]
     monkeypatch.setattr(workflow_domain.threading, "Thread", TrackingThread)
     try:
         with pytest.raises(RuntimeError, match="write failed"):
@@ -345,11 +425,13 @@ def test_runtime_heartbeat_is_joined_when_execution_raises(monkeypatch: pytest.M
 
 
 @pytest.mark.parametrize("renewal_error", [False, True])
-def test_runtime_fails_closed_when_heartbeat_loses_lease(monkeypatch: pytest.MonkeyPatch, renewal_error: bool) -> None:
+def test_runtime_fails_closed_when_heartbeat_loses_lease(
+    monkeypatch: pytest.MonkeyPatch, renewal_error: bool
+) -> None:
     renewal_attempted = threading.Event()
 
-    class LostLeaseStore(MemoryStore):
-        def renew_job(self, run_id: str, attempt_token: str) -> bool:
+    class LostLeaseRuns(_RunLedgerDouble):
+        def renew(self, run_id: str, attempt_token: str) -> bool:
             renewal_attempted.set()
             if renewal_error:
                 raise RuntimeError("renewal failed")
@@ -357,21 +439,25 @@ def test_runtime_fails_closed_when_heartbeat_loses_lease(monkeypatch: pytest.Mon
 
         def get_run(self, run_id: str) -> dict[str, Any] | None:
             assert renewal_attempted.wait(1)
-            return super().get_run(run_id)
+            return self.ledger.get_run(run_id)  # type: ignore[attr-defined,no-any-return]
 
-    store = LostLeaseStore()
-    run, _ = _queued_run(store)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-lost-lease"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
+    ledgers = MemoryLedgerSet()
+    run, _ = _queued_ledger_run(ledgers)
+    runtime = WorkflowRuntime(
+        LostLeaseRuns(ledgers.runs),
+        ledgers.sources,
+        object(),
+        Settings(storage_dir=Path("/tmp/caos-lost-lease"), deploy_v_root=DEPLOY_V),
+    )  # type: ignore[arg-type]
     monkeypatch.setattr(workflow_domain, "HEARTBEAT_INTERVAL_SECONDS", 0.01)
     try:
         runtime._execute(run["id"], "analyst")
     finally:
         runtime.close()
 
-    assert store.runs[run["id"]]["status"] == "running"
-    assert [event["event"] for event in store.events[run["id"]]] == ["run.running"]
-    assert store.jobs[run["id"]]["status"] == "running"
-    assert store.jobs[run["id"]]["budget_reserved"] == 1
+    current = ledgers.runs.get_run(run["id"])
+    assert current is not None and current["status"] == "running"
+    assert [event["event"] for event in current["events"]] == ["run.running"]
 
 
 def test_runtime_serializes_loss_publication_before_lifecycle_write() -> None:
@@ -412,371 +498,130 @@ def test_runtime_serializes_loss_publication_before_lifecycle_write() -> None:
     ],
 )
 def test_worker_lifecycle_events_are_fenced(failure: bool, expected: list[str]) -> None:
-    class LifecycleStore(MemoryStore):
+    class LifecycleRuns(_RunLedgerDouble):
         def emit(self, run_id: str, event: str, data: dict[str, Any]) -> None:
             if event in WORKER_EVENTS:
                 raise AssertionError(f"worker event escaped fencing: {event}")
-            super().emit(run_id, event, data)
+            self.ledger.emit(run_id, event, data)  # type: ignore[attr-defined]
 
     class Runtime(WorkflowRuntime):
-        def _build_artifact_with_slot(self, run: dict[str, Any], node: dict[str, Any], actor: str, fenced_call: Any | None = None, lease_check: Any | None = None) -> dict[str, Any]:
+        def _build_artifact_with_slot(
+            self,
+            run: dict[str, Any],
+            node: dict[str, Any],
+            actor: str,
+            fenced_call: Any | None = None,
+            lease_check: Any | None = None,
+        ) -> dict[str, Any]:
             if failure:
                 raise RuntimeError("node failed")
             return _artifact(run["id"], node["module_id"])
 
-    store = LifecycleStore()
-    run, _ = _queued_run(store, dependencies=[])
-    runtime = Runtime(store, object(), Settings(storage_dir=Path("/tmp/caos-lifecycle"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
+    ledgers = MemoryLedgerSet()
+    run, _ = _queued_ledger_run(ledgers, dependencies=[])
+    runtime = Runtime(
+        LifecycleRuns(ledgers.runs),
+        ledgers.sources,
+        object(),
+        Settings(storage_dir=Path("/tmp/caos-lifecycle"), deploy_v_root=DEPLOY_V),
+    )  # type: ignore[arg-type]
     try:
         runtime._execute(run["id"], "analyst")
     finally:
         runtime.close()
 
-    assert [event["event"] for event in store.events[run["id"]]] == expected
+    completed = ledgers.runs.get_run(run["id"])
+    assert completed is not None
+    assert [event["event"] for event in completed["events"]] == expected
 
 
 @pytest.mark.parametrize("blocked", [False, True])
 def test_expired_worker_cannot_emit_terminal_lifecycle_event(blocked: bool) -> None:
-    class ExpiringStore(MemoryStore):
-        def update_run_fenced(self, run_id: str, attempt_token: str, **changes: Any) -> None:
-            if changes.get("status") == "failed":
-                with self.lock:
-                    self.jobs[run_id]["lease_until"] = time.monotonic() - 1
-            super().update_run_fenced(run_id, attempt_token, **changes)
-
-        def finalize_run_success_fenced(
-            self, run_id: str, attempt_token: str, research: dict[str, Any] | None, event_data: dict[str, Any],
+    class ExpiringRuns(_RunLedgerDouble):
+        def update_run_fenced(
+            self, run_id: str, attempt_token: str, **changes: Any
         ) -> None:
-            with self.lock:
-                self.jobs[run_id]["lease_until"] = time.monotonic() - 1
-            super().finalize_run_success_fenced(run_id, attempt_token, research, event_data)
+            if changes.get("status") == "failed":
+                raise JobFencedError("lost workflow lease")
+            self.ledger.update_run_fenced(run_id, attempt_token, **changes)  # type: ignore[attr-defined]
 
-    store = ExpiringStore()
-    run, _ = _queued_run(store, dependencies=["missing"] if blocked else None)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-expired-worker"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
+        def finalize_success(
+            self,
+            run_id: str,
+            attempt_token: str,
+            research: dict[str, Any] | None,
+            event_data: dict[str, Any],
+            *,
+            deadline: float | None = None,
+        ) -> None:
+            raise JobFencedError("lost workflow lease")
+
+    ledgers = MemoryLedgerSet()
+    run, _ = _queued_ledger_run(ledgers, dependencies=["missing"] if blocked else None)
+    runtime = WorkflowRuntime(
+        ExpiringRuns(ledgers.runs),
+        ledgers.sources,
+        object(),
+        Settings(storage_dir=Path("/tmp/caos-expired-worker"), deploy_v_root=DEPLOY_V),
+    )  # type: ignore[arg-type]
     try:
         runtime._execute(run["id"], "analyst")
     finally:
         runtime.close()
 
-    events = [event["event"] for event in store.events[run["id"]]]
+    current = ledgers.runs.get_run(run["id"])
+    assert current is not None
+    events = [event["event"] for event in current["events"]]
     assert events == ["run.running"]
 
 
-def test_postgres_lease_renewal_refuses_stale_and_expired_tokens() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-
-    assert store.renew_job(run_id, "stale-token") is False
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-        connection.commit()
-    assert store.renew_job(run_id, token) is False
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == (True,)
-
-
-def test_postgres_takeover_fences_all_worker_writes() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-        connection.commit()
-    replacement = store.claim_job(run_id, "replacement")
-    assert replacement is not None
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
-
-    with pytest.raises(JobFencedError):
-        store.update_run_fenced(run_id, token, status="succeeded")
-    with pytest.raises(JobFencedError):
-        store.emit_fenced(run_id, token, "run.succeeded", {"run_id": run_id})
-    with pytest.raises(JobFencedError):
-        store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
-    with pytest.raises(JobFencedError):
-        store.put_artifact_fenced(run_id, token, _artifact(run_id))
-    store.finish_job(run_id, token)
-
-    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT state, budget_reserved, attempt_token FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == ("claimed", 1, replacement)
-
-
-def test_postgres_takeover_recovers_running_node_and_completion_is_durable() -> None:
-    store = _postgres_store()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    store.update_run(run["id"], status="running")
-    store.update_node(node["id"], status="running", attempt=1)
-    first = store.claim_job(run["id"], "first")
-    assert first is not None
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
-        connection.commit()
-
-    replacement = store.claim_job(run["id"], "replacement")
-    assert replacement is not None
-    assert store.nodes[node["id"]]["status"] == "pending"
-    artifact = store.complete_node_fenced(run["id"], replacement, node["id"], _artifact(run["id"]), None)
-    retry = _artifact(run["id"])
-    retry["id"] = "art-retry"
-    assert store.complete_node_fenced(run["id"], replacement, node["id"], retry, None)["id"] == artifact["id"]
-
-    reloaded = PostgresStore(store._dsn)
-    restored = reloaded.get_run(run["id"])
-    assert restored is not None
-    restored_node = next(item for item in restored["nodes"] if item["id"] == node["id"])
-    assert restored_node["status"] == "succeeded" and restored_node["artifact_id"] == artifact["id"]
-    assert reloaded.get_artifact(artifact["id"]) is not None
-    assert len([item for item in reloaded.artifacts.values() if item.get("run_id") == run["id"]]) == 1
-
-
-def test_postgres_cross_process_takeover_adopts_authoritative_state_before_recovery() -> None:
-    first = _postgres_store()
-    run, node = _queued_run(first, dependencies=[])
-    assert node is not None
-    replacement_process = PostgresStore(first._dsn)
-    token = first.claim_job(run["id"], "first-process")
-    assert token is not None
-    authoritative_plan = {"nodes": [], "authority_marker": "current-database-state"}
-    authoritative_error = {"code": "AUTHORITY_SENTINEL", "message": "current error"}
-    first.update_run_fenced(
-        run["id"], token, status="running", plan=authoritative_plan,
-        accepted_snapshot_id="snap-authoritative", error=authoritative_error,
-    )
-    first.update_node_fenced(run["id"], token, node["id"], status="running", attempt=1)
-    with first._psycopg.connect(first._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
-        connection.commit()
-
-    replacement = replacement_process.claim_job(run["id"], "replacement-process")
-
-    assert replacement is not None
-    recovered = replacement_process.get_run(run["id"])
-    recovered_node = next(item for item in recovered["nodes"] if item["id"] == node["id"]) if recovered else None
-    assert recovered_node is not None and recovered_node["status"] == "pending"
-    with replacement_process._psycopg.connect(replacement_process._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT status, error, plan, accepted_snapshot_id FROM runs WHERE id = %s", (run["id"],))
-            normalized = cursor.fetchone()
-    assert normalized == ("running", authoritative_error, authoritative_plan, "snap-authoritative")
-    artifact = replacement_process.complete_node_fenced(run["id"], replacement, node["id"], _artifact(run["id"]), None)
-    durable = PostgresStore(first._dsn).get_run(run["id"])
-    durable_node = next(item for item in durable["nodes"] if item["id"] == node["id"]) if durable else None
-    assert durable_node is not None and durable_node["status"] == "succeeded" and durable_node["artifact_id"] == artifact["id"]
-    with replacement_process._psycopg.connect(replacement_process._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT status, error, plan, accepted_snapshot_id FROM runs WHERE id = %s", (run["id"],))
-            normalized_after_completion = cursor.fetchone()
-    assert normalized_after_completion == normalized
-
-
-def _assert_normalized_run_matches_authoritative(store: PostgresStore, run_id: str) -> None:
-    authoritative = store.get_run(run_id)
-    assert authoritative is not None
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT case_id, status, error, plan, accepted_snapshot_id, created_by, created_at "
-                "FROM runs WHERE id = %s",
-                (run_id,),
-            )
-            row = cursor.fetchone()
-    assert row is not None
-    assert row[:6] == (
-        authoritative["case_id"],
-        authoritative["status"],
-        authoritative.get("error"),
-        authoritative["plan"],
-        authoritative.get("accepted_snapshot_id"),
-        authoritative["created_by"],
-    )
-    assert row[6].isoformat() == authoritative["created_at"]
-
-
-def test_postgres_normalized_run_tracks_takeover_completion_updates_finalization_and_acceptance() -> None:
-    first = _postgres_store()
-    run, node = _queued_run(first, dependencies=[])
-    assert node is not None
-    source_set = {
-        "id": f"set-{run['id']}", "case_id": run["case_id"], "version": 1, "source_ids": [],
-        "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00",
-    }
-    first.register_source_set(source_set)
-    initial_plan = {"nodes": [], "source_set_id": source_set["id"], "marker": "initial"}
-    first.update_run(run["id"], plan=initial_plan, status="queued", error=None)
-    replacement_process = PostgresStore(first._dsn)
-    token = first.claim_job(run["id"], "first-normalized")
-    assert token is not None
-    first.update_run_fenced(
-        run["id"], token, status="running", plan={**initial_plan, "marker": "authoritative"},
-        error={"code": "RUNNING_SENTINEL", "message": "current"},
-    )
-    first.update_node_fenced(run["id"], token, node["id"], status="running", attempt=1)
-    with first._psycopg.connect(first._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
-        connection.commit()
-
-    replacement = replacement_process.claim_job(run["id"], "replacement-normalized")
-    assert replacement is not None
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    payload = {"result": "durable"}
-    artifact = {
-        **_artifact(run["id"]), "case_id": run["case_id"], "payload": payload, "digest": digest(payload),
-    }
-    replacement_process.complete_node_fenced(run["id"], replacement, node["id"], artifact, None)
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    final_plan = {**initial_plan, "marker": "final-authoritative"}
-    replacement_process.update_run_fenced(
-        run["id"], replacement, status="running", plan=final_plan,
-        error={"code": "FINAL_SENTINEL", "message": "bounded"},
-    )
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    replacement_process.finalize_run_success_fenced(
-        run["id"], replacement, None, {"run_id": run["id"]},
-    )
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    runtime = WorkflowRuntime(
-        replacement_process, object(),
-        Settings(environment="production", storage_dir=Path("/tmp/caos-normalized-run"), deploy_v_root=DEPLOY_V),
-    )  # type: ignore[arg-type]
-    try:
-        snapshot = runtime.accept_run(run["case_id"], run["id"], "analyst")
-    finally:
-        runtime.close()
-    assert snapshot["run_id"] == run["id"]
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-
-def test_postgres_atomic_completion_rolls_back_artifact_node_and_research(monkeypatch: pytest.MonkeyPatch) -> None:
-    store = _postgres_store()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    store.update_run(run["id"], research={"phase": "researching"})
-    token = store.claim_job(run["id"], "worker")
-    assert token is not None
-
-    def fail_persist(_connection: Any) -> Any:
-        raise RuntimeError("completion transaction failed")
-
-    monkeypatch.setattr(store, "_persist_connection", fail_persist)
-    with pytest.raises(RuntimeError, match="completion transaction failed"):
-        store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), {"phase": "complete"})
-
-    reloaded = PostgresStore(store._dsn)
-    restored = reloaded.get_run(run["id"])
-    assert restored is not None and restored["research"]["phase"] == "researching"
-    restored_node = next(item for item in restored["nodes"] if item["id"] == node["id"])
-    assert restored_node["status"] != "succeeded" and restored_node.get("artifact_id") is None
-    assert not any(item.get("run_id") == run["id"] for item in reloaded.artifacts.values())
-
-
-def test_postgres_finish_job_requires_current_lease() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-        connection.commit()
-
-    store.finish_job(run_id, token)
-
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT state, budget_reserved, lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == ("claimed", 1, True)
-    assert store.jobs[run_id]["status"] == "running"
-
-
-def test_postgres_finish_job_releases_current_lease_reservation() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-
-    store.finish_job(run_id, token)
-
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT state, budget_reserved, lease_until FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == ("succeeded", 0, None)
-    assert store.jobs[run_id]["status"] == "finished"
-
-
-def test_postgres_lease_renewal_uses_database_time_after_row_lock() -> None:
-    database_url = _postgres_url()
-    application_name = f"caos-lease-renew-{uuid.uuid4().hex}"
-    store = _postgres_store(application_name)
-    run_id, token = _claim(store)
-    started = threading.Event()
-
-    with store._psycopg.connect(database_url) as locking_connection:
-        with locking_connection.cursor() as cursor:
-            cursor.execute("SELECT id FROM jobs WHERE run_id = %s FOR UPDATE", (run_id,))
-
-            def renew() -> bool:
-                started.set()
-                return store.renew_job(run_id, token)
-
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                waiting = pool.submit(renew)
-                assert started.wait(1)
-                observed: tuple[str, str, str, str] | None = None
-                deadline = time.monotonic() + 1
-                with store._psycopg.connect(database_url, autocommit=True) as observer:
-                    while observed is None and time.monotonic() < deadline:
-                        with observer.cursor() as observer_cursor:
-                            observer_cursor.execute(
-                                "SELECT state, wait_event_type, wait_event, query FROM pg_stat_activity WHERE application_name = %s AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE %s AND query LIKE %s AND query LIKE %s",
-                                (application_name, "UPDATE jobs SET lease_until = now() + interval '60 seconds'%", "%attempt_token%", "%lease_until > now()%"),
-                            )
-                            observed = observer_cursor.fetchone()
-                        if observed is None:
-                            time.sleep(0.01)
-                if observed is None:
-                    locking_connection.rollback()
-                    waiting.result(timeout=1)
-                    pytest.fail("renewal UPDATE was not observed waiting on the locked job row")
-                assert observed[0:2] == ("active", "Lock")
-                assert "UPDATE jobs SET lease_until = now() + interval '60 seconds'" in observed[3]
-                assert "attempt_token" in observed[3] and "lease_until > now()" in observed[3]
-                with pytest.raises(TimeoutError):
-                    waiting.result(timeout=0.1)
-                cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-                locking_connection.commit()
-                assert waiting.result(timeout=1) is False
-
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == (True,)
-
-
 def test_memory_research_plan_pause_and_exact_approval_smoke() -> None:
-    store = MemoryStore()
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), Settings(environment="production", storage_dir=Path("/tmp/caos-plan-smoke"), deploy_v_root=DEPLOY_V))
-    case = store.create_case("Plan smoke", "Issuer", "Testing", "analyst")
-    store.sources["src_plan"] = {"id": "src_plan", "case_id": case["id"], "withdrawn": False}
-    store.register_source_set({"id": "set_plan", "case_id": case["id"], "version": 1, "source_ids": ["src_plan"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
-    brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite first-lien risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
+    ledgers = MemoryLedgerSet()
+    runtime = WorkflowRuntime(
+        ledgers.runs,
+        ledgers.sources,
+        DeployVBundle(DEPLOY_V),
+        Settings(
+            environment="production",
+            storage_dir=Path("/tmp/caos-plan-smoke"),
+            deploy_v_root=DEPLOY_V,
+        ),
+    )
+    case = ledgers.runs.create_case("Plan smoke", "Issuer", "Testing", "analyst")
+    ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "source.txt",
+            "media_type": "text/plain",
+            "bytes": 6,
+            "sha256": "d" * 64,
+            "vault_path": None,
+            "blocks": [],
+        },
+        "analyst",
+    )
+    brief = {
+        "research_question": "Can the issuer refinance?",
+        "decision_context": "Underwrite first-lien risk.",
+        "as_of_date": "2026-08-23",
+        "time_horizon": "Through 2029",
+        "must_answer": [],
+        "exclusions": [],
+    }
     try:
-        run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
+        run = runtime.start_run(
+            case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief
+        )
         runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
+        paused = ledgers.runs.get_run(run["id"])
         assert paused is not None and paused["status"] == "paused"
         assert paused["research"]["phase"] == "awaiting_approval"
-        approved = runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
-        assert approved["id"] == run["id"] and approved["research"]["phase"] == "approved"
+        approved = runtime.approve_research_plan(
+            run["id"], "approver", paused["research"]["proposed_plan_hash"]
+        )
+        assert (
+            approved["id"] == run["id"] and approved["research"]["phase"] == "approved"
+        )
     finally:
         runtime.close()
 
@@ -798,16 +643,56 @@ def _cpdr_payload(**overrides: Any) -> dict[str, Any]:
         "research_question": "Can the issuer refinance?",
         "reporting_period": "2026-08-23",
         "source_mode": "supplied_only",
-        "workstream_findings": [{"workstream_id": "WS-1", "finding": "Liquidity supports the near-term maturity.", "claim_ids": ["C-1"], "status": "complete"}],
-        "material_claims": [{"claim_id": "C-1", "claim": "The issuer source characterises liquidity as supportive of the near-term maturity.", "claim_type": "source_characterisation", "workstream_id": "WS-1", "lineage": "Directly Sourced", "evidence_refs": [{"source_id": "src-1", "block_id": "b00001"}], "counter_evidence_refs": [], "coverage_status": "adequate", "confidence": 90, "material": True}],
-        "evidence": [{"evidence_id": "E-1", "source_id": "src-1", "source_digest": "e" * 64, "block_id": "b00001", "locator": "{\"line\":1}", "extractor_version": "builtin-v1", "source_confidence": "HIGH", "quoted": False, "entity": "Issuer", "period": "2026-08-23", "unit_currency": "USD", "perimeter": "consolidated", "lineage": "Directly Sourced", "independence_family": "issuer filing", "numeric_value": 100.0}],
+        "workstream_findings": [
+            {
+                "workstream_id": "WS-1",
+                "finding": "Liquidity supports the near-term maturity.",
+                "claim_ids": ["C-1"],
+                "status": "complete",
+            }
+        ],
+        "material_claims": [
+            {
+                "claim_id": "C-1",
+                "claim": "The issuer source characterises liquidity as supportive of the near-term maturity.",
+                "claim_type": "source_characterisation",
+                "workstream_id": "WS-1",
+                "lineage": "Directly Sourced",
+                "evidence_refs": [{"source_id": "src-1", "block_id": "b00001"}],
+                "counter_evidence_refs": [],
+                "coverage_status": "adequate",
+                "confidence": 90,
+                "material": True,
+            }
+        ],
+        "evidence": [
+            {
+                "evidence_id": "E-1",
+                "source_id": "src-1",
+                "source_digest": "e" * 64,
+                "block_id": "b00001",
+                "locator": '{"line":1}',
+                "extractor_version": "builtin-v1",
+                "source_confidence": "HIGH",
+                "quoted": False,
+                "entity": "Issuer",
+                "period": "2026-08-23",
+                "unit_currency": "USD",
+                "perimeter": "consolidated",
+                "lineage": "Directly Sourced",
+                "independence_family": "issuer filing",
+                "numeric_value": 100.0,
+            }
+        ],
         "conflicts": [],
         "gaps": [],
         "qa_findings": [],
         "scope_adherence": [],
         "direct_answer": "The supplied liquidity evidence supports the near-term refinancing case, subject to the stated perimeter and reporting-date limits.",
         "causal_synthesis": "Available liquidity covers the identified maturity and reduces immediate refinancing pressure.",
-        "implications_scenarios": ["Monitor liquidity and maturity coverage at the next reporting date."],
+        "implications_scenarios": [
+            "Monitor liquidity and maturity coverage at the next reporting date."
+        ],
         "coverage_score": 100,
         "research_status": "Complete",
         "research_stop_reason": "coverage_satisfied",
@@ -837,11 +722,22 @@ def _cpdr_host() -> dict[str, Any]:
 
 
 def _returned_evidence() -> dict[tuple[str, str], dict[str, str]]:
-    return {("src-1", "b00001"): {"source_digest": "e" * 64, "origin_family": "e" * 64, "authority_class": "primary_authority", "locator": "{\"line\":1}", "extractor_version": "builtin-v1", "confidence": "HIGH"}}
+    return {
+        ("src-1", "b00001"): {
+            "source_digest": "e" * 64,
+            "origin_family": "e" * 64,
+            "authority_class": "primary_authority",
+            "locator": '{"line":1}',
+            "extractor_version": "builtin-v1",
+            "confidence": "HIGH",
+        }
+    }
 
 
 def test_cpdr_transport_is_strict_and_host_validated() -> None:
-    parsed = validate_cpdr_payload(_cpdr_payload(), _cpdr_host(), {"WS-1"}, _returned_evidence())
+    parsed = validate_cpdr_payload(
+        _cpdr_payload(), _cpdr_host(), {"WS-1"}, _returned_evidence()
+    )
     assert isinstance(parsed, CPDRPayload)
 
     for invalid in (
@@ -849,8 +745,16 @@ def test_cpdr_transport_is_strict_and_host_validated() -> None:
         _cpdr_payload(run_id="wrong"),
         _cpdr_payload(coverage_score=99),
         _cpdr_payload(coverage_score="100"),
-        _cpdr_payload(material_claims=[{**_cpdr_payload()["material_claims"][0], "numeric_value": True}]),
-        _cpdr_payload(material_claims=[{**_cpdr_payload()["material_claims"][0], "provider_only": "forbidden"}]),
+        _cpdr_payload(
+            material_claims=[
+                {**_cpdr_payload()["material_claims"][0], "numeric_value": True}
+            ]
+        ),
+        _cpdr_payload(
+            material_claims=[
+                {**_cpdr_payload()["material_claims"][0], "provider_only": "forbidden"}
+            ]
+        ),
         _cpdr_payload(direct_answer="x" * 8_001),
         _cpdr_payload(material_claims=[]),
         _cpdr_payload(workstream_findings=[]),
@@ -862,7 +766,14 @@ def test_cpdr_transport_is_strict_and_host_validated() -> None:
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
 def test_cpdr_rejects_nonfinite_and_false_citations(value: float) -> None:
     with pytest.raises(CPDRValidationError):
-        validate_cpdr_payload(_cpdr_payload(evidence=[{**_cpdr_payload()["evidence"][0], "numeric_value": value}]), _cpdr_host(), {"WS-1"}, _returned_evidence())
+        validate_cpdr_payload(
+            _cpdr_payload(
+                evidence=[{**_cpdr_payload()["evidence"][0], "numeric_value": value}]
+            ),
+            _cpdr_host(),
+            {"WS-1"},
+            _returned_evidence(),
+        )
     with pytest.raises(CPDRValidationError, match="returned"):
         validate_cpdr_payload(_cpdr_payload(), _cpdr_host(), {"WS-1"}, {})
 
@@ -870,13 +781,24 @@ def test_cpdr_rejects_nonfinite_and_false_citations(value: float) -> None:
 def test_cpdr_numeric_evidence_requires_context() -> None:
     row = {**_cpdr_payload()["evidence"][0], "unit_currency": None}
     with pytest.raises(CPDRValidationError, match="numeric context"):
-        validate_cpdr_payload(_cpdr_payload(evidence=[row]), _cpdr_host(), {"WS-1"}, _returned_evidence())
+        validate_cpdr_payload(
+            _cpdr_payload(evidence=[row]), _cpdr_host(), {"WS-1"}, _returned_evidence()
+        )
 
 
 def test_cpdr_concatenated_numeric_claim_requires_context() -> None:
-    claim = {**_cpdr_payload()["material_claims"][0], "claim": "Issuer liquidity was USD100m.", "numeric_value": None}
+    claim = {
+        **_cpdr_payload()["material_claims"][0],
+        "claim": "Issuer liquidity was USD100m.",
+        "numeric_value": None,
+    }
     with pytest.raises(CPDRValidationError, match="numeric claim"):
-        validate_cpdr_payload(_cpdr_payload(material_claims=[claim]), _cpdr_host(), {"WS-1"}, _returned_evidence())
+        validate_cpdr_payload(
+            _cpdr_payload(material_claims=[claim]),
+            _cpdr_host(),
+            {"WS-1"},
+            _returned_evidence(),
+        )
 
 
 def test_cpdr_host_provenance_controls_adequacy_and_confidence() -> None:
@@ -886,24 +808,72 @@ def test_cpdr_host_provenance_controls_adequacy_and_confidence() -> None:
         for key, metadata in _returned_evidence().items()
     }
     with pytest.raises(CPDRValidationError, match="host coverage"):
-        validate_cpdr_payload(_cpdr_payload(material_claims=[fact]), _cpdr_host(), {"WS-1"}, unclassified)
+        validate_cpdr_payload(
+            _cpdr_payload(material_claims=[fact]), _cpdr_host(), {"WS-1"}, unclassified
+        )
 
-    second_row = {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src-2", "source_digest": "f" * 64, "block_id": "b00002", "independence_family": "forged-second-family"}
-    two_refs = [{"source_id": "src-1", "block_id": "b00001"}, {"source_id": "src-2", "block_id": "b00002"}]
+    second_row = {
+        **_cpdr_payload()["evidence"][0],
+        "evidence_id": "E-2",
+        "source_id": "src-2",
+        "source_digest": "f" * 64,
+        "block_id": "b00002",
+        "independence_family": "forged-second-family",
+    }
+    two_refs = [
+        {"source_id": "src-1", "block_id": "b00001"},
+        {"source_id": "src-2", "block_id": "b00002"},
+    ]
     fact["evidence_refs"] = two_refs
-    copied = {**unclassified, ("src-2", "b00002"): {**unclassified[("src-1", "b00001")], "source_digest": "f" * 64}}
+    copied = {
+        **unclassified,
+        ("src-2", "b00002"): {
+            **unclassified[("src-1", "b00001")],
+            "source_digest": "f" * 64,
+        },
+    }
     with pytest.raises(CPDRValidationError, match="host coverage"):
-        validate_cpdr_payload(_cpdr_payload(material_claims=[fact], evidence=[_cpdr_payload()["evidence"][0], second_row]), _cpdr_host(), {"WS-1"}, copied)
+        validate_cpdr_payload(
+            _cpdr_payload(
+                material_claims=[fact],
+                evidence=[_cpdr_payload()["evidence"][0], second_row],
+            ),
+            _cpdr_host(),
+            {"WS-1"},
+            copied,
+        )
 
-    independent = {**copied, ("src-2", "b00002"): {**copied[("src-2", "b00002")], "origin_family": "f" * 64}}
-    parsed = validate_cpdr_payload(_cpdr_payload(material_claims=[fact], evidence=[_cpdr_payload()["evidence"][0], second_row]), _cpdr_host(), {"WS-1"}, independent)
-    forged = parsed.model_copy(update={"material_claims": [parsed.material_claims[0].model_copy(update={"lineage": "Analyst Inference"})], "qa_findings": []})
+    independent = {
+        **copied,
+        ("src-2", "b00002"): {**copied[("src-2", "b00002")], "origin_family": "f" * 64},
+    }
+    parsed = validate_cpdr_payload(
+        _cpdr_payload(
+            material_claims=[fact],
+            evidence=[_cpdr_payload()["evidence"][0], second_row],
+        ),
+        _cpdr_host(),
+        {"WS-1"},
+        independent,
+    )
+    forged = parsed.model_copy(
+        update={
+            "material_claims": [
+                parsed.material_claims[0].model_copy(
+                    update={"lineage": "Analyst Inference"}
+                )
+            ],
+            "qa_findings": [],
+        }
+    )
     inputs = confidence_inputs(forged, independent)
     assert inputs["lineage_counts"] == {"Weak Lineage": 1}
     assert inputs["source_gate"] == "pass" and inputs["findings"] == {}
 
 
-def test_material_source_characterisation_cannot_forge_host_provenance_or_complete_coverage() -> None:
+def test_material_source_characterisation_cannot_forge_host_provenance_or_complete_coverage() -> (
+    None
+):
     forged_claim = {
         **_cpdr_payload()["material_claims"][0],
         "claim": "The issuer has ample liquidity according to the supplied document.",
@@ -924,25 +894,40 @@ def test_material_source_characterisation_cannot_forge_host_provenance_or_comple
     with pytest.raises(CPDRValidationError, match="host coverage"):
         validate_cpdr_payload(
             _cpdr_payload(material_claims=[forged_claim], evidence=[forged_evidence]),
-            _cpdr_host(), {"WS-1"}, unclassified,
+            _cpdr_host(),
+            {"WS-1"},
+            unclassified,
         )
 
 
 def test_promoted_note_origin_digest_is_exact_canonical_content_bytes() -> None:
-    store = MemoryStore()
-    case = store.create_case("Origin", "Issuer", "Testing", "analyst")
-    note = create_note(store, case["id"], "analyst", "canonical note bytes")
-    promoted = promote_note(store, case["id"], note["id"], "analyst")
-    source = store.sources[promoted["promoted_source_id"]]
+    ledgers = MemoryLedgerSet()
+    case = ledgers.runs.create_case("Origin", "Issuer", "Testing", "analyst")
+    note = create_note(
+        ledgers.publications, case["id"], "analyst", "canonical note bytes"
+    )
+    promoted = promote_note(ledgers.publications, case["id"], note["id"], "analyst")
+    source = ledgers.sources.get_source(promoted["promoted_source_id"])
+    assert source is not None
     assert source["sha256"] == hashlib.sha256(b"canonical note bytes").hexdigest()
 
 
 def test_cpdr_host_confidence_penalizes_material_gaps_without_provider_qa() -> None:
-    claim = {**_cpdr_payload()["material_claims"][0], "evidence_refs": [], "coverage_status": "gap"}
+    claim = {
+        **_cpdr_payload()["material_claims"][0],
+        "evidence_refs": [],
+        "coverage_status": "gap",
+    }
     payload = _cpdr_payload(
         material_claims=[claim],
         evidence=[],
-        gaps=[{"workstream_id": "WS-1", "description": "Material evidence remains unavailable.", "material": True}],
+        gaps=[
+            {
+                "workstream_id": "WS-1",
+                "description": "Material evidence remains unavailable.",
+                "material": True,
+            }
+        ],
         coverage_score=0,
         research_status="Complete with Gaps",
         research_stop_reason="sources_exhausted",
@@ -956,33 +941,123 @@ def test_cpdr_host_confidence_penalizes_material_gaps_without_provider_qa() -> N
 
 
 def test_cpdr_scope_adherence_is_exact_and_bound_to_approved_plan() -> None:
-    plan = {"workstreams": [{"id": "WS-1", "assigned_questions": ["sentinel-must-answer"]}]}
-    brief = {"must_answer": ["sentinel-must-answer"], "exclusions": ["sentinel-exclusion"]}
+    plan = {
+        "workstreams": [{"id": "WS-1", "assigned_questions": ["sentinel-must-answer"]}]
+    }
+    brief = {
+        "must_answer": ["sentinel-must-answer"],
+        "exclusions": ["sentinel-exclusion"],
+    }
     rows = [
-        {"kind": "must_answer", "item": "sentinel-must-answer", "workstream_id": "WS-1", "respected": True},
-        {"kind": "exclusion", "item": "sentinel-exclusion", "workstream_id": None, "respected": True},
+        {
+            "kind": "must_answer",
+            "item": "sentinel-must-answer",
+            "workstream_id": "WS-1",
+            "respected": True,
+        },
+        {
+            "kind": "exclusion",
+            "item": "sentinel-exclusion",
+            "workstream_id": None,
+            "respected": True,
+        },
     ]
-    assert validate_cpdr_payload(_cpdr_payload(scope_adherence=rows), _cpdr_host(), {"WS-1"}, _returned_evidence(), plan, brief)
-    invalid_rows = [rows[:1], rows + [rows[1]], [{**rows[0], "item": "changed"}, rows[1]], [rows[0], {**rows[1], "respected": False}]]
+    assert validate_cpdr_payload(
+        _cpdr_payload(scope_adherence=rows),
+        _cpdr_host(),
+        {"WS-1"},
+        _returned_evidence(),
+        plan,
+        brief,
+    )
+    invalid_rows = [
+        rows[:1],
+        rows + [rows[1]],
+        [{**rows[0], "item": "changed"}, rows[1]],
+        [rows[0], {**rows[1], "respected": False}],
+    ]
     for invalid in invalid_rows:
         with pytest.raises(CPDRValidationError, match="scope adherence"):
-            validate_cpdr_payload(_cpdr_payload(scope_adherence=invalid), _cpdr_host(), {"WS-1"}, _returned_evidence(), plan, brief)
-    duplicate_brief = {**brief, "exclusions": ["sentinel-exclusion", "sentinel-exclusion"]}
+            validate_cpdr_payload(
+                _cpdr_payload(scope_adherence=invalid),
+                _cpdr_host(),
+                {"WS-1"},
+                _returned_evidence(),
+                plan,
+                brief,
+            )
+    duplicate_brief = {
+        **brief,
+        "exclusions": ["sentinel-exclusion", "sentinel-exclusion"],
+    }
     with pytest.raises(CPDRValidationError, match="scope items must be unique"):
-        validate_cpdr_payload(_cpdr_payload(scope_adherence=rows), _cpdr_host(), {"WS-1"}, _returned_evidence(), plan, duplicate_brief)
+        validate_cpdr_payload(
+            _cpdr_payload(scope_adherence=rows),
+            _cpdr_host(),
+            {"WS-1"},
+            _returned_evidence(),
+            plan,
+            duplicate_brief,
+        )
 
 
 def test_cpdr_conflict_citations_are_exhaustive_unique_and_registered() -> None:
-    ghost = {"conflict_id": "K-1", "claim_ids": ["C-1"], "evidence_refs": [{"source_id": "ghost", "block_id": "missing"}, {"source_id": "ghost", "block_id": "missing"}], "description": "Conflict", "status": "unresolved"}
+    ghost = {
+        "conflict_id": "K-1",
+        "claim_ids": ["C-1"],
+        "evidence_refs": [
+            {"source_id": "ghost", "block_id": "missing"},
+            {"source_id": "ghost", "block_id": "missing"},
+        ],
+        "description": "Conflict",
+        "status": "unresolved",
+    }
     with pytest.raises(CPDRValidationError):
-        validate_cpdr_payload(_cpdr_payload(conflicts=[ghost]), _cpdr_host(), {"WS-1"}, _returned_evidence())
+        validate_cpdr_payload(
+            _cpdr_payload(conflicts=[ghost]),
+            _cpdr_host(),
+            {"WS-1"},
+            _returned_evidence(),
+        )
 
-    row2 = {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src-2", "source_digest": "f" * 64, "block_id": "b00002"}
-    returned = {**_returned_evidence(), ("src-2", "b00002"): {**_returned_evidence()[("src-1", "b00001")], "source_digest": "f" * 64, "origin_family": "f" * 64}}
-    refs = [{"source_id": "src-1", "block_id": "b00001"}, {"source_id": "src-2", "block_id": "b00002"}]
-    claim = {**_cpdr_payload()["material_claims"][0], "counter_evidence_refs": [refs[1]], "coverage_status": "contradicted"}
-    conflict = {"conflict_id": "K-1", "claim_ids": ["C-1"], "evidence_refs": refs, "description": "Sources disagree.", "status": "unresolved"}
-    valid = _cpdr_payload(material_claims=[claim], evidence=[_cpdr_payload()["evidence"][0], row2], conflicts=[conflict], coverage_score=0, research_status="Complete with Gaps")
+    row2 = {
+        **_cpdr_payload()["evidence"][0],
+        "evidence_id": "E-2",
+        "source_id": "src-2",
+        "source_digest": "f" * 64,
+        "block_id": "b00002",
+    }
+    returned = {
+        **_returned_evidence(),
+        ("src-2", "b00002"): {
+            **_returned_evidence()[("src-1", "b00001")],
+            "source_digest": "f" * 64,
+            "origin_family": "f" * 64,
+        },
+    }
+    refs = [
+        {"source_id": "src-1", "block_id": "b00001"},
+        {"source_id": "src-2", "block_id": "b00002"},
+    ]
+    claim = {
+        **_cpdr_payload()["material_claims"][0],
+        "counter_evidence_refs": [refs[1]],
+        "coverage_status": "contradicted",
+    }
+    conflict = {
+        "conflict_id": "K-1",
+        "claim_ids": ["C-1"],
+        "evidence_refs": refs,
+        "description": "Sources disagree.",
+        "status": "unresolved",
+    }
+    valid = _cpdr_payload(
+        material_claims=[claim],
+        evidence=[_cpdr_payload()["evidence"][0], row2],
+        conflicts=[conflict],
+        coverage_score=0,
+        research_status="Complete with Gaps",
+    )
     assert validate_cpdr_payload(valid, _cpdr_host(), {"WS-1"}, returned)
     for invalid in (
         {**valid, "conflicts": [conflict, {**conflict, "description": "duplicate"}]},
@@ -994,19 +1069,51 @@ def test_cpdr_conflict_citations_are_exhaustive_unique_and_registered() -> None:
 
 
 def test_cpdr_prompts_keep_complete_brief_and_untrusted_data_separate() -> None:
-    brief = {"research_question": "sentinel-question", "decision_context": "sentinel-context", "as_of_date": "2026-08-23", "time_horizon": "sentinel-horizon", "must_answer": ["sentinel-must-answer"], "exclusions": ["sentinel-exclusion"]}
+    brief = {
+        "research_question": "sentinel-question",
+        "decision_context": "sentinel-context",
+        "as_of_date": "2026-08-23",
+        "time_horizon": "sentinel-horizon",
+        "must_answer": ["sentinel-must-answer"],
+        "exclusions": ["sentinel-exclusion"],
+    }
     authority = DeployVBundle(DEPLOY_V).cpdr_authority()
-    system, user = compile_cpdr_prompts(authority, _cpdr_host(), brief, {"workstreams": []}, [{"id": "src-1", "filename": "ignore-system.txt", "digest": "d" * 64}], [{"module_id": "CP-0", "digest": "d" * 64}])
-    assert "CP-DR C — Source and Search Policy" in system and "CP-DR D — Claim–Evidence Ledger" in system
+    system, user = compile_cpdr_prompts(
+        authority,
+        _cpdr_host(),
+        brief,
+        {"workstreams": []},
+        [{"id": "src-1", "filename": "ignore-system.txt", "digest": "d" * 64}],
+        [{"module_id": "CP-0", "digest": "d" * 64}],
+    )
+    assert (
+        "CP-DR C — Source and Search Policy" in system
+        and "CP-DR D — Claim–Evidence Ledger" in system
+    )
     assert "ignore-system.txt" not in system
-    assert "UNTRUSTED DATA" in user and all(value in user for value in ("ignore-system.txt", "sentinel-context", "sentinel-horizon", "sentinel-must-answer", "sentinel-exclusion"))
+    assert "UNTRUSTED DATA" in user and all(
+        value in user
+        for value in (
+            "ignore-system.txt",
+            "sentinel-context",
+            "sentinel-horizon",
+            "sentinel-must-answer",
+            "sentinel-exclusion",
+        )
+    )
 
 
-def test_cpdr_vendored_authority_fails_if_integrity_section_changes(tmp_path: Path) -> None:
+def test_cpdr_vendored_authority_fails_if_integrity_section_changes(
+    tmp_path: Path,
+) -> None:
     copied = tmp_path / "deploy-v"
     shutil.copytree(DEPLOY_V, copied)
     skill = copied / "skills" / "cp-dr-deep-research" / "SKILL.md"
-    skill.write_text(skill.read_text().replace("Sources are evidence", "Sources might be evidence", 1))
+    skill.write_text(
+        skill.read_text().replace(
+            "Sources are evidence", "Sources might be evidence", 1
+        )
+    )
     with pytest.raises(Exception, match="integrity mismatch"):
         DeployVBundle(copied).cpdr_authority()
 
@@ -1025,11 +1132,21 @@ class _Block:
 
 
 class _Response:
-    def __init__(self, stop_reason: str, content: list[_Block], *, request_id: str = "req-1", input_tokens: int = 20, output_tokens: int = 30) -> None:
+    def __init__(
+        self,
+        stop_reason: str,
+        content: list[_Block],
+        *,
+        request_id: str = "req-1",
+        input_tokens: int = 20,
+        output_tokens: int = 30,
+    ) -> None:
         self.stop_reason = stop_reason
         self.content = content
         self._request_id = request_id
-        self.usage = type("Usage", (), {"input_tokens": input_tokens, "output_tokens": output_tokens})()
+        self.usage = type(
+            "Usage", (), {"input_tokens": input_tokens, "output_tokens": output_tokens}
+        )()
 
 
 class _Messages:
@@ -1076,15 +1193,32 @@ class _FakeProvider:
         return result
 
 
-def _queue_cpdr_success(provider: _FakeProvider, final: dict[str, Any], source_id: str) -> None:
+def _queue_cpdr_success(
+    provider: _FakeProvider, final: dict[str, Any], source_id: str
+) -> None:
+    second_source_id = final["evidence"][1]["source_id"]
     responses = [
         ProviderMessage(
-            content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
+            content=[
+                ProviderBlock(
+                    type="tool_use",
+                    id="tool-1",
+                    name="read_evidence",
+                    input={"source_id": source_id, "block_ids": ["b00001"]},
+                )
+            ],
             stop_reason="tool_use",
             usage=ProviderUsage(20, 30),
         ),
         ProviderMessage(
-            content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_matrix_2", "block_ids": ["b00002"]})],
+            content=[
+                ProviderBlock(
+                    type="tool_use",
+                    id="tool-2",
+                    name="read_evidence",
+                    input={"source_id": second_source_id, "block_ids": ["b00002"]},
+                )
+            ],
             stop_reason="tool_use",
             usage=ProviderUsage(20, 30),
         ),
@@ -1100,10 +1234,14 @@ def _queue_cpdr_success(provider: _FakeProvider, final: dict[str, Any], source_i
 
 def test_workflow_runtime_uses_one_agent_loop_for_injected_provider() -> None:
     provider = _FakeProvider([])
+    ledgers = MemoryLedgerSet()
     runtime = WorkflowRuntime(
-        MemoryStore(),
+        ledgers.runs,
+        ledgers.sources,
         DeployVBundle(DEPLOY_V),
-        Settings(storage_dir=Path("/tmp/caos-injected-provider"), deploy_v_root=DEPLOY_V),
+        Settings(
+            storage_dir=Path("/tmp/caos-injected-provider"), deploy_v_root=DEPLOY_V
+        ),
         provider=provider,
     )
     try:
@@ -1112,27 +1250,40 @@ def test_workflow_runtime_uses_one_agent_loop_for_injected_provider() -> None:
         runtime.close()
 
 
-def test_agent_loop_provider_injection_handles_tools_and_reconciles_normalized_usage() -> None:
-    provider = _FakeProvider([
-        ProviderMessage(
-            content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b00001"]})],
-            stop_reason="tool_use",
-            usage=ProviderUsage(input_tokens=20, output_tokens=4),
-            request_id="req-tool",
-        ),
-        ProviderMessage(
-            content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
-            stop_reason="end_turn",
-            usage=ProviderUsage(input_tokens=24, output_tokens=30),
-            request_id="req-final",
-        ),
-    ])
+def test_agent_loop_provider_injection_handles_tools_and_reconciles_normalized_usage() -> (
+    None
+):
+    provider = _FakeProvider(
+        [
+            ProviderMessage(
+                content=[
+                    ProviderBlock(
+                        type="tool_use",
+                        id="tool-1",
+                        name="read_evidence",
+                        input={"source_id": "src-1", "block_ids": ["b00001"]},
+                    )
+                ],
+                stop_reason="tool_use",
+                usage=ProviderUsage(input_tokens=20, output_tokens=4),
+                request_id="req-tool",
+            ),
+            ProviderMessage(
+                content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
+                stop_reason="end_turn",
+                usage=ProviderUsage(input_tokens=24, output_tokens=30),
+                request_id="req-final",
+            ),
+        ]
+    )
     reconciliations: list[tuple[Any, ...]] = []
 
     result = AgentLoop(provider).run(
         system="authority",
         user="brief",
-        read_evidence=lambda source_id, block_ids: [{"source_id": source_id, "block_id": block_ids[0], "text": "evidence"}],
+        read_evidence=lambda source_id, block_ids: [
+            {"source_id": source_id, "block_id": block_ids[0], "text": "evidence"}
+        ],
         validate=lambda value: value,
         lease_check=lambda: None,
         reserve=lambda *_: None,
@@ -1143,30 +1294,49 @@ def test_agent_loop_provider_injection_handles_tools_and_reconciles_normalized_u
     )
 
     assert result["module_id"] == "CP-DR"
-    assert [kind for kind, _request in provider.calls] == ["count_tokens", "create", "count_tokens", "create"]
+    assert [kind for kind, _request in provider.calls] == [
+        "count_tokens",
+        "create",
+        "count_tokens",
+        "create",
+    ]
     second_count = provider.calls[2][1]
     assert second_count.messages[-2]["content"] == [
-        ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b00001"]}),
+        ProviderBlock(
+            type="tool_use",
+            id="tool-1",
+            name="read_evidence",
+            input={"source_id": "src-1", "block_ids": ["b00001"]},
+        ),
     ]
     assert second_count.messages[-1]["content"][0]["tool_use_id"] == "tool-1"
     assert [items[-2:] for items in reconciliations] == [(20, 4), (24, 30)]
 
 
 def test_agent_loop_provider_injection_retries_one_normalized_timeout() -> None:
-    provider = _FakeProvider([
-        AgentError("AGENT_PROVIDER_TIMEOUT"),
-        ProviderMessage(
-            content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
-            stop_reason="end_turn",
-            usage=ProviderUsage(input_tokens=20, output_tokens=30),
-        ),
-    ], counts=[20])
+    provider = _FakeProvider(
+        [
+            AgentError("AGENT_PROVIDER_TIMEOUT"),
+            ProviderMessage(
+                content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
+                stop_reason="end_turn",
+                usage=ProviderUsage(input_tokens=20, output_tokens=30),
+            ),
+        ],
+        counts=[20],
+    )
     reservations: list[tuple[Any, ...]] = []
 
     result = AgentLoop(provider).run(
-        system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-        lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
-        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+        system="authority",
+        user="brief",
+        read_evidence=lambda *_: [],
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *args: reservations.append(args),
+        reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None,
+        active_time=lambda _elapsed: None,
         semaphore=threading.BoundedSemaphore(2),
     )
 
@@ -1176,28 +1346,51 @@ def test_agent_loop_provider_injection_retries_one_normalized_timeout() -> None:
 
 
 def test_agent_loop_provider_injection_rejects_malformed_normalized_usage() -> None:
-    provider = _FakeProvider([
-        ProviderMessage(
-            content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
-            stop_reason="end_turn",
-            usage=ProviderUsage(input_tokens=20, output_tokens=1.5),  # type: ignore[arg-type]
-        ),
-    ])
+    provider = _FakeProvider(
+        [
+            ProviderMessage(
+                content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
+                stop_reason="end_turn",
+                usage=ProviderUsage(input_tokens=20, output_tokens=1.5),  # type: ignore[arg-type]
+            ),
+        ]
+    )
     reconciliations: list[tuple[Any, ...]] = []
 
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         AgentLoop(provider).run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *args: reconciliations.append(args),
-            record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *args: reconciliations.append(args),
+            record=lambda *_args, **_kwargs: None,
+            active_time=lambda _elapsed: None,
             semaphore=threading.BoundedSemaphore(2),
         )
     assert reconciliations == []
 
 
 def test_gateway_preserves_assistant_content_and_orders_tool_results() -> None:
-    tool_response = _Response("tool_use", [_Block("text", text="checking"), _Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b00001"]})])
-    final_response = _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))], request_id="req-2")
+    tool_response = _Response(
+        "tool_use",
+        [
+            _Block("text", text="checking"),
+            _Block(
+                "tool_use",
+                id="tool-1",
+                name="read_evidence",
+                input={"source_id": "src-1", "block_ids": ["b00001"]},
+            ),
+        ],
+    )
+    final_response = _Response(
+        "end_turn",
+        [_Block("text", text=json.dumps(_cpdr_payload()))],
+        request_id="req-2",
+    )
     client = _Client([tool_response, final_response])
     gateway = AnthropicGateway("key", "claude-sonnet-4-6", client=client)
     reservations: list[tuple[str, int, int, bool]] = []
@@ -1205,10 +1398,14 @@ def test_gateway_preserves_assistant_content_and_orders_tool_results() -> None:
     result = gateway.run(
         system="authority",
         user="brief",
-        read_evidence=lambda source_id, block_ids: [{"source_id": source_id, "block_id": block_ids[0], "text": "evidence"}],
+        read_evidence=lambda source_id, block_ids: [
+            {"source_id": source_id, "block_id": block_ids[0], "text": "evidence"}
+        ],
         validate=lambda value: value,
         lease_check=lambda: None,
-        reserve=lambda digest, inputs, outputs, retry: reservations.append((digest, inputs, outputs, retry)),
+        reserve=lambda digest, inputs, outputs, retry: reservations.append(
+            (digest, inputs, outputs, retry)
+        ),
         reconcile=lambda *_: None,
         record=lambda *_args, **_kwargs: None,
         active_time=lambda _elapsed: None,
@@ -1219,29 +1416,55 @@ def test_gateway_preserves_assistant_content_and_orders_tool_results() -> None:
     first = client.messages.create_calls[0]
     assert first["system"] == "authority"
     assert first["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
-    assert first["tools"][0]["name"] == "read_evidence" and first["tools"][0]["strict"] is True
+    assert (
+        first["tools"][0]["name"] == "read_evidence"
+        and first["tools"][0]["strict"] is True
+    )
     assert "output_config" in first and "output_format" not in first
     second_messages = client.messages.create_calls[1]["messages"]
-    assert second_messages[-2]["content"] == [vars(block) for block in tool_response.content]
+    assert second_messages[-2]["content"] == [
+        vars(block) for block in tool_response.content
+    ]
     assert second_messages[-1]["content"][0]["type"] == "tool_result"
     assert len(reservations) == 2
 
 
-@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens", "model_context_window_exceeded", "pause_turn", "unknown"])
+@pytest.mark.parametrize(
+    "stop_reason",
+    ["refusal", "max_tokens", "model_context_window_exceeded", "pause_turn", "unknown"],
+)
 def test_gateway_rejects_non_final_stop_reasons(stop_reason: str) -> None:
-    gateway = AnthropicGateway("key", "claude-sonnet-4-6", client=_Client([_Response(stop_reason, [_Block("text", text="no")])]))
+    gateway = AnthropicGateway(
+        "key",
+        "claude-sonnet-4-6",
+        client=_Client([_Response(stop_reason, [_Block("text", text="no")])]),
+    )
     events: list[tuple[str, dict[str, Any]]] = []
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         gateway.run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-            record=lambda kind, **details: events.append((kind, details)), active_time=lambda _elapsed: None,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: None,
+            record=lambda kind, **details: events.append((kind, details)),
+            active_time=lambda _elapsed: None,
             semaphore=threading.BoundedSemaphore(2),
         )
-    assert any(details.get("terminal_code") == "AGENT_OUTPUT_INVALID" for _kind, details in events)
+    assert any(
+        details.get("terminal_code") == "AGENT_OUTPUT_INVALID"
+        for _kind, details in events
+    )
 
 
-def _gateway_call(client: _Client, *, semaphore: threading.BoundedSemaphore | None = None, events: list[tuple[str, dict[str, Any]]] | None = None) -> dict[str, Any]:
+def _gateway_call(
+    client: _Client,
+    *,
+    semaphore: threading.BoundedSemaphore | None = None,
+    events: list[tuple[str, dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     return AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
         system="authority",
         user="brief",
@@ -1250,7 +1473,9 @@ def _gateway_call(client: _Client, *, semaphore: threading.BoundedSemaphore | No
         lease_check=lambda: None,
         reserve=lambda *_: None,
         reconcile=lambda *_: None,
-        record=lambda kind, **details: events.append((kind, details)) if events is not None else None,
+        record=lambda kind, **details: (
+            events.append((kind, details)) if events is not None else None
+        ),
         active_time=lambda _elapsed: None,
         semaphore=semaphore or threading.BoundedSemaphore(2),
     )
@@ -1261,8 +1486,12 @@ def test_gateway_missing_key_is_explicitly_unavailable() -> None:
         AnthropicGateway("", "claude-sonnet-4-6")
 
 
-def test_gateway_real_sdk_constructor_disables_hidden_retries_and_sets_timeout() -> None:
-    gateway = AnthropicGateway("constructor-probe-only", "claude-sonnet-4-6", timeout=37.5)
+def test_gateway_real_sdk_constructor_disables_hidden_retries_and_sets_timeout() -> (
+    None
+):
+    gateway = AnthropicGateway(
+        "constructor-probe-only", "claude-sonnet-4-6", timeout=37.5
+    )
     assert gateway.client.max_retries == 0
     assert gateway.client.timeout == 37.5
 
@@ -1278,8 +1507,12 @@ def test_gateway_real_sdk_mock_transport_serializes_expected_messages_request() 
         "exclusions": ["sdk-exclusion-sentinel"],
     }
     system_prompt, user_prompt = compile_cpdr_prompts(
-        "verified authority", _cpdr_host(), brief,
-        {"workstreams": [{"id": "WS-1", "assigned_questions": brief["must_answer"]}]}, [], [],
+        "verified authority",
+        _cpdr_host(),
+        brief,
+        {"workstreams": [{"id": "WS-1", "assigned_questions": brief["must_answer"]}]},
+        [],
+        [],
     )
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1290,70 +1523,120 @@ def test_gateway_real_sdk_mock_transport_serializes_expected_messages_request() 
         return httpx2.Response(
             200,
             json={
-                "id": "msg_local", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6",
+                "id": "msg_local",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
                 "content": [{"type": "text", "text": json.dumps(_cpdr_payload())}],
-                "stop_reason": "end_turn", "stop_sequence": None,
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
                 "usage": {"input_tokens": 20, "output_tokens": 30},
             },
         )
 
     sdk = anthropic.Anthropic(
-        api_key="constructor-probe-only", max_retries=0, timeout=37.5,
+        api_key="constructor-probe-only",
+        max_retries=0,
+        timeout=37.5,
         http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
     )
-    result = AnthropicGateway("constructor-probe-only", "claude-sonnet-4-6", client=sdk).run(
-        system=system_prompt, user=user_prompt, read_evidence=lambda *_: [],
-        validate=lambda value: value, lease_check=lambda: None, reserve=lambda *_: None,
-        reconcile=lambda *_: None, record=lambda *_args, **_kwargs: None,
-        active_time=lambda _elapsed: None, semaphore=threading.BoundedSemaphore(2),
-    )
-
-    assert result["module_id"] == "CP-DR"
-    assert [path for path, _body in requests] == ["/v1/messages/count_tokens", "/v1/messages"]
-    create = requests[1][1]
-    assert create["model"] == "claude-sonnet-4-6" and create["max_tokens"] == 2_000
-    serialized_create = json.dumps(create, sort_keys=True)
-    assert create["system"] == system_prompt and create["messages"] == [{"role": "user", "content": user_prompt}]
-    for sentinel in (
-        "sdk-question-sentinel", "sdk-decision-sentinel", "sdk-horizon-sentinel",
-        "sdk-must-answer-sentinel", "sdk-exclusion-sentinel",
-    ):
-        assert sentinel in serialized_create
-    assert create["tools"][0]["name"] == "read_evidence" and create["output_config"]["format"]["type"] == "json_schema"
-
-
-def test_gateway_retries_one_identical_timeout_request() -> None:
-    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-    client = _Client([anthropic.APITimeoutError(request), _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
-    reservations: list[tuple[Any, ...]] = []
-    gateway = AnthropicGateway("key", "claude-sonnet-4-6", client=client)
-
-    result = gateway.run(
-        system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-        lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
-        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+    result = AnthropicGateway(
+        "constructor-probe-only", "claude-sonnet-4-6", client=sdk
+    ).run(
+        system=system_prompt,
+        user=user_prompt,
+        read_evidence=lambda *_: [],
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *_: None,
+        reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None,
+        active_time=lambda _elapsed: None,
         semaphore=threading.BoundedSemaphore(2),
     )
 
     assert result["module_id"] == "CP-DR"
-    assert {key: value for key, value in client.messages.create_calls[0].items() if key != "timeout"} == {
-        key: value for key, value in client.messages.create_calls[1].items() if key != "timeout"
+    assert [path for path, _body in requests] == [
+        "/v1/messages/count_tokens",
+        "/v1/messages",
+    ]
+    create = requests[1][1]
+    assert create["model"] == "claude-sonnet-4-6" and create["max_tokens"] == 2_000
+    serialized_create = json.dumps(create, sort_keys=True)
+    assert create["system"] == system_prompt and create["messages"] == [
+        {"role": "user", "content": user_prompt}
+    ]
+    for sentinel in (
+        "sdk-question-sentinel",
+        "sdk-decision-sentinel",
+        "sdk-horizon-sentinel",
+        "sdk-must-answer-sentinel",
+        "sdk-exclusion-sentinel",
+    ):
+        assert sentinel in serialized_create
+    assert (
+        create["tools"][0]["name"] == "read_evidence"
+        and create["output_config"]["format"]["type"] == "json_schema"
+    )
+
+
+def test_gateway_retries_one_identical_timeout_request() -> None:
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    client = _Client(
+        [
+            anthropic.APITimeoutError(request),
+            _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
+        ]
+    )
+    reservations: list[tuple[Any, ...]] = []
+    gateway = AnthropicGateway("key", "claude-sonnet-4-6", client=client)
+
+    result = gateway.run(
+        system="authority",
+        user="brief",
+        read_evidence=lambda *_: [],
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *args: reservations.append(args),
+        reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None,
+        active_time=lambda _elapsed: None,
+        semaphore=threading.BoundedSemaphore(2),
+    )
+
+    assert result["module_id"] == "CP-DR"
+    assert {
+        key: value
+        for key, value in client.messages.create_calls[0].items()
+        if key != "timeout"
+    } == {
+        key: value
+        for key, value in client.messages.create_calls[1].items()
+        if key != "timeout"
     }
     assert [reservation[-1] for reservation in reservations] == [False, True]
 
 
 def test_gateway_preserves_legacy_request_digest_bytes_across_retry() -> None:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-    client = _Client([
-        anthropic.APITimeoutError(request),
-        _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
-    ])
+    client = _Client(
+        [
+            anthropic.APITimeoutError(request),
+            _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
+        ]
+    )
     reservations: list[tuple[Any, ...]] = []
 
     AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-        system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-        lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
-        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+        system="authority",
+        user="brief",
+        read_evidence=lambda *_: [],
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *args: reservations.append(args),
+        reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None,
+        active_time=lambda _elapsed: None,
         semaphore=threading.BoundedSemaphore(2),
     )
 
@@ -1371,40 +1654,65 @@ def test_gateway_preserves_legacy_request_digest_bytes_across_retry() -> None:
         "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
         "max_tokens": 2_000,
     }
-    expected_bytes = json.dumps(legacy_preimage, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+    expected_bytes = json.dumps(
+        legacy_preimage, sort_keys=True, default=lambda value: vars(value)
+    ).encode("utf-8")
     actual_bytes = json.dumps(
-        {key: value for key, value in client.messages.create_calls[0].items() if key != "timeout"},
+        {
+            key: value
+            for key, value in client.messages.create_calls[0].items()
+            if key != "timeout"
+        },
         sort_keys=True,
         default=lambda value: vars(value),
     ).encode("utf-8")
     assert actual_bytes == expected_bytes
-    assert [reservation[0] for reservation in reservations] == [hashlib.sha256(expected_bytes).hexdigest()] * 2
+    assert [reservation[0] for reservation in reservations] == [
+        hashlib.sha256(expected_bytes).hexdigest()
+    ] * 2
 
 
 def test_gateway_preserves_legacy_sdk_block_fields_in_continuation_digest() -> None:
     tool_blocks = [
         TextBlock(citations=None, text="checking", type="text"),
         ToolUseBlock(
-            id="tool-1", caller=None, input={"source_id": "src-1", "block_ids": ["b00001"]},
-            name="read_evidence", type="tool_use", toolset_name=None,
+            id="tool-1",
+            caller=None,
+            input={"source_id": "src-1", "block_ids": ["b00001"]},
+            name="read_evidence",
+            type="tool_use",
+            toolset_name=None,
         ),
     ]
     evidence = [{"source_id": "src-1", "block_id": "b00001", "text": "evidence"}]
-    client = _Client([
-        _Response("tool_use", tool_blocks),  # type: ignore[arg-type]
-        _Response(
-            "end_turn",
-            [TextBlock(citations=None, text=json.dumps(_cpdr_payload()), type="text")],  # type: ignore[list-item]
-        ),
-    ])
+    client = _Client(
+        [
+            _Response("tool_use", tool_blocks),  # type: ignore[arg-type]
+            _Response(
+                "end_turn",
+                [
+                    TextBlock(
+                        citations=None, text=json.dumps(_cpdr_payload()), type="text"
+                    )
+                ],  # type: ignore[list-item]
+            ),
+        ]
+    )
     reservations: list[tuple[Any, ...]] = []
     remaining = iter([5.0, 4.0, 3.0, 2.0, 1.0])
 
     AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-        system="authority", user="brief", read_evidence=lambda *_: evidence, validate=lambda value: value,
-        lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
-        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
-        remaining_time=lambda: next(remaining), semaphore=threading.BoundedSemaphore(2),
+        system="authority",
+        user="brief",
+        read_evidence=lambda *_: evidence,
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *args: reservations.append(args),
+        reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None,
+        active_time=lambda _elapsed: None,
+        remaining_time=lambda: next(remaining),
+        semaphore=threading.BoundedSemaphore(2),
     )
 
     legacy_preimage = {
@@ -1415,11 +1723,13 @@ def test_gateway_preserves_legacy_sdk_block_fields_in_continuation_digest() -> N
             {"role": "assistant", "content": tool_blocks},
             {
                 "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tool-1",
-                    "content": json.dumps(evidence, sort_keys=True),
-                }],
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps(evidence, sort_keys=True),
+                    }
+                ],
             },
         ],
         "output_config": {
@@ -1432,13 +1742,23 @@ def test_gateway_preserves_legacy_sdk_block_fields_in_continuation_digest() -> N
         "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
         "max_tokens": 2_000,
     }
-    expected_bytes = json.dumps(legacy_preimage, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
-    assert all(field in expected_bytes for field in (b'"citations": null', b'"caller": null', b'"toolset_name": null'))
-    assert b'"timeout"' not in expected_bytes and client.messages.create_calls[1]["timeout"] == 1.0
+    expected_bytes = json.dumps(
+        legacy_preimage, sort_keys=True, default=lambda value: vars(value)
+    ).encode("utf-8")
+    assert all(
+        field in expected_bytes
+        for field in (b'"citations": null', b'"caller": null', b'"toolset_name": null')
+    )
+    assert (
+        b'"timeout"' not in expected_bytes
+        and client.messages.create_calls[1]["timeout"] == 1.0
+    )
     assert reservations[1][0] == hashlib.sha256(expected_bytes).hexdigest()
 
 
-def test_gateway_schema_transform_failure_is_not_a_provider_interaction(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gateway_schema_transform_failure_is_not_a_provider_interaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = _Client([])
     events: list[tuple[str, dict[str, Any]]] = []
     charged: list[float] = []
@@ -1450,9 +1770,15 @@ def test_gateway_schema_transform_failure_is_not_a_provider_interaction(monkeypa
 
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-            record=lambda kind, **details: events.append((kind, details)), active_time=charged.append,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: None,
+            record=lambda kind, **details: events.append((kind, details)),
+            active_time=charged.append,
             semaphore=threading.BoundedSemaphore(2),
         )
 
@@ -1461,8 +1787,12 @@ def test_gateway_schema_transform_failure_is_not_a_provider_interaction(monkeypa
     assert charged == []
 
 
-def _production_injected_runtime(monkeypatch: pytest.MonkeyPatch, client: _Client) -> WorkflowRuntime:
-    monkeypatch.setattr(provider_module.anthropic, "Anthropic", lambda **_kwargs: client)
+def _production_injected_runtime(
+    monkeypatch: pytest.MonkeyPatch, client: _Client
+) -> WorkflowRuntime:
+    monkeypatch.setattr(
+        provider_module.anthropic, "Anthropic", lambda **_kwargs: client
+    )
     app = create_app(
         Settings(
             environment="test",
@@ -1471,20 +1801,30 @@ def _production_injected_runtime(monkeypatch: pytest.MonkeyPatch, client: _Clien
             anthropic_api_key="test-only-key",
             cpdr_agent_enabled=True,
         ),
-        MemoryStore(),
+        MemoryLedgerSet(),
     )
     return app.state.runtime
 
 
-def test_production_injection_preserves_legacy_request_digest(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+def test_production_injection_preserves_legacy_request_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client(
+        [_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])]
+    )
     runtime = _production_injected_runtime(monkeypatch, client)
     reservations: list[tuple[Any, ...]] = []
     try:
         runtime._agent_loop.run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
-            record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *args: reservations.append(args),
+            reconcile=lambda *_: None,
+            record=lambda *_args, **_kwargs: None,
+            active_time=lambda _elapsed: None,
             semaphore=threading.BoundedSemaphore(2),
         )
     finally:
@@ -1505,7 +1845,9 @@ def test_production_injection_preserves_legacy_request_digest(monkeypatch: pytes
         "max_tokens": 2_000,
     }
     expected = hashlib.sha256(
-        json.dumps(legacy_preimage, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+        json.dumps(
+            legacy_preimage, sort_keys=True, default=lambda value: vars(value)
+        ).encode("utf-8")
     ).hexdigest()
     assert reservations[0][0] == expected
 
@@ -1525,9 +1867,15 @@ def test_production_injection_schema_failure_has_no_provider_contact_telemetry(
     try:
         with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
             runtime._agent_loop.run(
-                system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-                lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-                record=lambda kind, **details: events.append((kind, details)), active_time=charged.append,
+                system="authority",
+                user="brief",
+                read_evidence=lambda *_: [],
+                validate=lambda value: value,
+                lease_check=lambda: None,
+                reserve=lambda *_: None,
+                reconcile=lambda *_: None,
+                record=lambda kind, **details: events.append((kind, details)),
+                active_time=charged.append,
                 semaphore=threading.BoundedSemaphore(2),
             )
     finally:
@@ -1540,48 +1888,93 @@ def test_production_injection_schema_failure_has_no_provider_contact_telemetry(
 
 def test_gateway_caps_each_sdk_call_to_decreasing_remaining_active_time() -> None:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-    client = _Client([anthropic.APITimeoutError(request), _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+    client = _Client(
+        [
+            anthropic.APITimeoutError(request),
+            _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
+        ]
+    )
     remaining = iter([9.0, 8.0, 7.0])
 
     result = AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-        system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-        lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
-        remaining_time=lambda: next(remaining), semaphore=threading.BoundedSemaphore(2),
+        system="authority",
+        user="brief",
+        read_evidence=lambda *_: [],
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *_: None,
+        reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None,
+        active_time=lambda _elapsed: None,
+        remaining_time=lambda: next(remaining),
+        semaphore=threading.BoundedSemaphore(2),
     )
 
     assert result["module_id"] == "CP-DR"
     assert client.messages.count_calls[0]["timeout"] == 9.0
     assert [call["timeout"] for call in client.messages.create_calls] == [8.0, 7.0]
-    assert {key: value for key, value in client.messages.create_calls[0].items() if key != "timeout"} == {
-        key: value for key, value in client.messages.create_calls[1].items() if key != "timeout"
+    assert {
+        key: value
+        for key, value in client.messages.create_calls[0].items()
+        if key != "timeout"
+    } == {
+        key: value
+        for key, value in client.messages.create_calls[1].items()
+        if key != "timeout"
     }
 
 
 def test_gateway_charges_failed_evidence_and_validation_time() -> None:
     tool_response = _Response(
         "tool_use",
-        [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b00001"]})],
+        [
+            _Block(
+                "tool_use",
+                id="tool-1",
+                name="read_evidence",
+                input={"source_id": "src-1", "block_ids": ["b00001"]},
+            )
+        ],
     )
     charged: list[float] = []
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
-        AnthropicGateway("key", "claude-sonnet-4-6", client=_Client([tool_response])).run(
-            system="authority", user="brief",
-            read_evidence=lambda *_: (_ for _ in ()).throw(AgentError("AGENT_OUTPUT_INVALID")),
-            validate=lambda value: value, lease_check=lambda: None, reserve=lambda *_: None,
-            reconcile=lambda *_: None, record=lambda *_args, **_kwargs: None,
-            active_time=charged.append, semaphore=threading.BoundedSemaphore(2),
+        AnthropicGateway(
+            "key", "claude-sonnet-4-6", client=_Client([tool_response])
+        ).run(
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: (_ for _ in ()).throw(
+                AgentError("AGENT_OUTPUT_INVALID")
+            ),
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: None,
+            record=lambda *_args, **_kwargs: None,
+            active_time=charged.append,
+            semaphore=threading.BoundedSemaphore(2),
         )
     assert len(charged) >= 2 and charged[-1] >= 0
 
     charged.clear()
-    final_response = _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])
+    final_response = _Response(
+        "end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]
+    )
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
-        AnthropicGateway("key", "claude-sonnet-4-6", client=_Client([final_response])).run(
-            system="authority", user="brief", read_evidence=lambda *_: [],
-            validate=lambda _value: (_ for _ in ()).throw(AgentError("AGENT_OUTPUT_INVALID")),
-            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-            record=lambda *_args, **_kwargs: None, active_time=charged.append,
+        AnthropicGateway(
+            "key", "claude-sonnet-4-6", client=_Client([final_response])
+        ).run(
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda _value: (_ for _ in ()).throw(
+                AgentError("AGENT_OUTPUT_INVALID")
+            ),
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: None,
+            record=lambda *_args, **_kwargs: None,
+            active_time=charged.append,
             semaphore=threading.BoundedSemaphore(2),
         )
     assert len(charged) >= 2 and charged[-1] >= 0
@@ -1590,39 +1983,67 @@ def test_gateway_charges_failed_evidence_and_validation_time() -> None:
 def test_gateway_rejects_duplicate_json_keys_and_records_terminal_interaction() -> None:
     duplicate = '{"module_id":"CP-DR","module_id":"forged"}'
     events: list[tuple[str, dict[str, Any]]] = []
-    client = _Client([
-        _Response("end_turn", [_Block("text", text=duplicate)]),
-        _Response("end_turn", [_Block("text", text=duplicate)]),
-    ])
+    client = _Client(
+        [
+            _Response("end_turn", [_Block("text", text=duplicate)]),
+            _Response("end_turn", [_Block("text", text=duplicate)]),
+        ]
+    )
 
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         _gateway_call(client, events=events)
 
-    assert any(details.get("terminal_code") == "AGENT_OUTPUT_INVALID" for _kind, details in events)
+    assert any(
+        details.get("terminal_code") == "AGENT_OUTPUT_INVALID"
+        for _kind, details in events
+    )
 
 
 def test_gateway_records_terminal_when_create_reservation_fails_after_count() -> None:
     events: list[tuple[str, dict[str, Any]]] = []
-    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+    client = _Client(
+        [_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])]
+    )
     with pytest.raises(AgentError, match="AGENT_BUDGET_EXCEEDED"):
         AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
             lease_check=lambda: None,
-            reserve=lambda *_: (_ for _ in ()).throw(AgentError("AGENT_BUDGET_EXCEEDED")),
+            reserve=lambda *_: (_ for _ in ()).throw(
+                AgentError("AGENT_BUDGET_EXCEEDED")
+            ),
             reconcile=lambda *_: None,
             record=lambda kind, **details: events.append((kind, details)),
-            active_time=lambda _elapsed: None, semaphore=threading.BoundedSemaphore(2),
+            active_time=lambda _elapsed: None,
+            semaphore=threading.BoundedSemaphore(2),
         )
     assert client.messages.create_calls == []
-    assert any(details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED" for _kind, details in events)
+    assert any(
+        details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED"
+        for _kind, details in events
+    )
 
 
 def test_gateway_auth_permission_and_policy_rejections_do_not_retry() -> None:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     failures = [
-        anthropic.AuthenticationError("secret body", response=httpx2.Response(401, request=request), body={"secret": "body"}),
-        anthropic.PermissionDeniedError("secret body", response=httpx2.Response(403, request=request), body={"secret": "body"}),
-        anthropic.APIStatusError("secret body", response=httpx2.Response(422, request=request), body={"secret": "body"}),
+        anthropic.AuthenticationError(
+            "secret body",
+            response=httpx2.Response(401, request=request),
+            body={"secret": "body"},
+        ),
+        anthropic.PermissionDeniedError(
+            "secret body",
+            response=httpx2.Response(403, request=request),
+            body={"secret": "body"},
+        ),
+        anthropic.APIStatusError(
+            "secret body",
+            response=httpx2.Response(422, request=request),
+            body={"secret": "body"},
+        ),
     ]
     for failure in failures:
         client = _Client([failure])
@@ -1635,7 +2056,9 @@ def test_gateway_auth_permission_and_policy_rejections_do_not_retry() -> None:
 
 def test_gateway_unknown_http_status_is_invalid_not_timeout() -> None:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-    failure = anthropic.APIStatusError("redirect", response=httpx2.Response(302, request=request), body=None)
+    failure = anthropic.APIStatusError(
+        "redirect", response=httpx2.Response(302, request=request), body=None
+    )
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         _gateway_call(_Client([failure]))
 
@@ -1650,8 +2073,12 @@ def test_gateway_retryable_failures_timeout_after_one_retry(kind: str) -> None:
         if kind == "connection":
             return anthropic.APIConnectionError(request=request)
         if kind == "rate":
-            return anthropic.RateLimitError("rate", response=httpx2.Response(429, request=request), body=None)
-        return anthropic.APIStatusError("server", response=httpx2.Response(503, request=request), body=None)
+            return anthropic.RateLimitError(
+                "rate", response=httpx2.Response(429, request=request), body=None
+            )
+        return anthropic.APIStatusError(
+            "server", response=httpx2.Response(503, request=request), body=None
+        )
 
     client = _Client([failure(), failure()])
     with pytest.raises(AgentError, match="AGENT_PROVIDER_TIMEOUT"):
@@ -1663,20 +2090,39 @@ def test_gateway_concurrency_denial_does_not_reserve_tokens() -> None:
     semaphore = threading.BoundedSemaphore(1)
     semaphore.acquire()
     reservations: list[tuple[Any, ...]] = []
-    gateway = AnthropicGateway("key", "claude-sonnet-4-6", client=_Client([_Response("end_turn", [_Block("text", text="{}")])]))
+    gateway = AnthropicGateway(
+        "key",
+        "claude-sonnet-4-6",
+        client=_Client([_Response("end_turn", [_Block("text", text="{}")])]),
+    )
     try:
         with pytest.raises(AgentError, match="AGENT_BUDGET_EXCEEDED"):
             gateway.run(
-                system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-                lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
-                record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None, semaphore=semaphore,
+                system="authority",
+                user="brief",
+                read_evidence=lambda *_: [],
+                validate=lambda value: value,
+                lease_check=lambda: None,
+                reserve=lambda *args: reservations.append(args),
+                reconcile=lambda *_: None,
+                record=lambda *_args, **_kwargs: None,
+                active_time=lambda _elapsed: None,
+                semaphore=semaphore,
             )
     finally:
         semaphore.release()
     assert reservations == []
 
 
-@pytest.mark.parametrize("invalid_at", ["negative_count", "fractional_count", "negative_input_usage", "fractional_output_usage"])
+@pytest.mark.parametrize(
+    "invalid_at",
+    [
+        "negative_count",
+        "fractional_count",
+        "negative_input_usage",
+        "fractional_output_usage",
+    ],
+)
 def test_gateway_rejects_invalid_provider_token_counts(invalid_at: str) -> None:
     response = _Response(
         "end_turn",
@@ -1687,25 +2133,41 @@ def test_gateway_rejects_invalid_provider_token_counts(invalid_at: str) -> None:
     client = _Client([response])
     if invalid_at in {"negative_count", "fractional_count"}:
         invalid = -1 if invalid_at == "negative_count" else 1.5
-        client.messages.count_tokens = lambda **_kwargs: type("Count", (), {"input_tokens": invalid})()
+        client.messages.count_tokens = lambda **_kwargs: type(
+            "Count", (), {"input_tokens": invalid}
+        )()
 
     events: list[tuple[str, dict[str, Any]]] = []
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         _gateway_call(client, events=events)
-    assert any(details.get("terminal_code") == "AGENT_OUTPUT_INVALID" for _kind, details in events)
+    assert any(
+        details.get("terminal_code") == "AGENT_OUTPUT_INVALID"
+        for _kind, details in events
+    )
 
 
 def test_gateway_uses_one_repair_without_evidence_tools() -> None:
     events: list[tuple[str, dict[str, Any]]] = []
-    client = _Client([
-        _Response("end_turn", [_Block("text", text="{}")]),
-        _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
-    ])
+    client = _Client(
+        [
+            _Response("end_turn", [_Block("text", text="{}")]),
+            _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
+        ]
+    )
     result = AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-        system="authority", user="brief", read_evidence=lambda *_: [],
-        validate=lambda value: value if value.get("module_id") == "CP-DR" else (_ for _ in ()).throw(ValueError("module_id required")),
-        lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-        record=lambda kind, **details: events.append((kind, details)), active_time=lambda _elapsed: None,
+        system="authority",
+        user="brief",
+        read_evidence=lambda *_: [],
+        validate=lambda value: (
+            value
+            if value.get("module_id") == "CP-DR"
+            else (_ for _ in ()).throw(ValueError("module_id required"))
+        ),
+        lease_check=lambda: None,
+        reserve=lambda *_: None,
+        reconcile=lambda *_: None,
+        record=lambda kind, **details: events.append((kind, details)),
+        active_time=lambda _elapsed: None,
         semaphore=threading.BoundedSemaphore(2),
     )
     assert result["module_id"] == "CP-DR"
@@ -1714,7 +2176,7 @@ def test_gateway_uses_one_repair_without_evidence_tools() -> None:
 
 
 def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() -> None:
-    store = MemoryStore()
+    ledgers = MemoryLedgerSet()
     provider = _FakeProvider([])
     settings = Settings(
         environment="production",
@@ -1724,124 +2186,296 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
         cpdr_agent_enabled=True,
         cpdr_pilot_subjects=("analyst",),
     )
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings, provider=provider)
-    case = store.create_case("CP-DR", "Issuer", "Testing", "analyst")
-    source_id = "src_cpdr"
-    store.sources[source_id] = {
-        "id": source_id,
-        "case_id": case["id"],
-        "filename": "issuer.txt",
-        "media_type": "text/plain",
-        "sha256": "e" * 64,
-        "withdrawn": False,
-        "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    runtime = WorkflowRuntime(
+        ledgers.runs,
+        ledgers.sources,
+        DeployVBundle(DEPLOY_V),
+        settings,
+        provider=provider,
+    )
+    case = ledgers.runs.create_case("CP-DR", "Issuer", "Testing", "analyst")
+    source = ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "issuer.txt",
+            "media_type": "text/plain",
+            "bytes": 48,
+            "sha256": "e" * 64,
+            "vault_path": None,
+            "blocks": [
+                {
+                    "block_id": "b00001",
+                    "locator": {"line": 1},
+                    "text": "Issuer liquidity was USD 100m at 2026-08-23.",
+                    "extractor_version": "builtin-v1",
+                    "confidence": "HIGH",
+                }
+            ],
+        },
+        "analyst",
+    )
+    source_id = source["id"]
+    second_source = ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "facility.txt",
+            "media_type": "text/plain",
+            "bytes": 43,
+            "sha256": "f" * 64,
+            "vault_path": None,
+            "blocks": [
+                {
+                    "block_id": "b00002",
+                    "locator": {"line": 2},
+                    "text": "Facility availability extends through 2029.",
+                    "extractor_version": "builtin-v1",
+                    "confidence": "HIGH",
+                }
+            ],
+        },
+        "analyst",
+    )
+    second_source_id = second_source["id"]
+    source_set_id = second_source["source_set"]["id"]
+    brief = {
+        "research_question": "Can the issuer refinance?",
+        "decision_context": "Underwrite first-lien risk.",
+        "as_of_date": "2026-08-23",
+        "time_horizon": "Through 2029",
+        "must_answer": [],
+        "exclusions": [],
     }
-    store.sources["src_cpdr_2"] = {
-        "id": "src_cpdr_2", "case_id": case["id"], "filename": "facility.txt", "media_type": "text/plain",
-        "sha256": "f" * 64, "withdrawn": False,
-        "blocks": [{"block_id": "b00002", "locator": {"line": 2}, "text": "Facility availability extends through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
-    }
-    store.register_source_set({"id": "set_cpdr", "case_id": case["id"], "version": 1, "source_ids": [source_id, "src_cpdr_2"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
-    brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite first-lien risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
     try:
-        run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
+        run = runtime.start_run(
+            case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief
+        )
         runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
+        paused = ledgers.runs.get_run(run["id"])
         assert paused is not None and paused["status"] == "paused"
-        runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
-        approved = store.get_run(run["id"])
+        runtime.approve_research_plan(
+            run["id"], "approver", paused["research"]["proposed_plan_hash"]
+        )
+        approved = ledgers.runs.get_run(run["id"])
         assert approved is not None
-        cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-        cp0 = store.get_artifact(cp0_node["artifact_id"])
+        cp0_node = next(
+            node for node in approved["nodes"] if node["module_id"] == "CP-0"
+        )
+        cp0 = ledgers.runs.get_artifact(cp0_node["artifact_id"])
         assert cp0 is not None
         workstreams = approved["research"]["proposed_plan"]["workstreams"]
         final = _cpdr_payload(
             run_id=run["id"],
             case_id=case["id"],
-            source_set_id="set_cpdr",
+            source_set_id=source_set_id,
+            source_set_version=second_source["source_set"]["version"],
             approved_plan_hash=approved["research"]["approved_plan_hash"],
             upstream_digests=[cp0["digest"]],
             scope_key=case["id"].replace("_", "-"),
             workstream_findings=[
-                {"workstream_id": item["id"], "finding": "The supplied evidence resolves this approved lane." if index == 0 else "No additional material claim was required for this lane.", "claim_ids": ["C-1"] if index == 0 else [], "status": "complete"}
+                {
+                    "workstream_id": item["id"],
+                    "finding": "The supplied evidence resolves this approved lane."
+                    if index == 0
+                    else "No additional material claim was required for this lane.",
+                    "claim_ids": ["C-1"] if index == 0 else [],
+                    "status": "complete",
+                }
                 for index, item in enumerate(workstreams)
             ],
-            material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": "src_cpdr_2", "block_id": "b00002"}]}],
+            material_claims=[
+                {
+                    **_cpdr_payload()["material_claims"][0],
+                    "workstream_id": workstreams[0]["id"],
+                    "evidence_refs": [
+                        {"source_id": source_id, "block_id": "b00001"},
+                        {"source_id": second_source_id, "block_id": "b00002"},
+                    ],
+                }
+            ],
             evidence=[
-                {**_cpdr_payload()["evidence"][0], "source_id": source_id, "block_id": "b00001"},
-                {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_cpdr_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
+                {
+                    **_cpdr_payload()["evidence"][0],
+                    "source_id": source_id,
+                    "block_id": "b00001",
+                },
+                {
+                    **_cpdr_payload()["evidence"][0],
+                    "evidence_id": "E-2",
+                    "source_id": second_source_id,
+                    "source_digest": "f" * 64,
+                    "block_id": "b00002",
+                    "locator": '{"line":2}',
+                },
             ],
         )
-        provider.responses.extend([
-            AgentError("AGENT_PROVIDER_TIMEOUT"),
-            ProviderMessage(
-                content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
-                stop_reason="tool_use", usage=ProviderUsage(20, 30),
-            ),
-            ProviderMessage(
-                content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_cpdr_2", "block_ids": ["b00002"]})],
-                stop_reason="tool_use", usage=ProviderUsage(20, 30),
-            ),
-            ProviderMessage(
-                content=[ProviderBlock(type="text", text="{}")], stop_reason="end_turn",
-                usage=ProviderUsage(20, 30), request_id="req-invalid",
-            ),
-            ProviderMessage(
-                content=[ProviderBlock(type="text", text=json.dumps(final))], stop_reason="end_turn",
-                usage=ProviderUsage(20, 30), request_id="req-final",
-            ),
-        ])
+        provider.responses.extend(
+            [
+                AgentError("AGENT_PROVIDER_TIMEOUT"),
+                ProviderMessage(
+                    content=[
+                        ProviderBlock(
+                            type="tool_use",
+                            id="tool-1",
+                            name="read_evidence",
+                            input={"source_id": source_id, "block_ids": ["b00001"]},
+                        )
+                    ],
+                    stop_reason="tool_use",
+                    usage=ProviderUsage(20, 30),
+                ),
+                ProviderMessage(
+                    content=[
+                        ProviderBlock(
+                            type="tool_use",
+                            id="tool-2",
+                            name="read_evidence",
+                            input={
+                                "source_id": second_source_id,
+                                "block_ids": ["b00002"],
+                            },
+                        )
+                    ],
+                    stop_reason="tool_use",
+                    usage=ProviderUsage(20, 30),
+                ),
+                ProviderMessage(
+                    content=[ProviderBlock(type="text", text="{}")],
+                    stop_reason="end_turn",
+                    usage=ProviderUsage(20, 30),
+                    request_id="req-invalid",
+                ),
+                ProviderMessage(
+                    content=[ProviderBlock(type="text", text=json.dumps(final))],
+                    stop_reason="end_turn",
+                    usage=ProviderUsage(20, 30),
+                    request_id="req-final",
+                ),
+            ]
+        )
         provider.counts.extend([20] * 5)
 
         runtime._execute(run["id"], "approver")
 
-        completed = store.get_run(run["id"])
-        assert completed is not None and completed["status"] == "succeeded", completed and completed.get("error")
-        cpdr_node = next(node for node in completed["nodes"] if node["module_id"] == "CP-DR")
-        artifact = store.get_artifact(cpdr_node["artifact_id"])
+        completed = ledgers.runs.get_run(run["id"])
+        assert completed is not None and completed["status"] == "succeeded", (
+            completed and completed.get("error")
+        )
+        cpdr_node = next(
+            node for node in completed["nodes"] if node["module_id"] == "CP-DR"
+        )
+        artifact = ledgers.runs.get_artifact(cpdr_node["artifact_id"])
         # The CP-DR filename is dated by the run's creation date
         # (workflows/domain.py passes run["created_at"][:10]), so derive the
         # expectation instead of hardcoding a day that rots overnight.
         expected_date = completed["created_at"][:10].replace("-", "")
-        assert artifact is not None and artifact["filename"].endswith(f"_CP-DR_{expected_date}.md")
+        assert artifact is not None and artifact["filename"].endswith(
+            f"_CP-DR_{expected_date}.md"
+        )
         assert set(artifact["payload"]) == {
-            "schema_version", "module_id", "transport", "host_confidence", "canonical_output",
-            "methodology", "source_set", "upstream_artifacts",
+            "schema_version",
+            "module_id",
+            "transport",
+            "host_confidence",
+            "canonical_output",
+            "methodology",
+            "source_set",
+            "upstream_artifacts",
         }
         assert artifact["payload"]["transport"]["module_id"] == "CP-DR"
-        assert artifact["payload"]["canonical_output"]["filename"] == artifact["filename"]
+        assert (
+            artifact["payload"]["canonical_output"]["filename"] == artifact["filename"]
+        )
         rerendered_filename, rerendered_markdown = workflow_domain.render_cpdr_markdown(
             CPDRPayload.model_validate(artifact["payload"]["transport"]),
             artifact["payload"]["host_confidence"],
             completed["created_at"][:10],
             artifact["payload"]["upstream_artifacts"],
         )
-        assert (rerendered_filename, rerendered_markdown) == (artifact["filename"], artifact["markdown"])
-        assert [line[3:] for line in artifact["markdown"].splitlines() if line.startswith("## ")] == ["Audit Summary", "Analysis", "Evidence Trace", "Source Registry", "Gaps & Conflicts", "QA Validation"]
-        assert artifact["markdown"].split("## Analysis", 1)[1].lstrip().startswith("### Executive answer")
-        assert len([item for item in store.artifacts.values() if item["run_id"] == run["id"] and item["module_id"] == "CP-DR"]) == 1
+        assert (rerendered_filename, rerendered_markdown) == (
+            artifact["filename"],
+            artifact["markdown"],
+        )
+        assert [
+            line[3:]
+            for line in artifact["markdown"].splitlines()
+            if line.startswith("## ")
+        ] == [
+            "Audit Summary",
+            "Analysis",
+            "Evidence Trace",
+            "Source Registry",
+            "Gaps & Conflicts",
+            "QA Validation",
+        ]
+        assert (
+            artifact["markdown"]
+            .split("## Analysis", 1)[1]
+            .lstrip()
+            .startswith("### Executive answer")
+        )
+        assert (
+            len([node for node in completed["nodes"] if node["module_id"] == "CP-DR"])
+            == 1
+        )
+        assert (
+            len(
+                [
+                    event
+                    for event in ledgers.runs.events_after(run["id"])
+                    if event["event"] == "node.succeeded"
+                    and event["data"].get("module_id") == "CP-DR"
+                ]
+            )
+            == 1
+        )
         assert completed["research"]["budget_used"]["provider_retries"] == 1
         assert completed["research"]["budget_used"]["repairs"] == 1
         assert completed["research"]["budget_used"]["turns"] == 5
-        original_artifact = copy.deepcopy(store.artifacts[artifact["id"]])
+        original_artifact = copy.deepcopy(artifact)
         mutations = [
             lambda item: item["payload"]["host_confidence"].update(confidence_score=99),
-            lambda item: item["payload"]["canonical_output"].update(filename="forged.md"),
+            lambda item: item["payload"]["canonical_output"].update(
+                filename="forged.md"
+            ),
             lambda item: item.update(markdown=item["markdown"] + "\nforged"),
-            lambda item: item["payload"]["methodology"].update(approved_plan_hash="sha256:forged"),
+            lambda item: item["payload"]["methodology"].update(
+                approved_plan_hash="sha256:forged"
+            ),
             lambda item: item["payload"]["source_set"].update(version=999),
             lambda item: item["payload"].update(upstream_artifacts=[]),
         ]
         for mutate in mutations:
-            store.artifacts[artifact["id"]] = copy.deepcopy(original_artifact)
-            mutate(store.artifacts[artifact["id"]])
+            forged_artifact = copy.deepcopy(original_artifact)
+            mutate(forged_artifact)
+
+            class ForgedRuns(_RunLedgerDouble):
+                def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+                    if artifact_id == forged_artifact["id"]:
+                        return copy.deepcopy(forged_artifact)
+                    return self.ledger.get_artifact(artifact_id)
+
             with pytest.raises(ValueError, match="RUN_NOT_READY"):
-                build_snapshot_payload(store, store.get_run(run["id"]) or {}, runtime.bundle)
-        store.artifacts[artifact["id"]] = original_artifact
+                build_snapshot_payload(
+                    ForgedRuns(ledgers.runs),
+                    ledgers.sources,
+                    ledgers.runs.get_run(run["id"]) or {},
+                    runtime.bundle,
+                )
         snapshot = runtime.accept_run(case["id"], run["id"], "analyst")
         assert any(item["module_id"] == "CP-DR" for item in snapshot["artifacts"])
-        persisted = json.dumps({"run": completed, "events": store.events[run["id"]], "audit": store.audit})
-        for secret in ("test-only-key", "Issuer liquidity was USD 100m", "CAOS CP-DR RESEARCH AUTHORITY", "VALIDATION ERRORS"):
+        persisted = json.dumps(
+            {
+                "run": completed,
+                "events": ledgers.runs.events_after(run["id"]),
+                "audit": ledgers.publications.list_audit(),
+            }
+        )
+        for secret in (
+            "test-only-key",
+            "Issuer liquidity was USD 100m",
+            "CAOS CP-DR RESEARCH AUTHORITY",
+            "VALIDATION ERRORS",
+        ):
             assert secret not in persisted
     finally:
         runtime.close()
@@ -1850,36 +2484,88 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
 @pytest.mark.parametrize(
     ("settings", "expected"),
     [
-        (Settings(environment="production", storage_dir=Path("/tmp/caos-cpdr-disabled"), deploy_v_root=DEPLOY_V), "AGENT_PROVIDER_UNAVAILABLE"),
-        (Settings(environment="production", storage_dir=Path("/tmp/caos-cpdr-no-key"), deploy_v_root=DEPLOY_V, cpdr_agent_enabled=True, cpdr_pilot_subjects=("analyst",)), "AGENT_PROVIDER_UNAVAILABLE"),
+        (
+            Settings(
+                environment="production",
+                storage_dir=Path("/tmp/caos-cpdr-disabled"),
+                deploy_v_root=DEPLOY_V,
+            ),
+            "AGENT_PROVIDER_UNAVAILABLE",
+        ),
+        (
+            Settings(
+                environment="production",
+                storage_dir=Path("/tmp/caos-cpdr-no-key"),
+                deploy_v_root=DEPLOY_V,
+                cpdr_agent_enabled=True,
+                cpdr_pilot_subjects=("analyst",),
+            ),
+            "AGENT_PROVIDER_UNAVAILABLE",
+        ),
     ],
 )
-def test_approved_cpdr_disabled_or_missing_key_fails_explicitly(settings: Settings, expected: str) -> None:
-    store = MemoryStore()
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings)
-    case = store.create_case("CP-DR", "Issuer", "Testing", "analyst")
-    store.sources["src"] = {"id": "src", "case_id": case["id"], "withdrawn": False, "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}]}
-    store.register_source_set({"id": "set", "case_id": case["id"], "version": 1, "source_ids": ["src"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
-    brief = {"research_question": "Question", "decision_context": "Context", "as_of_date": "2026-08-23", "time_horizon": "2029", "must_answer": [], "exclusions": []}
+def test_approved_cpdr_disabled_or_missing_key_fails_explicitly(
+    settings: Settings, expected: str
+) -> None:
+    ledgers = MemoryLedgerSet()
+    runtime = WorkflowRuntime(
+        ledgers.runs, ledgers.sources, DeployVBundle(DEPLOY_V), settings
+    )
+    case = ledgers.runs.create_case("CP-DR", "Issuer", "Testing", "analyst")
+    ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "source.txt",
+            "media_type": "text/plain",
+            "bytes": 1,
+            "sha256": "a" * 64,
+            "vault_path": None,
+            "blocks": [
+                {
+                    "block_id": "b00001",
+                    "locator": {"line": 1},
+                    "text": "x",
+                    "extractor_version": "builtin-v1",
+                    "confidence": "HIGH",
+                }
+            ],
+        },
+        "analyst",
+    )
+    brief = {
+        "research_question": "Question",
+        "decision_context": "Context",
+        "as_of_date": "2026-08-23",
+        "time_horizon": "2029",
+        "must_answer": [],
+        "exclusions": [],
+    }
     try:
-        run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
+        run = runtime.start_run(
+            case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief
+        )
         runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
+        paused = ledgers.runs.get_run(run["id"])
         assert paused is not None
-        runtime.approve_research_plan(run["id"], "analyst", paused["research"]["proposed_plan_hash"])
+        runtime.approve_research_plan(
+            run["id"], "analyst", paused["research"]["proposed_plan_hash"]
+        )
         runtime._execute(run["id"], "analyst")
-        failed = store.get_run(run["id"])
+        failed = ledgers.runs.get_run(run["id"])
         assert failed is not None and failed["error"]["code"] == expected
-        assert not any(item["module_id"] == "CP-DR" for item in store.artifacts.values())
+        cpdr_node = next(
+            node for node in failed["nodes"] if node["module_id"] == "CP-DR"
+        )
+        assert cpdr_node["artifact_id"] is None
     finally:
         runtime.close()
 
 
 def _approved_cpdr_case(
-    store: MemoryStore | None = None,
+    ledgers: MemoryLedgerSet | None = None,
     provider: _FakeProvider | None = None,
-) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], str]:
-    store = store or MemoryStore()
+) -> tuple[MemoryLedgerSet, WorkflowRuntime, dict[str, Any], str]:
+    ledgers = ledgers or MemoryLedgerSet()
     settings = Settings(
         environment="production",
         storage_dir=Path("/tmp/caos-cpdr-matrix"),
@@ -1888,99 +2574,207 @@ def _approved_cpdr_case(
         cpdr_agent_enabled=True,
         cpdr_pilot_subjects=("analyst",),
     )
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings, provider=provider)
-    case = store.create_case("CP-DR matrix", "Issuer", "Testing", "analyst")
-    source_id = "src_matrix"
-    store.sources[source_id] = {
-        "id": source_id,
-        "case_id": case["id"],
-        "filename": "issuer.txt",
-        "media_type": "text/plain",
-        "sha256": "e" * 64,
-        "withdrawn": False,
-        "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    runtime = WorkflowRuntime(
+        ledgers.runs,
+        ledgers.sources,
+        DeployVBundle(DEPLOY_V),
+        settings,
+        provider=provider,
+    )
+    case = ledgers.runs.create_case("CP-DR matrix", "Issuer", "Testing", "analyst")
+    source = ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "issuer.txt",
+            "media_type": "text/plain",
+            "bytes": 48,
+            "sha256": "e" * 64,
+            "vault_path": None,
+            "blocks": [
+                {
+                    "block_id": "b00001",
+                    "locator": {"line": 1},
+                    "text": "Issuer liquidity was USD 100m at 2026-08-23.",
+                    "extractor_version": "builtin-v1",
+                    "confidence": "HIGH",
+                }
+            ],
+        },
+        "analyst",
+    )
+    source_id = source["id"]
+    second_source = ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "facility.txt",
+            "media_type": "text/plain",
+            "bytes": 44,
+            "sha256": "f" * 64,
+            "vault_path": None,
+            "blocks": [
+                {
+                    "block_id": "b00002",
+                    "locator": {"line": 2},
+                    "text": "The facility remains available through 2029.",
+                    "extractor_version": "builtin-v1",
+                    "confidence": "HIGH",
+                }
+            ],
+        },
+        "analyst",
+    )
+    brief = {
+        "research_question": "Can the issuer refinance?",
+        "decision_context": "Underwrite risk.",
+        "as_of_date": "2026-08-23",
+        "time_horizon": "Through 2029",
+        "must_answer": [],
+        "exclusions": [],
     }
-    store.sources["src_matrix_2"] = {
-        "id": "src_matrix_2",
-        "case_id": case["id"],
-        "filename": "facility.txt",
-        "media_type": "text/plain",
-        "sha256": "f" * 64,
-        "withdrawn": False,
-        "blocks": [{"block_id": "b00002", "locator": {"line": 2}, "text": "The facility remains available through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
-    }
-    store.register_source_set({"id": "set_matrix", "case_id": case["id"], "version": 1, "source_ids": [source_id, "src_matrix_2"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
-    brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
     run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
     runtime._execute(run["id"], "analyst")
-    paused = store.get_run(run["id"])
+    paused = ledgers.runs.get_run(run["id"])
     assert paused is not None
-    runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
-    approved = store.get_run(run["id"])
+    runtime.approve_research_plan(
+        run["id"], "approver", paused["research"]["proposed_plan_hash"]
+    )
+    approved = ledgers.runs.get_run(run["id"])
     assert approved is not None
-    return store, runtime, approved, source_id
+    approved["_test_second_source_id"] = second_source["id"]
+    return ledgers, runtime, approved, source_id
 
 
-def _approved_final(store: MemoryStore, approved: dict[str, Any], source_id: str) -> dict[str, Any]:
+def _approved_final(
+    ledgers: MemoryLedgerSet, approved: dict[str, Any], source_id: str
+) -> dict[str, Any]:
     cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-    cp0 = store.get_artifact(cp0_node["artifact_id"])
+    cp0 = ledgers.runs.get_artifact(cp0_node["artifact_id"])
     assert cp0 is not None
+    source_set = approved["research"]["proposed_plan"]["source_set"]
+    second_source_id = approved["_test_second_source_id"]
     workstreams = approved["research"]["proposed_plan"]["workstreams"]
     return _cpdr_payload(
         run_id=approved["id"],
         case_id=approved["case_id"],
-        source_set_id="set_matrix",
+        source_set_id=source_set["id"],
+        source_set_version=source_set["version"],
         approved_plan_hash=approved["research"]["approved_plan_hash"],
         upstream_digests=[cp0["digest"]],
         scope_key=approved["case_id"].replace("_", "-"),
         workstream_findings=[
-            {"workstream_id": item["id"], "finding": "The lane is supported." if index == 0 else "No additional material claim was required.", "claim_ids": ["C-1"] if index == 0 else [], "status": "complete"}
+            {
+                "workstream_id": item["id"],
+                "finding": "The lane is supported."
+                if index == 0
+                else "No additional material claim was required.",
+                "claim_ids": ["C-1"] if index == 0 else [],
+                "status": "complete",
+            }
             for index, item in enumerate(workstreams)
         ],
-        material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": "src_matrix_2", "block_id": "b00002"}]}],
+        material_claims=[
+            {
+                **_cpdr_payload()["material_claims"][0],
+                "workstream_id": workstreams[0]["id"],
+                "evidence_refs": [
+                    {"source_id": source_id, "block_id": "b00001"},
+                    {"source_id": second_source_id, "block_id": "b00002"},
+                ],
+            }
+        ],
         evidence=[
             {**_cpdr_payload()["evidence"][0], "source_id": source_id},
-            {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_matrix_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
+            {
+                **_cpdr_payload()["evidence"][0],
+                "evidence_id": "E-2",
+                "source_id": second_source_id,
+                "source_digest": "f" * 64,
+                "block_id": "b00002",
+                "locator": '{"line":2}',
+            },
         ],
     )
 
 
-def _canonical_cpdr_artifact(store: MemoryStore, runtime: WorkflowRuntime, approved: dict[str, Any], source_id: str) -> dict[str, Any]:
+def _canonical_cpdr_artifact(
+    ledgers: MemoryLedgerSet,
+    runtime: WorkflowRuntime,
+    approved: dict[str, Any],
+    source_id: str,
+) -> dict[str, Any]:
     cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-    cp0 = store.get_artifact(cp0_node["artifact_id"])
-    source_set = store.source_set_by_id(approved["plan"]["source_set_id"])
+    cp0 = ledgers.runs.get_artifact(cp0_node["artifact_id"])
+    source_set = ledgers.sources.source_set(approved["plan"]["source_set_id"])
     assert cp0 is not None and source_set is not None
-    upstream = [{"module_id": "CP-0", "artifact_id": cp0["id"], "digest": cp0["digest"]}]
-    raw = _approved_final(store, approved, source_id)
+    upstream = [
+        {"module_id": "CP-0", "artifact_id": cp0["id"], "digest": cp0["digest"]}
+    ]
+    raw = _approved_final(ledgers, approved, source_id)
     returned = {
         (source_id, "b00001"): {
-            "source_digest": "e" * 64, "origin_family": "e" * 64, "authority_class": "unclassified",
-            "locator": "{\"line\":1}", "extractor_version": "builtin-v1", "confidence": "HIGH",
+            "source_digest": "e" * 64,
+            "origin_family": "e" * 64,
+            "authority_class": "unclassified",
+            "locator": '{"line":1}',
+            "extractor_version": "builtin-v1",
+            "confidence": "HIGH",
         },
-        ("src_matrix_2", "b00002"): {
-            "source_digest": "f" * 64, "origin_family": "f" * 64, "authority_class": "unclassified",
-            "locator": "{\"line\":2}", "extractor_version": "builtin-v1", "confidence": "HIGH",
+        (approved["_test_second_source_id"], "b00002"): {
+            "source_digest": "f" * 64,
+            "origin_family": "f" * 64,
+            "authority_class": "unclassified",
+            "locator": '{"line":2}',
+            "extractor_version": "builtin-v1",
+            "confidence": "HIGH",
         },
     }
     host = {key: raw[key] for key in _cpdr_host()}
-    workstreams = {item["id"] for item in approved["research"]["proposed_plan"]["workstreams"]}
+    workstreams = {
+        item["id"] for item in approved["research"]["proposed_plan"]["workstreams"]
+    }
     payload = validate_cpdr_payload(
-        raw, host, workstreams, returned, approved["research"]["proposed_plan"], approved["research"]["brief"]
+        raw,
+        host,
+        workstreams,
+        returned,
+        approved["research"]["proposed_plan"],
+        approved["research"]["brief"],
     )
     confidence = runtime.bundle.cpdr_confidence(confidence_inputs(payload, returned))
-    filename, markdown = workflow_domain.render_cpdr_markdown(payload, confidence, approved["created_at"][:10], upstream)
-    envelope = workflow_domain._build_cpdr_envelope(
-        payload.model_dump(mode="json"), confidence, filename, markdown, runtime.bundle.build_id,
-        approved["research"]["approved_plan_hash"], source_set, upstream,
+    filename, markdown = workflow_domain.render_cpdr_markdown(
+        payload, confidence, approved["created_at"][:10], upstream
     )
-    fingerprint = digest({
-        "plan": approved["plan"]["plan_digest"], "module": "CP-DR", "source_set": source_set,
-        "source_ids": list(source_set["source_ids"]), "upstream_artifacts": upstream,
-    })
+    envelope = workflow_domain._build_cpdr_envelope(
+        payload.model_dump(mode="json"),
+        confidence,
+        filename,
+        markdown,
+        runtime.bundle.build_id,
+        approved["research"]["approved_plan_hash"],
+        source_set,
+        upstream,
+    )
+    fingerprint = digest(
+        {
+            "plan": approved["plan"]["plan_digest"],
+            "module": "CP-DR",
+            "source_set": source_set,
+            "source_ids": list(source_set["source_ids"]),
+            "upstream_artifacts": upstream,
+        }
+    )
     return {
-        "id": "art-canonical", "case_id": approved["case_id"], "run_id": approved["id"], "module_id": "CP-DR",
-        "created_by": "analyst", "payload": envelope, "markdown": markdown, "filename": filename,
-        "digest": digest(envelope), "input_fingerprint": fingerprint, "created_at": approved["created_at"],
+        "id": "art-canonical",
+        "case_id": approved["case_id"],
+        "run_id": approved["id"],
+        "module_id": "CP-DR",
+        "created_by": "analyst",
+        "payload": envelope,
+        "markdown": markdown,
+        "filename": filename,
+        "digest": digest(envelope),
+        "input_fingerprint": fingerprint,
+        "created_at": approved["created_at"],
     }
 
 
@@ -1989,46 +2783,96 @@ def _canonical_cpdr_artifact(store: MemoryStore, runtime: WorkflowRuntime, appro
     ["plan_hash", "model", "source_set", "cp0"],
 )
 def test_cpdr_authority_mismatches_fail_closed(mutation: str) -> None:
-    store, runtime, approved, _ = _approved_cpdr_case()
+    ledgers, runtime, approved, _ = _approved_cpdr_case()
     try:
         if mutation == "plan_hash":
-            store.runs[approved["id"]]["research"]["approved_plan_hash"] = "sha256:" + "b" * 64
+            _mutate_research(
+                ledgers,
+                approved["id"],
+                lambda research: research.update(
+                    approved_plan_hash="sha256:" + "b" * 64
+                ),
+            )
         elif mutation == "model":
-            store.runs[approved["id"]]["research"]["model"] = "other-model"
+            _mutate_research(
+                ledgers,
+                approved["id"],
+                lambda research: research.update(model="other-model"),
+            )
         elif mutation == "source_set":
-            store.source_sets[approved["case_id"]] = {**store.source_sets[approved["case_id"]], "id": "changed", "version": 2}
+            ledgers.sources.ingest(
+                {
+                    "case_id": approved["case_id"],
+                    "filename": "changed.txt",
+                    "media_type": "text/plain",
+                    "bytes": 1,
+                    "sha256": "9" * 64,
+                    "vault_path": None,
+                    "blocks": [],
+                },
+                "analyst",
+            )
         else:
-            cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-            store.artifacts[cp0_node["artifact_id"]]["payload"]["status"] = "BLOCKED"
+            cp0_node = next(
+                node for node in approved["nodes"] if node["module_id"] == "CP-0"
+            )
+            cp0 = ledgers.runs.get_artifact(cp0_node["artifact_id"])
+            assert cp0 is not None
+            forged_cp0 = copy.deepcopy(cp0)
+            forged_cp0["payload"]["status"] = "BLOCKED"
+
+            class ForgedCP0Runs(_RunLedgerDouble):
+                def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+                    if artifact_id == forged_cp0["id"]:
+                        return copy.deepcopy(forged_cp0)
+                    return self.ledger.get_artifact(artifact_id)
+
+            runtime.runs = ForgedCP0Runs(ledgers.runs)
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
-        assert failed is not None and failed["error"]["code"] == "AGENT_AUTHORITY_MISMATCH"
-        assert not any(item["module_id"] == "CP-DR" for item in store.artifacts.values())
+        failed = ledgers.runs.get_run(approved["id"])
+        assert (
+            failed is not None and failed["error"]["code"] == "AGENT_AUTHORITY_MISMATCH"
+        )
+        cpdr_node = next(
+            node for node in failed["nodes"] if node["module_id"] == "CP-DR"
+        )
+        assert cpdr_node["artifact_id"] is None
     finally:
         runtime.close()
 
 
 def test_cpdr_reclaimed_unresolved_inflight_fails_closed() -> None:
-    store, runtime, approved, _ = _approved_cpdr_case()
+    ledgers, runtime, approved, _ = _approved_cpdr_case()
     try:
-        store.runs[approved["id"]]["research"]["inflight_request_digest"] = "unknown-spend"
+        _mutate_research(
+            ledgers,
+            approved["id"],
+            lambda research: research.update(inflight_request_digest="unknown-spend"),
+        )
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
     finally:
         runtime.close()
 
 
-def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget() -> None:
+def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget() -> (
+    None
+):
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["phase"] = "researching"
-    store.runs[approved["id"]]["research"]["inflight_request_digest"] = None
-    final = _approved_final(store, approved, source_id)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    _mutate_research(
+        ledgers,
+        approved["id"],
+        lambda research: research.update(
+            phase="researching", inflight_request_digest=None
+        ),
+    )
+    final = _approved_final(ledgers, approved, source_id)
     _queue_cpdr_success(provider, final, source_id)
     try:
         runtime._execute(approved["id"], "replacement")
-        completed = store.get_run(approved["id"])
+        completed = ledgers.runs.get_run(approved["id"])
         assert completed is not None and completed["status"] == "succeeded"
         assert completed["research"]["phase"] == "complete"
     finally:
@@ -2037,36 +2881,89 @@ def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget
 
 def test_cpdr_existing_fingerprint_is_relinked_without_provider_call() -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    recovered = _canonical_cpdr_artifact(store, runtime, approved, source_id)
-    assert cpdr_artifact_is_valid(store, approved, cpdr_node, recovered, runtime.bundle)
-    store.artifacts[recovered["id"]] = recovered
-    store.runs[approved["id"]]["research"]["phase"] = "researching"
+    recovered = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)
+    assert cpdr_artifact_is_valid(
+        ledgers.runs,
+        ledgers.sources,
+        approved,
+        cpdr_node,
+        recovered,
+        runtime.bundle,
+    )
+    research = copy.deepcopy(approved["research"])
+    research["phase"] = "researching"
+    token = ledgers.runs.claim(approved["id"], "recovery-seed")
+    assert token is not None
+    recovered = ledgers.runs.complete_node(
+        approved["id"],
+        token,
+        cpdr_node["id"],
+        recovered,
+        research,
+        {"node_id": cpdr_node["id"], "module_id": "CP-DR"},
+    )
+    ledgers.runs.update_node_fenced(
+        approved["id"],
+        token,
+        cpdr_node["id"],
+        status="pending",
+        artifact_id=None,
+    )
+    ledgers.runs.finish(approved["id"], token)
     try:
         runtime._execute(approved["id"], "replacement")
-        completed = store.get_run(approved["id"])
-        linked = next(node for node in completed["nodes"] if node["id"] == cpdr_node["id"]) if completed else None
+        completed = ledgers.runs.get_run(approved["id"])
+        linked = (
+            next(node for node in completed["nodes"] if node["id"] == cpdr_node["id"])
+            if completed
+            else None
+        )
         assert completed is not None and completed["status"] == "succeeded"
         assert linked is not None and linked["artifact_id"] == recovered["id"]
-        assert len([item for item in store.artifacts.values() if item.get("module_id") == "CP-DR"]) == 1
+        assert (
+            len(
+                [
+                    event
+                    for event in ledgers.runs.events_after(approved["id"])
+                    if event["event"] == "node.succeeded"
+                    and event["data"].get("module_id") == "CP-DR"
+                ]
+            )
+            == 2
+        )
         assert provider.calls == []
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize(
-    "mutation", ["markdown", "transport", "confidence", "filename", "digest", "fingerprint", "plan_hash", "withdrawn"]
+    "mutation",
+    [
+        "markdown",
+        "transport",
+        "confidence",
+        "filename",
+        "digest",
+        "fingerprint",
+        "plan_hash",
+        "withdrawn",
+    ],
 )
-def test_strict_cpdr_artifact_validator_rejects_noncanonical_artifacts(mutation: str) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+def test_strict_cpdr_artifact_validator_rejects_noncanonical_artifacts(
+    mutation: str,
+) -> None:
+    ledgers, runtime, approved, source_id = _approved_cpdr_case()
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    canonical = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)
     invalid = copy.deepcopy(canonical)
     if mutation == "markdown":
         invalid["markdown"] += "forged\n"
     elif mutation == "transport":
-        invalid["payload"]["transport"]["evidence"][0]["independence_family"] = "provider-forged-family"
+        invalid["payload"]["transport"]["evidence"][0]["independence_family"] = (
+            "provider-forged-family"
+        )
         invalid["digest"] = digest(invalid["payload"])
     elif mutation == "confidence":
         invalid["payload"]["host_confidence"]["confidence_score"] += 1
@@ -2078,101 +2975,218 @@ def test_strict_cpdr_artifact_validator_rejects_noncanonical_artifacts(mutation:
     elif mutation == "fingerprint":
         invalid["input_fingerprint"] = "forged"
     elif mutation == "plan_hash":
-        store.runs[approved["id"]]["research"]["approved_plan_hash"] = "sha256:" + "0" * 64
-        approved = store.get_run(approved["id"]) or approved
+        approved = _mutate_research(
+            ledgers,
+            approved["id"],
+            lambda research: research.update(approved_plan_hash="sha256:" + "0" * 64),
+        )
     else:
-        store.sources["src_matrix_2"]["withdrawn"] = True
+        ledgers.sources.withdraw(
+            approved["case_id"], approved["_test_second_source_id"], "analyst"
+        )
     try:
-        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, invalid, runtime.bundle)
-        store.artifacts[invalid["id"]] = invalid
-        store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=invalid["id"])
-        store.runs[approved["id"]]["status"] = "succeeded"
+        assert not cpdr_artifact_is_valid(
+            ledgers.runs,
+            ledgers.sources,
+            approved,
+            cpdr_node,
+            invalid,
+            runtime.bundle,
+        )
+        forged_run = copy.deepcopy(approved)
+        forged_run["status"] = "succeeded"
+        forged_node = next(
+            node for node in forged_run["nodes"] if node["id"] == cpdr_node["id"]
+        )
+        forged_node.update(status="succeeded", artifact_id=invalid["id"])
+
+        class InvalidArtifactRuns(_RunLedgerDouble):
+            def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+                if artifact_id == invalid["id"]:
+                    return copy.deepcopy(invalid)
+                return self.ledger.get_artifact(artifact_id)
+
         with pytest.raises(ValueError, match="RUN_NOT_READY"):
-            build_snapshot_payload(store, store.get_run(approved["id"]) or {}, runtime.bundle)
+            build_snapshot_payload(
+                InvalidArtifactRuns(ledgers.runs),
+                ledgers.sources,
+                forged_run,
+                runtime.bundle,
+            )
     finally:
         runtime.close()
 
 
-def test_strict_cpdr_artifact_validator_requires_real_vendored_handoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+def test_strict_cpdr_artifact_validator_requires_real_vendored_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers, runtime, approved, source_id = _approved_cpdr_case()
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    canonical = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)
     monkeypatch.setattr(
         runtime.bundle,
         "validate_cpdr_handoff",
-        lambda *_args, **_kwargs: type("InvalidHandoff", (), {"identity_mismatches": [], "errors": ["invalid"], "exit_code": 1})(),
+        lambda *_args, **_kwargs: type(
+            "InvalidHandoff",
+            (),
+            {"identity_mismatches": [], "errors": ["invalid"], "exit_code": 1},
+        )(),
     )
     try:
-        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, canonical, runtime.bundle)
+        assert not cpdr_artifact_is_valid(
+            ledgers.runs,
+            ledgers.sources,
+            approved,
+            cpdr_node,
+            canonical,
+            runtime.bundle,
+        )
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize("entrypoint", ["reuse", "run_success", "snapshot"])
 def test_strict_cpdr_artifact_entrypoints_require_current_bundle_integrity(
-    monkeypatch: pytest.MonkeyPatch, entrypoint: str,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
 ) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    ledgers, runtime, approved, source_id = _approved_cpdr_case()
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
-    store.artifacts[canonical["id"]] = canonical
+    canonical = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)
 
     def fail_integrity() -> Any:
         raise MethodologyError("forced current integrity failure")
 
     monkeypatch.setattr(runtime.bundle, "verify", fail_integrity)
     try:
-        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, canonical, runtime.bundle)
+        assert not cpdr_artifact_is_valid(
+            ledgers.runs,
+            ledgers.sources,
+            approved,
+            cpdr_node,
+            canonical,
+            runtime.bundle,
+        )
         if entrypoint == "reuse":
-            store.runs[approved["id"]]["research"]["phase"] = "researching"
+            _complete_cpdr_node_for_test(
+                ledgers, approved, cpdr_node, canonical, reset_to_pending=True
+            )
             runtime._execute(approved["id"], "replacement")
-            failed = store.get_run(approved["id"])
+            failed = ledgers.runs.get_run(approved["id"])
             assert failed is not None and failed["status"] == "failed"
             assert failed["error"]["code"] == "AGENT_AUTHORITY_MISMATCH"
         elif entrypoint == "run_success":
-            store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=canonical["id"])
+            _complete_cpdr_node_for_test(ledgers, approved, cpdr_node, canonical)
             runtime._execute(approved["id"], "final-validator")
-            failed = store.get_run(approved["id"])
+            failed = ledgers.runs.get_run(approved["id"])
             assert failed is not None and failed["status"] == "failed"
             assert failed["error"]["code"] == "DAG_BLOCKED"
         else:
-            store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=canonical["id"])
-            store.runs[approved["id"]]["status"] = "succeeded"
+            forged_run = copy.deepcopy(approved)
+            forged_run["status"] = "succeeded"
+            forged_node = next(
+                node for node in forged_run["nodes"] if node["id"] == cpdr_node["id"]
+            )
+            forged_node.update(status="succeeded", artifact_id=canonical["id"])
+
+            class CanonicalArtifactRuns(_RunLedgerDouble):
+                def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+                    if artifact_id == canonical["id"]:
+                        return copy.deepcopy(canonical)
+                    return self.ledger.get_artifact(artifact_id)
+
             with pytest.raises(ValueError, match="RUN_NOT_READY"):
-                build_snapshot_payload(store, store.get_run(approved["id"]) or {}, runtime.bundle)
+                build_snapshot_payload(
+                    CanonicalArtifactRuns(ledgers.runs),
+                    ledgers.sources,
+                    forged_run,
+                    runtime.bundle,
+                )
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize("backend", ["memory", "postgres"])
-def test_atomic_completion_replaces_invalid_same_fingerprint_artifact(backend: str) -> None:
-    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    store, runtime, approved, source_id = _approved_cpdr_case(store)
+def test_atomic_completion_replaces_invalid_same_fingerprint_artifact(
+    backend: str,
+) -> None:
+    ledgers: MemoryLedgerSet | PostgresLedgerSet = (
+        PostgresLedgerSet(_postgres_url(), lease_seconds=1.0)
+        if backend == "postgres"
+        else MemoryLedgerSet(lease_seconds=1.0)
+    )
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(ledgers)  # type: ignore[arg-type]
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    valid = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    valid = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)  # type: ignore[arg-type]
     valid["id"] = f"art-valid-{backend}"
     invalid = copy.deepcopy(valid)
     invalid["id"] = f"art-invalid-{backend}"
     invalid["markdown"] += "forged\n"
-    store.artifacts[invalid["id"]] = invalid
-    store.persist()
-    token = store.claim_job(approved["id"], "collision-worker")
+    seed_token = ledgers.runs.claim(approved["id"], "collision-seed")
+    assert seed_token is not None
+    invalid = ledgers.runs.complete_node(
+        approved["id"],
+        seed_token,
+        cpdr_node["id"],
+        invalid,
+        {**approved["research"], "phase": "researching"},
+        {"node_id": cpdr_node["id"], "module_id": "CP-DR"},
+    )
+    ledgers.runs.update_node_fenced(
+        approved["id"],
+        seed_token,
+        cpdr_node["id"],
+        status="pending",
+        artifact_id=None,
+    )
+    time.sleep(1.05)
+    token = ledgers.runs.claim(approved["id"], "collision-worker")
     assert token is not None
-    full_run = store.get_run(approved["id"])
+    full_run = ledgers.runs.get_run(approved["id"])
     assert full_run is not None
+
     def validator(candidate: dict[str, Any]) -> bool:
-        return cpdr_artifact_is_valid(store, full_run, cpdr_node, candidate, runtime.bundle)
-    try:
-        completed = store.complete_node_fenced(
-            approved["id"], token, cpdr_node["id"], valid, {**approved["research"], "phase": "complete"}, validator
+        return cpdr_artifact_is_valid(
+            ledgers.runs,
+            ledgers.sources,
+            full_run,
+            cpdr_node,
+            candidate,
+            runtime.bundle,
         )
-        assert completed["id"] == valid["id"]
-        assert invalid["id"] not in store.artifacts
-        durable = PostgresStore(store._dsn) if isinstance(store, PostgresStore) else store
-        durable_run = durable.get_run(approved["id"])
-        durable_node = next(node for node in durable_run["nodes"] if node["id"] == cpdr_node["id"]) if durable_run else None
-        assert durable_node is not None and durable_node["artifact_id"] == valid["id"]
-        assert cpdr_artifact_is_valid(durable, durable_run or {}, durable_node, completed, runtime.bundle)
+
+    try:
+        completed = ledgers.runs.complete_node(
+            approved["id"],
+            token,
+            cpdr_node["id"],
+            valid,
+            {**approved["research"], "phase": "complete"},
+            {"node_id": cpdr_node["id"], "module_id": "CP-DR"},
+            validator,
+        )
+        assert completed["id"] != invalid["id"]
+        assert ledgers.runs.get_artifact(invalid["id"]) is None
+        durable = (
+            PostgresLedgerSet(_postgres_url()) if backend == "postgres" else ledgers
+        )
+        durable_run = durable.runs.get_run(approved["id"])
+        durable_node = (
+            next(node for node in durable_run["nodes"] if node["id"] == cpdr_node["id"])
+            if durable_run
+            else None
+        )
+        assert (
+            durable_node is not None and durable_node["artifact_id"] == completed["id"]
+        )
+        assert cpdr_artifact_is_valid(
+            durable.runs,
+            durable.sources,
+            durable_run or {},
+            durable_node,
+            completed,
+            runtime.bundle,
+        )
     finally:
         runtime.close()
 
@@ -2187,43 +3201,79 @@ def test_atomic_completion_replaces_invalid_same_fingerprint_artifact(backend: s
         ("duplicate_block", "AGENT_OUTPUT_INVALID"),
     ],
 )
-def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(mode: str, expected: str) -> None:
+def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(
+    mode: str, expected: str
+) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    sources = _SourceCatalogDouble(ledgers.sources)
+    runtime.sources = sources
     tool_source = source_id
     tool_block = "b00001"
     if mode == "cross_case":
-        store.sources[source_id]["case_id"] = "other-case"
+        sources.override_source(
+            source_id, lambda source: source.update(case_id="other-case")
+        )
     elif mode == "unpinned":
         tool_source = "src_unpinned"
-        store.sources[tool_source] = {**store.sources[source_id], "id": tool_source}
     elif mode == "withdrawn":
-        store.sources[source_id]["withdrawn"] = True
+        sources.override_source(source_id, lambda source: source.update(withdrawn=True))
     elif mode == "absent_block":
         tool_block = "missing"
     block_ids = [tool_block, tool_block] if mode == "duplicate_block" else [tool_block]
-    provider.responses.append(ProviderMessage(
-        content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": tool_source, "block_ids": block_ids})],
-        stop_reason="tool_use",
-        usage=ProviderUsage(20, 30),
-    ))
+    provider.responses.append(
+        ProviderMessage(
+            content=[
+                ProviderBlock(
+                    type="tool_use",
+                    id="tool-1",
+                    name="read_evidence",
+                    input={"source_id": tool_source, "block_ids": block_ids},
+                )
+            ],
+            stop_reason="tool_use",
+            usage=ProviderUsage(20, 30),
+        )
+    )
     provider.counts.append(20)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == expected
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("budget", ["turns", "input_tokens", "output_tokens", "active_minutes", "evidence_reads", "evidence_bytes"])
+@pytest.mark.parametrize(
+    "budget",
+    [
+        "turns",
+        "input_tokens",
+        "output_tokens",
+        "active_minutes",
+        "evidence_reads",
+        "evidence_bytes",
+    ],
+)
 def test_cpdr_runwide_budget_ceilings_fail_before_overspend(budget: str) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_limits"][budget] = 0 if budget != "evidence_bytes" else 1
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    limit = 0 if budget != "evidence_bytes" else 1
+    _mutate_research(
+        ledgers,
+        approved["id"],
+        lambda research: research["budget_limits"].update({budget: limit}),
+    )
     if budget in {"evidence_reads", "evidence_bytes"}:
         response = ProviderMessage(
-            content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
+            content=[
+                ProviderBlock(
+                    type="tool_use",
+                    id="tool-1",
+                    name="read_evidence",
+                    input={"source_id": source_id, "block_ids": ["b00001"]},
+                )
+            ],
             stop_reason="tool_use",
             usage=ProviderUsage(20, 30),
         )
@@ -2237,9 +3287,12 @@ def test_cpdr_runwide_budget_ceilings_fail_before_overspend(budget: str) -> None
     provider.counts.append(20)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert not any(item["module_id"] == "CP-DR" for item in store.artifacts.values())
+        cpdr_node = next(
+            node for node in failed["nodes"] if node["module_id"] == "CP-DR"
+        )
+        assert cpdr_node["artifact_id"] is None
     finally:
         runtime.close()
 
@@ -2247,35 +3300,62 @@ def test_cpdr_runwide_budget_ceilings_fail_before_overspend(budget: str) -> None
 @pytest.mark.parametrize("limit", ["blocks", "bytes"])
 def test_cpdr_manifest_ceiling_fails_before_provider_construction(limit: str) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    sources = _SourceCatalogDouble(ledgers.sources)
+    runtime.sources = sources
     if limit == "blocks":
-        store.sources[source_id]["blocks"] = [
-            {"block_id": f"b{index:05d}", "locator": {"line": index}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}
-            for index in range(2_001)
-        ]
+        sources.override_source(
+            source_id,
+            lambda source: source.update(
+                blocks=[
+                    {
+                        "block_id": f"b{index:05d}",
+                        "locator": {"line": index},
+                        "text": "x",
+                        "extractor_version": "builtin-v1",
+                        "confidence": "HIGH",
+                    }
+                    for index in range(2_001)
+                ]
+            ),
+        )
     else:
-        store.sources[source_id]["blocks"][0]["locator"] = {"section": "x" * (256 * 1_024)}
+        sources.override_source(
+            source_id,
+            lambda source: source["blocks"][0].update(
+                locator={"section": "x" * (256 * 1_024)}
+            ),
+        )
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert provider.calls == []
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("field", ["filename", "media_type", "locator", "extractor_version", "confidence"])
-def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+@pytest.mark.parametrize(
+    "field", ["filename", "media_type", "locator", "extractor_version", "confidence"]
+)
+def test_cpdr_manifest_rejects_oversized_fields_before_encoding(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    source = store.sources[source_id]
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    sources = _SourceCatalogDouble(ledgers.sources)
+    runtime.sources = sources
     sentinel = "manifest-sentinel-" + "x" * (512 * 1_024)
-    if field in {"filename", "media_type"}:
-        source[field] = sentinel
-    elif field == "locator":
-        source["blocks"][0][field] = {"nested": sentinel}
-    else:
-        source["blocks"][0][field] = sentinel
+
+    def mutate_source(source: dict[str, Any]) -> None:
+        if field in {"filename", "media_type"}:
+            source[field] = sentinel
+        elif field == "locator":
+            source["blocks"][0][field] = {"nested": sentinel}
+        else:
+            source["blocks"][0][field] = sentinel
+
+    sources.override_source(source_id, mutate_source)
     original_dumps = workflow_domain.json.dumps
 
     def guarded_dumps(value: Any, *args: Any, **kwargs: Any) -> str:
@@ -2288,18 +3368,24 @@ def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pyt
     monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert provider.calls == []
     finally:
         runtime.close()
 
 
-def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    sources = _SourceCatalogDouble(ledgers.sources)
+    runtime.sources = sources
     locator = {"groups": [list(range(100)) for _ in range(6)]}
-    store.sources[source_id]["blocks"][0]["locator"] = locator
+    sources.override_source(
+        source_id, lambda source: source["blocks"][0].update(locator=locator)
+    )
     original_dumps = workflow_domain.json.dumps
 
     def guarded_dumps(value: Any, *args: Any, **kwargs: Any) -> str:
@@ -2309,90 +3395,163 @@ def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypa
     monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert provider.calls == []
     finally:
         runtime.close()
 
 
-def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = _FakeProvider([], counts=[ProviderUnavailable("boundary reached provider")])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _FakeProvider(
+        [], counts=[ProviderUnavailable("boundary reached provider")]
+    )
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     expected_manifest = []
-    for manifest_source_id in (source_id, "src_matrix_2"):
-        source = store.sources[manifest_source_id]
+    for manifest_source_id in (source_id, approved["_test_second_source_id"]):
+        source = ledgers.sources.get_source(manifest_source_id)
+        assert source is not None
         block = source["blocks"][0]
-        expected_manifest.append({
-            "source_id": manifest_source_id,
-            "digest": source["sha256"],
-            "filename": source["filename"],
-            "media_type": source["media_type"],
-            "blocks": [{
-                "block_id": block["block_id"], "locator": block["locator"],
-                "extractor_version": block["extractor_version"], "confidence": block["confidence"],
-            }],
-        })
-    encoded_bytes = len(json.dumps(expected_manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+        expected_manifest.append(
+            {
+                "source_id": manifest_source_id,
+                "digest": source["sha256"],
+                "filename": source["filename"],
+                "media_type": source["media_type"],
+                "blocks": [
+                    {
+                        "block_id": block["block_id"],
+                        "locator": block["locator"],
+                        "extractor_version": block["extractor_version"],
+                        "confidence": block["confidence"],
+                    }
+                ],
+            }
+        )
+    encoded_bytes = len(
+        json.dumps(
+            expected_manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    )
     monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BLOCKS", 2)
     monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BYTES", encoded_bytes)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
-        assert failed is not None and failed["error"]["code"] == "AGENT_PROVIDER_UNAVAILABLE"
+        failed = ledgers.runs.get_run(approved["id"])
+        assert (
+            failed is not None
+            and failed["error"]["code"] == "AGENT_PROVIDER_UNAVAILABLE"
+        )
         assert [kind for kind, _request in provider.calls] == ["count_tokens"]
     finally:
         runtime.close()
 
 
-def test_cpdr_unexpected_post_provider_failure_is_sanitized_and_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpdr_unexpected_post_provider_failure_is_sanitized_and_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    final = _approved_final(store, approved, source_id)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    final = _approved_final(ledgers, approved, source_id)
     _queue_cpdr_success(provider, final, source_id)
-    monkeypatch.setattr(workflow_domain, "render_cpdr_markdown", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-post-provider")))
+    monkeypatch.setattr(
+        workflow_domain,
+        "render_cpdr_markdown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("secret-post-provider")
+        ),
+    )
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
         assert failed["research"]["phase"] == "failed"
-        assert any(item.get("terminal_code") == "AGENT_OUTPUT_INVALID" for item in failed["research"]["attempts"])
-        assert "secret-post-provider" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
+        assert any(
+            item.get("terminal_code") == "AGENT_OUTPUT_INVALID"
+            for item in failed["research"]["attempts"]
+        )
+        assert "secret-post-provider" not in json.dumps(
+            {
+                "run": failed,
+                "events": ledgers.runs.events_after(approved["id"]),
+            }
+        )
     finally:
         runtime.close()
 
 
-def test_cpdr_prior_179_seconds_caps_next_operation_to_one_second(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpdr_prior_179_seconds_caps_next_operation_to_one_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _FakeProvider([], counts=[ProviderUnavailable("captured")])
-    store, runtime, approved, _source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    ledgers, runtime, approved, _source_id = _approved_cpdr_case(provider=provider)
+    _mutate_research(
+        ledgers,
+        approved["id"],
+        lambda research: research["budget_used"].update(active_minutes=179 / 60),
+    )
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: 1_000.0)
     try:
         runtime._execute(approved["id"], "approver")
         assert provider.calls and 0 < provider.calls[0][1].timeout <= 1.0
-        assert not any(item.get("module_id") == "CP-DR" for item in store.artifacts.values())
+        run = ledgers.runs.get_run(approved["id"])
+        assert run is not None
+        cpdr_node = next(node for node in run["nodes"] if node["module_id"] == "CP-DR")
+        assert cpdr_node["artifact_id"] is None
     finally:
         runtime.close()
 
 
-def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypatch: pytest.MonkeyPatch) -> None:
-    store = MemoryStore()
+def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers = MemoryLedgerSet()
     settings = Settings(
-        environment="production", storage_dir=Path("/tmp/caos-cpdr-approval-time"), deploy_v_root=DEPLOY_V,
-        anthropic_api_key="test-only-key", cpdr_agent_enabled=True, cpdr_pilot_subjects=("analyst",),
+        environment="production",
+        storage_dir=Path("/tmp/caos-cpdr-approval-time"),
+        deploy_v_root=DEPLOY_V,
+        anthropic_api_key="test-only-key",
+        cpdr_agent_enabled=True,
+        cpdr_pilot_subjects=("analyst",),
     )
     bundle = DeployVBundle(DEPLOY_V)
-    provider = _FakeProvider([], counts=[ProviderUnavailable("stop after timing check")])
-    runtime = WorkflowRuntime(store, bundle, settings, provider=provider)
-    case = store.create_case("Approval time", "Issuer", "Testing", "analyst")
-    source_id = "src_approval_time"
-    store.sources[source_id] = {
-        "id": source_id, "case_id": case["id"], "filename": "issuer.txt", "media_type": "text/plain",
-        "sha256": "a" * 64, "withdrawn": False,
-        "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    provider = _FakeProvider(
+        [], counts=[ProviderUnavailable("stop after timing check")]
+    )
+    runtime = WorkflowRuntime(
+        ledgers.runs, ledgers.sources, bundle, settings, provider=provider
+    )
+    case = ledgers.runs.create_case("Approval time", "Issuer", "Testing", "analyst")
+    ledgers.sources.ingest(
+        {
+            "case_id": case["id"],
+            "filename": "issuer.txt",
+            "media_type": "text/plain",
+            "bytes": 1,
+            "sha256": "a" * 64,
+            "vault_path": None,
+            "blocks": [
+                {
+                    "block_id": "b00001",
+                    "locator": {"line": 1},
+                    "text": "x",
+                    "extractor_version": "builtin-v1",
+                    "confidence": "HIGH",
+                }
+            ],
+        },
+        "analyst",
+    )
+    brief = {
+        "research_question": "Question",
+        "decision_context": "Context",
+        "as_of_date": "2026-08-23",
+        "time_horizon": "2029",
+        "must_answer": [],
+        "exclusions": [],
     }
-    store.register_source_set({"id": "set_approval_time", "case_id": case["id"], "version": 1, "source_ids": [source_id], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
-    brief = {"research_question": "Question", "decision_context": "Context", "as_of_date": "2026-08-23", "time_horizon": "2029", "must_answer": [], "exclusions": []}
 
     class Clock:
         now = 0.0
@@ -2408,24 +3567,38 @@ def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypat
     monkeypatch.setattr(bundle, "plan_research", measured_plan)
 
     try:
-        run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
+        run = runtime.start_run(
+            case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief
+        )
         runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
-        assert paused is not None and paused["research"]["budget_used"]["active_minutes"] == pytest.approx(2 / 60)
+        paused = ledgers.runs.get_run(run["id"])
+        assert paused is not None and paused["research"]["budget_used"][
+            "active_minutes"
+        ] == pytest.approx(2 / 60)
         Clock.now += 10_000
-        runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
+        runtime.approve_research_plan(
+            run["id"], "approver", paused["research"]["proposed_plan_hash"]
+        )
         runtime._execute(run["id"], "approver")
-        failed = store.get_run(run["id"])
-        assert failed is not None and failed["research"]["budget_used"]["active_minutes"] == pytest.approx(2 / 60)
+        failed = ledgers.runs.get_run(run["id"])
+        assert failed is not None and failed["research"]["budget_used"][
+            "active_minutes"
+        ] == pytest.approx(2 / 60)
     finally:
         runtime.close()
 
 
-def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpdr_slow_render_is_charged_before_artifact_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
-    final = _approved_final(store, approved, source_id)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    _mutate_research(
+        ledgers,
+        approved["id"],
+        lambda research: research["budget_used"].update(active_minutes=179 / 60),
+    )
+    final = _approved_final(ledgers, approved, source_id)
 
     class Clock:
         now = 1_000.0
@@ -2444,18 +3617,23 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
     monkeypatch.setattr(workflow_domain, "render_cpdr_markdown", slow_render)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert not any(item.get("module_id") == "CP-DR" for item in store.artifacts.values())
+        cpdr_node = next(
+            node for node in failed["nodes"] if node["module_id"] == "CP-DR"
+        )
+        assert cpdr_node["artifact_id"] is None
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize("operation", ["scorer", "renderer", "validator", "envelope"])
-def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
+def test_cpdr_throwing_host_operations_charge_active_time(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    final = _approved_final(store, approved, source_id)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    final = _approved_final(ledgers, approved, source_id)
 
     class Clock:
         now = 1_000.0
@@ -2478,18 +3656,24 @@ def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.Mo
         monkeypatch.setattr(workflow_domain, "_build_cpdr_envelope", throwing)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
         assert failed["research"]["budget_used"]["active_minutes"] >= 2 / 60
     finally:
         runtime.close()
 
 
-def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
-    final = _approved_final(store, approved, source_id)
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    _mutate_research(
+        ledgers,
+        approved["id"],
+        lambda research: research["budget_used"].update(active_minutes=179 / 60),
+    )
+    final = _approved_final(ledgers, approved, source_id)
 
     class Clock:
         now = 1_000.0
@@ -2498,17 +3682,20 @@ def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypa
 
     _queue_cpdr_success(provider, final, source_id)
 
-    original_completion = store.complete_node_fenced
+    class SlowCompletionRuns(_RunLedgerDouble):
+        def complete_node(self, *args: Any, **kwargs: Any) -> Any:
+            Clock.now += 2.0
+            return self.ledger.complete_node(*args, **kwargs)
 
-    def slow_completion(*args: Any, **kwargs: Any) -> Any:
-        Clock.now += 2.0
-        return original_completion(*args, **kwargs)
-
-    monkeypatch.setattr(store, "complete_node_fenced", slow_completion)
+    runtime.runs = SlowCompletionRuns(ledgers.runs)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
-        cpdr_node = next(node for node in failed["nodes"] if node["module_id"] == "CP-DR") if failed else None
+        failed = ledgers.runs.get_run(approved["id"])
+        cpdr_node = (
+            next(node for node in failed["nodes"] if node["module_id"] == "CP-DR")
+            if failed
+            else None
+        )
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert failed["research"]["budget_used"]["active_minutes"] >= 181 / 60
@@ -2517,14 +3704,14 @@ def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypa
         runtime.close()
 
 
-def test_cpdr_no_pending_final_validation_is_charged_before_run_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
-    artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+def test_cpdr_no_pending_final_validation_is_charged_before_run_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers, runtime, approved, source_id = _approved_cpdr_case()
+    artifact = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[approved["id"]]["research"].update(phase="complete")
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    approved["research"]["budget_used"]["active_minutes"] = 179 / 60
+    _complete_cpdr_node_for_test(ledgers, approved, cpdr_node, artifact)
 
     class Clock:
         now = 1_000.0
@@ -2540,26 +3727,31 @@ def test_cpdr_no_pending_final_validation_is_charged_before_run_success(monkeypa
     monkeypatch.setattr(runtime.bundle, "cpdr_confidence", slow_score)
     try:
         runtime._execute(approved["id"], "final-validator")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert failed["research"]["budget_used"]["active_minutes"] >= 181 / 60
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        assert not any(
+            item["event"] == "run.succeeded"
+            for item in ledgers.runs.events_after(approved["id"])
+        )
     finally:
         runtime.close()
 
 
-def _ready_cpdr_finalization() -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]]:
-    store, runtime, approved, source_id = _approved_cpdr_case()
-    artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+def _ready_cpdr_finalization() -> tuple[
+    MemoryLedgerSet, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]
+]:
+    ledgers, runtime, approved, source_id = _approved_cpdr_case()
+    artifact = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[approved["id"]]["research"].update(phase="complete")
-    return store, runtime, approved, cpdr_node, artifact
+    artifact = _complete_cpdr_node_for_test(ledgers, approved, cpdr_node, artifact)
+    return ledgers, runtime, approved, cpdr_node, artifact
 
 
-def _assert_run_cannot_be_accepted(runtime: WorkflowRuntime, run: dict[str, Any]) -> None:
+def _assert_run_cannot_be_accepted(
+    runtime: WorkflowRuntime, run: dict[str, Any]
+) -> None:
     with pytest.raises(WorkflowError, match="RUN_NOT_READY"):
         runtime.accept_run(run["case_id"], run["id"], "approver")
 
@@ -2569,172 +3761,162 @@ def test_cpdr_finalization_allowance_is_fixed_and_ponytail_bounded() -> None:
 
 
 def test_cpdr_179_seconds_cannot_enter_atomic_success_finalization() -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    ledgers, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
+    _mutate_research(
+        ledgers,
+        approved["id"],
+        lambda research: research["budget_used"].update(active_minutes=179 / 60),
+    )
     try:
         runtime._execute(approved["id"], "final-reserve")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert failed["research"]["budget_used"]["active_minutes"] >= 180 / 60
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        assert not any(
+            item["event"] == "run.succeeded"
+            for item in ledgers.runs.events_after(approved["id"])
+        )
         _assert_run_cannot_be_accepted(runtime, failed)
     finally:
         runtime.close()
 
 
-def test_cpdr_finalization_reservation_failure_is_sanitized_before_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    original_update = store.update_run_fenced
+def test_cpdr_finalization_reservation_failure_is_sanitized_before_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
     research_writes = 0
 
-    def fail_reservation(run_id: str, attempt_token: str, **changes: Any) -> None:
-        nonlocal research_writes
-        if set(changes) == {"research"}:
-            research_writes += 1
-            if research_writes == 2:
-                raise RuntimeError("secret-final-reservation")
-        original_update(run_id, attempt_token, **changes)
+    class FailingReservationRuns(_RunLedgerDouble):
+        def update_run_fenced(
+            self, run_id: str, attempt_token: str, **changes: Any
+        ) -> None:
+            nonlocal research_writes
+            if set(changes) == {"research"}:
+                research_writes += 1
+                if research_writes == 2:
+                    raise RuntimeError("secret-final-reservation")
+            self.ledger.update_run_fenced(run_id, attempt_token, **changes)
 
-    monkeypatch.setattr(store, "update_run_fenced", fail_reservation)
+    runtime.runs = FailingReservationRuns(ledgers.runs)
     try:
         runtime._execute(approved["id"], "reservation-failure")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
-        assert "secret-final-reservation" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
+        events = ledgers.runs.events_after(approved["id"])
+        assert not any(item["event"] == "run.succeeded" for item in events)
+        assert "secret-final-reservation" not in json.dumps(
+            {"run": failed, "events": events}
+        )
         _assert_run_cannot_be_accepted(runtime, failed)
     finally:
         runtime.close()
 
 
-def test_cpdr_atomic_success_persistence_failure_rolls_back_and_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    original_persist = store.persist
-    fail_once = True
+def test_cpdr_atomic_success_persistence_failure_rolls_back_and_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
 
-    def fail_terminal_persist() -> None:
-        nonlocal fail_once
-        if (
-            fail_once
-            and store.runs[approved["id"]]["status"] == "succeeded"
-            and any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
-        ):
-            fail_once = False
+    class FailingFinalizationRuns(_RunLedgerDouble):
+        def finalize_success(self, *_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("secret-atomic-finalization")
-        original_persist()
 
-    monkeypatch.setattr(store, "persist", fail_terminal_persist)
+    runtime.runs = FailingFinalizationRuns(ledgers.runs)
     try:
         runtime._execute(approved["id"], "atomic-failure")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
-        assert "secret-atomic-finalization" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
+        events = ledgers.runs.events_after(approved["id"])
+        assert not any(item["event"] == "run.succeeded" for item in events)
+        assert "secret-atomic-finalization" not in json.dumps(
+            {"run": failed, "events": events}
+        )
         _assert_run_cannot_be_accepted(runtime, failed)
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("backend", ["memory", "postgres"])
-def test_atomic_success_store_operation_rolls_back_run_and_event(
-    monkeypatch: pytest.MonkeyPatch, backend: str,
+def test_cpdr_success_finalization_is_single_terminal_run_mutation(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    token = store.claim_job(run["id"], "atomic-worker")
-    assert token is not None
-    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
-    original_persist = store._persist_connection if isinstance(store, PostgresStore) else store.persist
-
-    if isinstance(store, PostgresStore):
-        def fail_terminal_connection(connection: Any) -> Any:
-            if store.runs[run["id"]]["status"] == "succeeded":
-                raise RuntimeError("terminal transaction failed")
-            return original_persist(connection)
-
-        monkeypatch.setattr(store, "_persist_connection", fail_terminal_connection)
-    else:
-        def fail_terminal_memory() -> None:
-            if store.runs[run["id"]]["status"] == "succeeded":
-                raise RuntimeError("terminal persistence failed")
-            original_persist()
-
-        monkeypatch.setattr(store, "persist", fail_terminal_memory)
-
-    with pytest.raises(RuntimeError, match="terminal"):
-        store.finalize_run_success_fenced(run["id"], token, None, {"run_id": run["id"]})
-
-    assert store.runs[run["id"]]["status"] != "succeeded"
-    assert not any(item["event"] == "run.succeeded" for item in store.events[run["id"]])
-    if isinstance(store, PostgresStore):
-        restored = PostgresStore(store._dsn).get_run(run["id"])
-        assert restored is not None and restored["status"] != "succeeded"
-        assert not any(item["event"] == "run.succeeded" for item in restored["events"])
-
-
-def test_cpdr_success_finalization_is_single_terminal_run_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, cpdr_node, artifact = _ready_cpdr_finalization()
+    ledgers, runtime, approved, cpdr_node, artifact = _ready_cpdr_finalization()
     finalized = False
     post_final_updates: list[dict[str, Any]] = []
-    original_finalize = store.finalize_run_success_fenced
-    original_update = store.update_run_fenced
 
-    def track_finalize(*args: Any, **kwargs: Any) -> None:
-        nonlocal finalized
-        original_finalize(*args, **kwargs)
-        finalized = True
+    class TrackingFinalizationRuns(_RunLedgerDouble):
+        def finalize_success(self, *args: Any, **kwargs: Any) -> None:
+            nonlocal finalized
+            self.ledger.finalize_success(*args, **kwargs)
+            finalized = True
 
-    def track_update(run_id: str, attempt_token: str, **changes: Any) -> None:
-        if finalized:
-            post_final_updates.append(copy.deepcopy(changes))
-        original_update(run_id, attempt_token, **changes)
+        def update_run_fenced(
+            self, run_id: str, attempt_token: str, **changes: Any
+        ) -> None:
+            if finalized:
+                post_final_updates.append(copy.deepcopy(changes))
+            self.ledger.update_run_fenced(run_id, attempt_token, **changes)
 
-    monkeypatch.setattr(store, "finalize_run_success_fenced", track_finalize)
-    monkeypatch.setattr(store, "update_run_fenced", track_update)
+    runtime.runs = TrackingFinalizationRuns(ledgers.runs)
     try:
         runtime._execute(approved["id"], "atomic-success")
-        completed = store.get_run(approved["id"])
+        completed = ledgers.runs.get_run(approved["id"])
         assert completed is not None and completed["status"] == "succeeded"
         assert completed["research"]["budget_used"]["active_minutes"] >= (
             workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS / 60
         )
-        completed_node = next(item for item in completed["nodes"] if item["id"] == cpdr_node["id"])
-        assert completed_node["status"] == "succeeded" and completed_node["artifact_id"] == artifact["id"]
-        assert store.get_artifact(artifact["id"])["digest"] == artifact["digest"]  # type: ignore[index]
-        assert [item["event"] for item in completed["events"]].count("run.succeeded") == 1
+        completed_node = next(
+            item for item in completed["nodes"] if item["id"] == cpdr_node["id"]
+        )
+        assert (
+            completed_node["status"] == "succeeded"
+            and completed_node["artifact_id"] == artifact["id"]
+        )
+        assert ledgers.runs.get_artifact(artifact["id"])["digest"] == artifact["digest"]  # type: ignore[index]
+        assert [item["event"] for item in completed["events"]].count(
+            "run.succeeded"
+        ) == 1
         assert post_final_updates == []
     finally:
         runtime.close()
 
 
-def test_cpdr_two_second_atomic_finalization_is_covered_by_fixed_reserve(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 170 / 60
+def test_cpdr_two_second_atomic_finalization_is_covered_by_fixed_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
+    _mutate_research(
+        ledgers,
+        approved["id"],
+        lambda research: research["budget_used"].update(active_minutes=170 / 60),
+    )
 
     class Clock:
         now = 1_000.0
 
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-    original_finalize = store.finalize_run_success_fenced
     finalization_seconds: list[float] = []
 
-    def slow_finalize(*args: Any, **kwargs: Any) -> None:
-        started = Clock.now
-        Clock.now += 2.0
-        original_finalize(*args, **kwargs)
-        finalization_seconds.append(Clock.now - started)
+    class SlowFinalizationRuns(_RunLedgerDouble):
+        def finalize_success(self, *args: Any, **kwargs: Any) -> None:
+            started = Clock.now
+            Clock.now += 2.0
+            self.ledger.finalize_success(*args, **kwargs)
+            finalization_seconds.append(Clock.now - started)
 
-    monkeypatch.setattr(store, "finalize_run_success_fenced", slow_finalize)
+    runtime.runs = SlowFinalizationRuns(ledgers.runs)
     try:
         runtime._execute(approved["id"], "slow-atomic-success")
-        completed = store.get_run(approved["id"])
+        completed = ledgers.runs.get_run(approved["id"])
         assert completed is not None and completed["status"] == "succeeded"
         assert finalization_seconds == [2.0]
-        assert finalization_seconds[0] <= workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS
+        assert (
+            finalization_seconds[0]
+            <= workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS
+        )
         assert completed["research"]["budget_used"]["active_minutes"] >= (
             (170 + workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS) / 60
         )
@@ -2743,181 +3925,243 @@ def test_cpdr_two_second_atomic_finalization_is_covered_by_fixed_reserve(monkeyp
 
 
 def _ready_cpdr_finalization_on(
-    store: MemoryStore,
-) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]]:
-    store, runtime, approved, source_id = _approved_cpdr_case(store)
-    artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    ledgers: MemoryLedgerSet | PostgresLedgerSet,
+    *,
+    active_minutes: float | None = None,
+) -> tuple[
+    MemoryLedgerSet | PostgresLedgerSet,
+    WorkflowRuntime,
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    ledgers, runtime, approved, source_id = _approved_cpdr_case(ledgers)  # type: ignore[arg-type]
+    artifact = _canonical_cpdr_artifact(ledgers, runtime, approved, source_id)  # type: ignore[arg-type]
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[approved["id"]]["research"].update(phase="complete")
-    store.persist()
-    return store, runtime, approved, cpdr_node, artifact
+    if active_minutes is not None:
+        approved["research"]["budget_used"]["active_minutes"] = active_minutes
+    is_postgres = isinstance(ledgers, PostgresLedgerSet)
+    artifact = _complete_cpdr_node_for_test(  # type: ignore[arg-type]
+        ledgers, approved, cpdr_node, artifact, finish_job=not is_postgres
+    )
+    if is_postgres:
+        time.sleep(1.05)
+    return ledgers, runtime, approved, cpdr_node, artifact
 
 
 @pytest.mark.parametrize("backend", ["memory", "postgres"])
 @pytest.mark.parametrize("delay_site", ["before_entry", "during_persistence"])
 def test_cpdr_174_plus_ten_second_finalization_never_commits_success(
-    monkeypatch: pytest.MonkeyPatch, backend: str, delay_site: str,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    delay_site: str,
 ) -> None:
-    selected_store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(selected_store)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 174 / 60
-    store.persist()
+    selected_ledgers: MemoryLedgerSet | PostgresLedgerSet = (
+        PostgresLedgerSet(_postgres_url(), lease_seconds=1.0)
+        if backend == "postgres"
+        else MemoryLedgerSet()
+    )
+    ledgers, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(
+        selected_ledgers,
+        active_minutes=174 / 60,
+    )
 
     class Clock:
         now = 1_000.0
 
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-    if delay_site == "before_entry":
-        original_finalize = store.finalize_run_success_fenced
 
-        def delayed_finalize(*args: Any, **kwargs: Any) -> None:
+    class DelayedFinalizationRuns(_RunLedgerDouble):
+        def finalize_success(self, *args: Any, **kwargs: Any) -> None:
             Clock.now += 10.0
-            original_finalize(*args, **kwargs)
+            self.ledger.finalize_success(*args, **kwargs)
 
-        monkeypatch.setattr(store, "finalize_run_success_fenced", delayed_finalize)
-    elif isinstance(store, PostgresStore):
-        original_persist_connection = store._persist_connection
-
-        def delayed_persist_connection(connection: Any) -> Any:
-            if store.runs[approved["id"]]["status"] == "succeeded":
-                Clock.now += 10.0
-            return original_persist_connection(connection)
-
-        monkeypatch.setattr(store, "_persist_connection", delayed_persist_connection)
-    else:
-        original_persist = store.persist
-
-        def delayed_persist() -> None:
-            if store.runs[approved["id"]]["status"] == "succeeded":
-                Clock.now += 10.0
-            original_persist()
-
-        monkeypatch.setattr(store, "persist", delayed_persist)
+    runtime.runs = DelayedFinalizationRuns(ledgers.runs)
 
     try:
         runtime._execute(approved["id"], f"deadline-{backend}-{delay_site}")
-        failed = store.get_run(approved["id"])
+        failed = ledgers.runs.get_run(approved["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert failed["research"]["budget_used"]["active_minutes"] >= 179 / 60
         assert not any(item["event"] == "run.succeeded" for item in failed["events"])
         _assert_run_cannot_be_accepted(runtime, failed)
-        if isinstance(store, PostgresStore):
-            restored = PostgresStore(store._dsn).get_run(approved["id"])
+        if backend == "postgres":
+            restored = PostgresLedgerSet(_postgres_url()).runs.get_run(approved["id"])
             assert restored is not None and restored["status"] == "failed"
-            assert not any(item["event"] == "run.succeeded" for item in restored["events"])
+            assert not any(
+                item["event"] == "run.succeeded" for item in restored["events"]
+            )
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize("backend", ["memory", "postgres"])
 def test_cpdr_two_second_finalization_commits_inside_absolute_deadline(
-    monkeypatch: pytest.MonkeyPatch, backend: str,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
 ) -> None:
-    selected_store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(selected_store)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 170 / 60
-    store.persist()
+    selected_ledgers: MemoryLedgerSet | PostgresLedgerSet = (
+        PostgresLedgerSet(_postgres_url(), lease_seconds=1.0)
+        if backend == "postgres"
+        else MemoryLedgerSet()
+    )
+    ledgers, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(
+        selected_ledgers,
+        active_minutes=170 / 60,
+    )
 
     class Clock:
         now = 1_000.0
 
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-    original_finalize = store.finalize_run_success_fenced
 
-    def delayed_finalize(*args: Any, **kwargs: Any) -> None:
-        Clock.now += 2.0
-        original_finalize(*args, **kwargs)
+    class DelayedFinalizationRuns(_RunLedgerDouble):
+        def finalize_success(self, *args: Any, **kwargs: Any) -> None:
+            Clock.now += 2.0
+            self.ledger.finalize_success(*args, **kwargs)
 
-    monkeypatch.setattr(store, "finalize_run_success_fenced", delayed_finalize)
+    runtime.runs = DelayedFinalizationRuns(ledgers.runs)
     try:
         runtime._execute(approved["id"], f"within-deadline-{backend}")
-        completed = store.get_run(approved["id"])
+        completed = ledgers.runs.get_run(approved["id"])
         assert completed is not None and completed["status"] == "succeeded"
-        assert [item["event"] for item in completed["events"]].count("run.succeeded") == 1
-        if isinstance(store, PostgresStore):
-            restored = PostgresStore(store._dsn).get_run(approved["id"])
+        assert [item["event"] for item in completed["events"]].count(
+            "run.succeeded"
+        ) == 1
+        if backend == "postgres":
+            restored = PostgresLedgerSet(_postgres_url()).runs.get_run(approved["id"])
             assert restored is not None and restored["status"] == "succeeded"
-            assert [item["event"] for item in restored["events"]].count("run.succeeded") == 1
+            assert [item["event"] for item in restored["events"]].count(
+                "run.succeeded"
+            ) == 1
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize("backend", ["memory", "postgres"])
 def test_expired_finalization_deadline_does_not_mask_job_fencing(backend: str) -> None:
-    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
+    ledgers: MemoryLedgerSet | PostgresLedgerSet = (
+        PostgresLedgerSet(_postgres_url(), lease_seconds=0.5)
+        if backend == "postgres"
+        else MemoryLedgerSet(lease_seconds=0.5)
+    )
+    run, node = _queued_ledger_run(ledgers, dependencies=[])  # type: ignore[arg-type]
     assert node is not None
-    token = store.claim_job(run["id"], f"fenced-deadline-{backend}")
+    token = ledgers.runs.claim(run["id"], f"fenced-deadline-{backend}")
     assert token is not None
-    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
-    if isinstance(store, PostgresStore):
-        with store._psycopg.connect(store._dsn) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s",
-                    (run["id"],),
-                )
-            connection.commit()
-    else:
-        store.jobs[run["id"]]["lease_until"] = time.monotonic() - 1
+    artifact_payload: dict[str, Any] = {}
+    ledgers.runs.complete_node(
+        run["id"],
+        token,
+        node["id"],
+        {
+            **_artifact(run["id"]),
+            "case_id": run["case_id"],
+            "payload": artifact_payload,
+            "digest": digest(artifact_payload),
+            "created_at": "2026-08-25T00:00:00+00:00",
+        },
+        None,
+        {"node_id": node["id"], "module_id": node["module_id"]},
+    )
+    time.sleep(0.55)
 
     with pytest.raises(JobFencedError):
-        store.finalize_run_success_fenced(
-            run["id"], token, None, {"run_id": run["id"]}, deadline=time.monotonic() - 1,
+        ledgers.runs.finalize_success(
+            run["id"],
+            token,
+            None,
+            {"run_id": run["id"]},
+            deadline=time.monotonic() - 1,
         )
 
 
 def test_open_postgres_event_stream_refreshes_worker_events_without_reconnect() -> None:
-    api_store = _postgres_store("cpdr-sse-api")
-    worker_store = _postgres_store("cpdr-sse-worker")
-    run, node = _queued_run(worker_store, dependencies=[])
+    database_url = _postgres_url()
+    api_ledgers = PostgresLedgerSet(database_url)
+    worker_ledgers = PostgresLedgerSet(database_url)
+    run, node = _queued_ledger_run(worker_ledgers, dependencies=[])  # type: ignore[arg-type]
     assert node is not None
     runtime = WorkflowRuntime(
-        api_store,
+        api_ledgers.runs,
         object(),
-        Settings(environment="production", storage_dir=Path("/tmp/caos-sse-refresh"), deploy_v_root=DEPLOY_V),
+        object(),
+        Settings(
+            environment="production",
+            storage_dir=Path("/tmp/caos-sse-refresh"),
+            deploy_v_root=DEPLOY_V,
+        ),
     )  # type: ignore[arg-type]
     stream = runtime.stream_events(run["id"])
     try:
         assert next(stream) == ": keepalive\n\n"
-        token = worker_store.claim_job(run["id"], "sse-worker")
+        token = worker_ledgers.runs.claim(run["id"], "sse-worker")
         assert token is not None
-        worker_store.update_run_fenced(run["id"], token, status="running")
-        worker_store.emit_fenced(run["id"], token, "run.running", {"run_id": run["id"]})
-        artifact = worker_store.complete_node_fenced(
-            run["id"], token, node["id"], _artifact(run["id"]), None,
+        worker_ledgers.runs.update_run_fenced(run["id"], token, status="running")
+        worker_ledgers.runs.emit_fenced(
+            run["id"], token, "run.running", {"run_id": run["id"]}
         )
-        worker_store.emit_fenced(
-            run["id"], token, "node.succeeded",
-            {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]},
+        worker_ledgers.runs.complete_node(
+            run["id"],
+            token,
+            node["id"],
+            {
+                **_artifact(run["id"]),
+                "payload": {},
+                "digest": digest({}),
+                "markdown": "",
+                "created_at": "2026-08-25T00:00:00+00:00",
+            },
+            None,
+            {"node_id": node["id"], "module_id": node["module_id"]},
         )
-        worker_store.finalize_run_success_fenced(
-            run["id"], token, None, {"run_id": run["id"]},
-            deadline=time.monotonic() + workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS,
+        worker_ledgers.runs.finalize_success(
+            run["id"],
+            token,
+            None,
+            {"run_id": run["id"]},
+            deadline=time.monotonic()
+            + workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS,
         )
 
         delivered = [next(stream), *list(stream)]
-        assert [item.split("\n", 2)[0] for item in delivered] == ["id: 1", "id: 2", "id: 3"]
+        assert [item.split("\n", 2)[0] for item in delivered] == [
+            "id: 1",
+            "id: 2",
+            "id: 3",
+        ]
         assert [item.split("\n", 2)[1] for item in delivered] == [
-            "event: run.running", "event: node.succeeded", "event: run.succeeded",
+            "event: run.running",
+            "event: node.succeeded",
+            "event: run.succeeded",
         ]
     finally:
         runtime.close()
 
 
-def test_gateway_fake_clock_charges_slow_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gateway_fake_clock_charges_slow_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     moments = iter([0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
     monkeypatch.setattr(provider_module.time, "monotonic", lambda: next(moments))
     charged: list[float] = []
-    final_response = _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])
+    final_response = _Response(
+        "end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]
+    )
 
-    result = AnthropicGateway("key", "claude-sonnet-4-6", client=_Client([final_response])).run(
-        system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-        lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-        record=lambda *_args, **_kwargs: None, active_time=charged.append,
+    result = AnthropicGateway(
+        "key", "claude-sonnet-4-6", client=_Client([final_response])
+    ).run(
+        system="authority",
+        user="brief",
+        read_evidence=lambda *_: [],
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *_: None,
+        reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None,
+        active_time=charged.append,
         semaphore=threading.BoundedSemaphore(2),
     )
 
@@ -2926,28 +4170,45 @@ def test_gateway_fake_clock_charges_slow_validation(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.parametrize("operation", ["count", "create"])
-def test_gateway_crossing_active_ceiling_records_terminal_attempt(operation: str) -> None:
+def test_gateway_crossing_active_ceiling_records_terminal_attempt(
+    operation: str,
+) -> None:
     events: list[tuple[str, dict[str, Any]]] = []
     calls = 0
-    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+    client = _Client(
+        [_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])]
+    )
 
     def charge(_elapsed: float) -> None:
         nonlocal calls
         calls += 1
-        if (operation == "count" and calls == 1) or (operation == "create" and calls == 2):
+        if (operation == "count" and calls == 1) or (
+            operation == "create" and calls == 2
+        ):
             raise AgentError("AGENT_BUDGET_EXCEEDED")
 
     with pytest.raises(AgentError, match="AGENT_BUDGET_EXCEEDED"):
         AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-            record=lambda kind, **details: events.append((kind, details)), active_time=charge,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: None,
+            record=lambda kind, **details: events.append((kind, details)),
+            active_time=charge,
             semaphore=threading.BoundedSemaphore(2),
         )
-    assert any(details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED" for _kind, details in events)
+    assert any(
+        details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED"
+        for _kind, details in events
+    )
 
 
-def test_gateway_transient_ordinary_record_failure_is_sanitized_and_terminalized() -> None:
+def test_gateway_transient_ordinary_record_failure_is_sanitized_and_terminalized() -> (
+    None
+):
     events: list[tuple[str, dict[str, Any]]] = []
     failed_once = False
 
@@ -2958,15 +4219,27 @@ def test_gateway_transient_ordinary_record_failure_is_sanitized_and_terminalized
             raise RuntimeError("sensitive transient record failure")
         events.append((kind, details))
 
-    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+    client = _Client(
+        [_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])]
+    )
     with pytest.raises(AgentError) as captured:
         AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
-            record=record, active_time=lambda _elapsed: None, semaphore=threading.BoundedSemaphore(2),
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: None,
+            record=record,
+            active_time=lambda _elapsed: None,
+            semaphore=threading.BoundedSemaphore(2),
         )
     assert captured.value.code == "AGENT_OUTPUT_INVALID"
-    assert any(details.get("terminal_code") == "AGENT_OUTPUT_INVALID" for _kind, details in events)
+    assert any(
+        details.get("terminal_code") == "AGENT_OUTPUT_INVALID"
+        for _kind, details in events
+    )
     assert "sensitive transient record failure" not in json.dumps(events)
 
 
@@ -2989,22 +4262,38 @@ def test_gateway_post_count_budget_check_failure_is_terminalized() -> None:
 
     with pytest.raises(AgentError) as captured:
         AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=budget_check, reserve=lambda *_: None, reconcile=lambda *_: None,
-            record=lambda kind, **details: events.append((kind, details)), active_time=lambda _elapsed: None,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=budget_check,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: None,
+            record=lambda kind, **details: events.append((kind, details)),
+            active_time=lambda _elapsed: None,
             semaphore=threading.BoundedSemaphore(2),
         )
     assert captured.value.code == "AGENT_BUDGET_EXCEEDED"
-    assert any(details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED" for _kind, details in events)
+    assert any(
+        details.get("terminal_code") == "AGENT_BUDGET_EXCEEDED"
+        for _kind, details in events
+    )
 
 
 @pytest.mark.parametrize(
     "operation",
-    ["reconcile", "generation_record", "provider_retry_record", "evidence_handling", "final_validation"],
+    [
+        "reconcile",
+        "generation_record",
+        "provider_retry_record",
+        "evidence_handling",
+        "final_validation",
+    ],
 )
 @pytest.mark.parametrize("failure_kind", ["ordinary", "agent"])
 def test_gateway_all_post_interaction_failures_are_sanitized_and_terminalized(
-    operation: str, failure_kind: str,
+    operation: str,
+    failure_kind: str,
 ) -> None:
     events: list[tuple[str, dict[str, Any]]] = []
     secret = f"secret-{operation}-{failure_kind}"
@@ -3016,19 +4305,34 @@ def test_gateway_all_post_interaction_failures_are_sanitized_and_terminalized(
 
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     if operation == "provider_retry_record":
-        client = _Client([
-            anthropic.APITimeoutError(request),
-            _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
-        ])
+        client = _Client(
+            [
+                anthropic.APITimeoutError(request),
+                _Response(
+                    "end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]
+                ),
+            ]
+        )
     elif operation == "evidence_handling":
-        client = _Client([
-            _Response(
-                "tool_use",
-                [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b1"]})],
-            ),
-        ])
+        client = _Client(
+            [
+                _Response(
+                    "tool_use",
+                    [
+                        _Block(
+                            "tool_use",
+                            id="tool-1",
+                            name="read_evidence",
+                            input={"source_id": "src-1", "block_ids": ["b1"]},
+                        )
+                    ],
+                ),
+            ]
+        )
     else:
-        client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+        client = _Client(
+            [_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])]
+        )
 
     def record(kind: str, **details: Any) -> None:
         if (operation == "generation_record" and kind == "generation") or (
@@ -3041,17 +4345,25 @@ def test_gateway_all_post_interaction_failures_are_sanitized_and_terminalized(
         AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
             system="authority",
             user="brief",
-            read_evidence=(lambda *_: fail()) if operation == "evidence_handling" else (lambda *_: []),
-            validate=(lambda _value: fail()) if operation == "final_validation" else (lambda value: value),
+            read_evidence=(lambda *_: fail())
+            if operation == "evidence_handling"
+            else (lambda *_: []),
+            validate=(lambda _value: fail())
+            if operation == "final_validation"
+            else (lambda value: value),
             lease_check=lambda: None,
             reserve=lambda *_: None,
-            reconcile=(lambda *_: fail()) if operation == "reconcile" else (lambda *_: None),
+            reconcile=(lambda *_: fail())
+            if operation == "reconcile"
+            else (lambda *_: None),
             record=record,
             active_time=lambda _elapsed: None,
             semaphore=threading.BoundedSemaphore(2),
         )
 
-    expected = "AGENT_BUDGET_EXCEEDED" if failure_kind == "agent" else "AGENT_OUTPUT_INVALID"
+    expected = (
+        "AGENT_BUDGET_EXCEEDED" if failure_kind == "agent" else "AGENT_OUTPUT_INVALID"
+    )
     assert captured.value.code == expected
     assert any(details.get("terminal_code") == expected for _kind, details in events)
     assert secret not in json.dumps(events)
@@ -3059,14 +4371,23 @@ def test_gateway_all_post_interaction_failures_are_sanitized_and_terminalized(
 
 def test_gateway_post_interaction_fencing_remains_silent() -> None:
     events: list[tuple[str, dict[str, Any]]] = []
-    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+    client = _Client(
+        [_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])]
+    )
 
     with pytest.raises(JobFencedError):
         AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lambda: None, reserve=lambda *_: None,
-            reconcile=lambda *_: (_ for _ in ()).throw(JobFencedError("lost after interaction")),
-            record=lambda kind, **details: events.append((kind, details)), active_time=lambda _elapsed: None,
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lambda: None,
+            reserve=lambda *_: None,
+            reconcile=lambda *_: (_ for _ in ()).throw(
+                JobFencedError("lost after interaction")
+            ),
+            record=lambda kind, **details: events.append((kind, details)),
+            active_time=lambda _elapsed: None,
             semaphore=threading.BoundedSemaphore(2),
         )
 
@@ -3093,34 +4414,78 @@ def test_gateway_discards_result_when_lease_is_lost_during_sdk_call() -> None:
 
     with pytest.raises(JobFencedError):
         gateway.run(
-            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
-            lease_check=lease_check, reserve=lambda *_: records.append("reserved"), reconcile=lambda *_: records.append("reconciled"),
-            record=lambda *_args, **_kwargs: records.append("recorded"), active_time=lambda _elapsed: records.append("timed"),
+            system="authority",
+            user="brief",
+            read_evidence=lambda *_: [],
+            validate=lambda value: value,
+            lease_check=lease_check,
+            reserve=lambda *_: records.append("reserved"),
+            reconcile=lambda *_: records.append("reconciled"),
+            record=lambda *_args, **_kwargs: records.append("recorded"),
+            active_time=lambda _elapsed: records.append("timed"),
             semaphore=threading.BoundedSemaphore(2),
         )
     assert records == []
 
 
-def test_cpdr_failure_metadata_does_not_persist_secret_body_prompt_or_evidence() -> None:
-    provider = _FakeProvider([], counts=[AgentError("AGENT_PROVIDER_REJECTED", "secret-provider-body provider-body")])
-    store, runtime, approved, _ = _approved_cpdr_case(provider=provider)
+def test_cpdr_failure_metadata_does_not_persist_secret_body_prompt_or_evidence() -> (
+    None
+):
+    provider = _FakeProvider(
+        [],
+        counts=[
+            AgentError("AGENT_PROVIDER_REJECTED", "secret-provider-body provider-body")
+        ],
+    )
+    ledgers, runtime, approved, _ = _approved_cpdr_case(provider=provider)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
-        assert failed is not None and failed["error"]["code"] == "AGENT_PROVIDER_REJECTED"
-        persisted = json.dumps({"run": failed, "events": store.events[approved["id"]], "audit": store.audit})
-        for forbidden in ("test-only-key", "secret-provider-body", "provider-body", "Issuer liquidity was USD 100m", "CAOS CP-DR RESEARCH AUTHORITY"):
+        failed = ledgers.runs.get_run(approved["id"])
+        assert (
+            failed is not None and failed["error"]["code"] == "AGENT_PROVIDER_REJECTED"
+        )
+        persisted = json.dumps(
+            {
+                "run": failed,
+                "events": ledgers.runs.events_after(approved["id"]),
+                "audit": ledgers.publications.list_audit(),
+            }
+        )
+        for forbidden in (
+            "test-only-key",
+            "secret-provider-body",
+            "provider-body",
+            "Issuer liquidity was USD 100m",
+            "CAOS CP-DR RESEARCH AUTHORITY",
+        ):
             assert forbidden not in persisted
     finally:
         runtime.close()
 
 
-def test_cpdr_semantic_gates_reject_locator_gapped_complete_coverage_and_hidden_conflict() -> None:
+def test_cpdr_semantic_gates_reject_locator_gapped_complete_coverage_and_hidden_conflict() -> (
+    None
+):
     cases = [
-        _cpdr_payload(evidence=[{**_cpdr_payload()["evidence"][0], "locator": "fabricated"}]),
-        _cpdr_payload(workstream_findings=[{**_cpdr_payload()["workstream_findings"][0], "status": "gapped"}]),
+        _cpdr_payload(
+            evidence=[{**_cpdr_payload()["evidence"][0], "locator": "fabricated"}]
+        ),
+        _cpdr_payload(
+            workstream_findings=[
+                {**_cpdr_payload()["workstream_findings"][0], "status": "gapped"}
+            ]
+        ),
         _cpdr_payload(coverage_score=99),
-        _cpdr_payload(material_claims=[{**_cpdr_payload()["material_claims"][0], "counter_evidence_refs": [{"source_id": "src-1", "block_id": "b00001"}]}]),
+        _cpdr_payload(
+            material_claims=[
+                {
+                    **_cpdr_payload()["material_claims"][0],
+                    "counter_evidence_refs": [
+                        {"source_id": "src-1", "block_id": "b00001"}
+                    ],
+                }
+            ]
+        ),
     ]
     for value in cases:
         with pytest.raises(CPDRValidationError):

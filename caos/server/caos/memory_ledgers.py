@@ -7,10 +7,11 @@ import hashlib
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from .contracts import clean_json, digest
-from .ledgers import SourceCatalog
+from .ledgers import SourceCatalog, _validate_run_nodes
 from .store import (
     MAX_ACTIVE_JOBS,
     JobFencedError,
@@ -47,7 +48,11 @@ class _Adapter:
 
 def _public_source(source: Record) -> Record:
     return copy.deepcopy(
-        {key: value for key, value in source.items() if key != "vault_path"}
+        {
+            key: value
+            for key, value in source.items()
+            if key not in {"vault_path", "withdrawn_at"}
+        }
     )
 
 
@@ -226,6 +231,16 @@ class _MemorySourceCatalog(_Adapter):
             source = self._state.sources.get(source_id)
             return _public_source(source) if source else None
 
+    def read_source_bytes(self, source_id: str, limit: int) -> bytes:
+        with self._state.lock:
+            source = self._state.sources.get(source_id)
+            vault_path = source.get("vault_path") if source else None
+        path = Path(vault_path) if isinstance(vault_path, str) else None
+        if path is None or not path.is_file():
+            raise FileNotFoundError("SOURCE_BYTES_UNAVAILABLE")
+        with path.open("rb") as stored:
+            return stored.read(limit)
+
     def current_source_set(self, case_id: str) -> Record | None:
         with self._state.lock:
             value = self._state.source_sets.get(case_id)
@@ -334,12 +349,15 @@ class _MemoryRunLedger(_Adapter):
         plan: Record,
         nodes: list[Record],
         upgraded_from_run_id: str | None = None,
+        initial: Record | None = None,
     ) -> Record:
+        _validate_run_nodes(nodes)
         state = self._state
         with state.lock:
             if case_id not in state.cases:
                 raise ValueError("CASE_NOT_FOUND")
-            created_at = now_iso()
+            initial = copy.deepcopy(initial or {})
+            created_at = initial.pop("created_at", now_iso())
             run_id = state.new_id("run")
             node_records = [
                 {
@@ -368,6 +386,7 @@ class _MemoryRunLedger(_Adapter):
                 "accepted_snapshot_id": None,
                 "upgraded_from_run_id": upgraded_from_run_id,
                 "error": None,
+                **initial,
             }
             state.runs[run_id] = run
             state.nodes.update({node["id"]: node for node in node_records})
@@ -494,6 +513,15 @@ class _MemoryRunLedger(_Adapter):
                 phase="approved",
             )
             run.update(status="queued", error=None)
+            job = state.jobs.get(run_id)
+            if job is not None:
+                job.update(
+                    status="queued",
+                    worker=None,
+                    attempt_token=None,
+                    lease_until=0.0,
+                    budget_reserved=0,
+                )
             state.audit_event(
                 "research.plan_approved",
                 actor,
@@ -556,11 +584,22 @@ class _MemoryRunLedger(_Adapter):
                 None,
             )
             candidate = copy.deepcopy(completed or artifact)
-            if completed is None:
+            replacing_invalid = bool(
+                completed is not None
+                and artifact_validator is not None
+                and not artifact_validator(candidate)
+            )
+            if replacing_invalid:
+                candidate = copy.deepcopy(artifact)
+            if completed is None or replacing_invalid:
                 candidate["id"] = state.new_id("art")
             if artifact_validator is not None and not artifact_validator(candidate):
                 raise ValueError("ARTIFACT_INVALID")
-            stored = copy.deepcopy(candidate) if completed is None else None
+            stored = (
+                copy.deepcopy(candidate)
+                if completed is None or replacing_invalid
+                else None
+            )
             stored_research = copy.deepcopy(research) if research is not None else None
             run = state.runs[run_id] if research is not None else None
             event_payload = copy.deepcopy(event_data)
@@ -572,7 +611,9 @@ class _MemoryRunLedger(_Adapter):
             }
             result = copy.deepcopy(candidate)
 
-            if completed is None:
+            if replacing_invalid:
+                state.artifacts.pop(completed["id"], None)
+            if completed is None or replacing_invalid:
                 state.artifacts[candidate["id"]] = stored
             node.update(status="succeeded", artifact_id=candidate["id"], error=None)
             if run is not None:
@@ -625,15 +666,11 @@ class _MemoryRunLedger(_Adapter):
 
             source_set_id = proposal.get("source_set_id")
             source_set = state.source_set_history.get(source_set_id)
-            current = state.source_sets.get(case_id)
             if (
                 not source_set
                 or source_set.get("case_id") != case_id
                 or source_set_id != run.get("plan", {}).get("source_set_id")
                 or proposal.get("source_set_version") != source_set.get("version")
-                or not current
-                or current.get("id") != source_set.get("id")
-                or current.get("version") != source_set.get("version")
             ):
                 raise ValueError("SOURCE_SET_CHANGED")
 
@@ -642,13 +679,18 @@ class _MemoryRunLedger(_Adapter):
                 raise ValueError("RUN_NOT_READY")
 
             nodes = state.nodes
-            expected_ids = {
+            expected_ids = [
                 nodes[node_id].get("artifact_id") for node_id in run.get("node_ids", [])
-            }
+            ]
+            reference_ids = [
+                item.get("id") if isinstance(item, dict) else None
+                for item in artifact_refs
+            ]
             if (
                 len(artifact_refs) != len(expected_ids)
                 or any(not isinstance(item, dict) for item in artifact_refs)
-                or {item.get("id") for item in artifact_refs} != expected_ids
+                or len(set(reference_ids)) != len(reference_ids)
+                or set(reference_ids) != set(expected_ids)
             ):
                 raise ValueError("RUN_NOT_READY")
 
@@ -1147,7 +1189,6 @@ class _MemoryPublicationLedger(_Adapter):
             saved.update(
                 id=state.new_id("rv"),
                 case_id=case_id,
-                author=actor,
                 version=current.get("version", 0) + 1 if current else 1,
                 created_at=now_iso(),
             )

@@ -13,7 +13,9 @@ from pydantic import ValidationError
 
 import caos.http as http_module
 from caos.config import Settings
+from caos.contracts import digest
 from caos.http import create_app
+from caos.memory_ledgers import MemoryLedgerSet
 from caos.responses import (
     ArtifactResponse,
     AuditEventResponse,
@@ -32,7 +34,6 @@ from caos.responses import (
     SourceResponse,
     SourceSetResponse,
 )
-from caos.store import MemoryStore
 
 
 DEPLOY_V = (
@@ -71,6 +72,68 @@ AUDIT_ACTION_DETAILS = {
 }
 
 
+class _PublicationLedgerDouble:
+    def __init__(self, ledger: object) -> None:
+        self.ledger = ledger
+        self.extra_audit: list[dict[str, Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.ledger, name)
+
+    def append_test_audit(self, action: str, actor: str, **details: Any) -> None:
+        self.extra_audit.append(
+            {
+                "id": f"aud-contract-{len(self.extra_audit) + 1}",
+                "action": action,
+                "actor": actor,
+                "at": "2026-08-25T00:00:00+00:00",
+                **details,
+            }
+        )
+
+    def list_audit(self) -> list[dict[str, Any]]:
+        return [*self.ledger.list_audit(), *self.extra_audit]
+
+
+def _model_result() -> dict[str, Any]:
+    payload = {
+        "schema_version": "caos.model.worksheet.v1",
+        "identity": {
+            "issuer_id": "issuer",
+            "issuer_name": "Issuer",
+            "analysis_date": "2026-08-24",
+        },
+        "tabs": [
+            {
+                "id": "MODEL",
+                "name": "Model",
+                "max_row": 1,
+                "max_column": 1,
+                "freeze_panes": "",
+                "merged_cells": [],
+                "columns": [
+                    {"column": 1, "letter": "A", "width": 12.0, "hidden": False}
+                ],
+                "cells": [],
+            }
+        ],
+    }
+    return {
+        "payload": payload,
+        "payload_digest": digest(payload),
+        "qa": {
+            "status": "PASS",
+            "semantic_checks": [],
+            "semantic_check_count": 0,
+            "formula_count": 0,
+            "worksheet_cell_count": 0,
+            "limitation_flags": [],
+            "validation_warnings": [],
+            "source_manifest": [],
+        },
+    }
+
+
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
     settings = Settings(
@@ -78,7 +141,9 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         storage_dir=tmp_path / "vault",
         deploy_v_root=DEPLOY_V,
     )
-    with TestClient(create_app(settings, MemoryStore())) as test_client:
+    ledgers = MemoryLedgerSet()
+    ledgers.publications = _PublicationLedgerDouble(ledgers.publications)  # type: ignore[assignment]
+    with TestClient(create_app(settings, ledgers)) as test_client:
         yield test_client
 
 
@@ -109,17 +174,14 @@ def response_payloads(client: TestClient) -> dict[str, Any]:
         json={"pathway": "EARNINGS_UPDATE", "depth": "screen"},
     ).json()
     run = _succeeded_run(client, run["id"])
-    artifact = next(
-        item
-        for item in client.app.state.store.artifacts.values()
-        if item["run_id"] == run["id"]
+    artifact_id = next(
+        node["artifact_id"] for node in run["nodes"] if node["artifact_id"]
     )
-    artifact = client.get(f"/api/cases/{case_id}/artifacts/{artifact['id']}").json()
+    artifact = client.get(f"/api/cases/{case_id}/artifacts/{artifact_id}").json()
     snapshot = client.post(f"/api/runs/{run['id']}/accept").json()
-    store = client.app.state.store
-    build, _ = store.queue_model_build(
+    ledgers = client.app.state.ledgers
+    build, _ = ledgers.models.queue_build(
         {
-            "id": store._id("model"),
             "case_id": case_id,
             "accepted_run_id": run["id"],
             "accepted_snapshot_id": snapshot["id"],
@@ -131,17 +193,16 @@ def response_payloads(client: TestClient) -> dict[str, Any]:
         "local-analyst",
     )
     model_build = client.get(f"/api/cases/{case_id}/models/{build['id']}").json()
-    failed_build, _ = store.queue_model_build(
+    failed_build, _ = ledgers.models.queue_build(
         {
             **build,
-            "id": store._id("model"),
             "input_fingerprint": "1" * 64,
         },
         "local-analyst",
     )
-    failed_token = store.claim_model_job(failed_build["id"], "contract-test")
+    failed_token = ledgers.models.claim(failed_build["id"], "contract-test")
     assert failed_token is not None
-    store.fail_model_job(
+    ledgers.models.fail(
         failed_build["id"],
         failed_token,
         {"code": "MODEL_CALCULATION_FAILED", "detail": "Contract failure."},
@@ -150,29 +211,17 @@ def response_payloads(client: TestClient) -> dict[str, Any]:
     failed_model_build = client.get(
         f"/api/cases/{case_id}/models/{failed_build['id']}"
     ).json()
-    ready_build, _ = store.queue_model_build(
+    ready_build, _ = ledgers.models.queue_build(
         {
             **build,
-            "id": store._id("model"),
             "input_fingerprint": "2" * 64,
         },
         "local-analyst",
     )
-    store.model_builds[ready_build["id"]].update(
-        status="READY",
-        completed_at="2026-08-25T00:00:00+00:00",
-        error=None,
-        payload_digest="a" * 64,
-        qa={
-            "status": "PASS",
-            "semantic_checks": [],
-            "semantic_check_count": 0,
-            "formula_count": 0,
-            "worksheet_cell_count": 0,
-            "limitation_flags": [],
-            "validation_warnings": [],
-            "source_manifest": [],
-        },
+    ready_token = ledgers.models.claim(ready_build["id"], "contract-test")
+    assert ready_token is not None
+    ledgers.models.complete(
+        ready_build["id"], ready_token, _model_result(), "contract-test"
     )
     ready_model_build = client.get(
         f"/api/cases/{case_id}/models/{ready_build['id']}"
@@ -250,7 +299,9 @@ def response_payloads(client: TestClient) -> dict[str, Any]:
         f"/api/cases/{case_id}/sources/{promoted['promoted_source_id']}"
     ).json()
     for action, details in AUDIT_ACTION_DETAILS.items():
-        store.audit_event(action, "contract-test", **details)
+        ledgers.publications.append_test_audit(  # type: ignore[attr-defined]
+            action, "contract-test", **details
+        )
     audit_events = client.get("/api/admin/audit", headers=admin_headers).json()
     return {
         "identity": identity,
@@ -590,6 +641,72 @@ def test_source_response_validates_upload_and_stored_source_shapes(
     for name in ("source", "source_detail", "promoted_source_detail"):
         payload = response_payloads[name]
         assert SourceResponse.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_withdrawn_source_detail_remains_retrievable_with_strict_public_shape(
+    client: TestClient,
+) -> None:
+    case = client.post(
+        "/api/cases",
+        json={"name": "Withdrawn detail", "issuer": "Issuer", "sector": "Services"},
+    ).json()
+    source = client.post(
+        f"/api/cases/{case['id']}/sources",
+        files={"file": ("evidence.txt", b"Debt 100", "text/plain")},
+    ).json()
+    withdrawn = client.post(f"/api/cases/{case['id']}/sources/{source['id']}/withdraw")
+    detail = client.get(f"/api/cases/{case['id']}/sources/{source['id']}")
+
+    assert withdrawn.status_code == 200
+    assert detail.status_code == 200
+    assert detail.json() == withdrawn.json()
+    assert set(detail.json()) == {
+        "id",
+        "case_id",
+        "filename",
+        "media_type",
+        "bytes",
+        "sha256",
+        "created_by",
+        "created_at",
+        "blocks",
+        "withdrawn",
+    }
+    assert detail.json()["withdrawn"] is True
+    assert (
+        SourceResponse.model_validate(detail.json()).model_dump(mode="json")
+        == detail.json()
+    )
+
+
+def test_distinct_duplicate_note_promotion_is_a_structured_source_conflict(
+    client: TestClient,
+) -> None:
+    case = client.post(
+        "/api/cases",
+        json={"name": "Note conflict", "issuer": "Issuer", "sector": "Services"},
+    ).json()
+    first = client.post(
+        f"/api/cases/{case['id']}/notes", json={"body": "Same analyst view"}
+    ).json()
+    second = client.post(
+        f"/api/cases/{case['id']}/notes", json={"body": "Same analyst view"}
+    ).json()
+
+    promoted = client.post(f"/api/cases/{case['id']}/notes/{first['id']}/promote")
+    replay = client.post(f"/api/cases/{case['id']}/notes/{first['id']}/promote")
+    conflict = client.post(f"/api/cases/{case['id']}/notes/{second['id']}/promote")
+
+    assert promoted.status_code == 200
+    assert replay.status_code == 200
+    assert replay.json()["promoted_source_id"] == promoted.json()["promoted_source_id"]
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "source content already active"}
+    notes = {
+        note["id"]: note for note in client.get(f"/api/cases/{case['id']}/notes").json()
+    }
+    assert notes[first["id"]]["promoted"] is True
+    assert notes[second["id"]]["promoted"] is False
 
 
 def test_snapshot_diff_accepts_added_artifacts_without_snapshot_ids() -> None:

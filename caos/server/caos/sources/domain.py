@@ -15,7 +15,8 @@ from typing import Any
 from fastapi import HTTPException, UploadFile
 
 from ..config import Settings
-from ..store import MemoryStore, now_iso
+from ..ledgers import SourceCatalog
+from ..store import now_iso
 
 
 ALLOWED_SUFFIXES = {".pdf", ".xlsx", ".json", ".txt", ".md", ".csv"}
@@ -65,7 +66,9 @@ def scan_content(content: bytes, settings: Settings) -> None:
     if not settings.clamav_host:
         raise HTTPException(status_code=503, detail="malware scanner is not configured")
     try:
-        with socket.create_connection((settings.clamav_host, settings.clamav_port), timeout=15) as connection:
+        with socket.create_connection(
+            (settings.clamav_host, settings.clamav_port), timeout=15
+        ) as connection:
             connection.sendall(b"zINSTREAM\0")
             for start in range(0, len(content), 1024 * 1024):
                 chunk = content[start : start + 1024 * 1024]
@@ -73,11 +76,15 @@ def scan_content(content: bytes, settings: Settings) -> None:
             connection.sendall(b"\0\0\0\0")
             response = connection.recv(4096).lower()
     except OSError as exc:
-        raise HTTPException(status_code=503, detail="malware scanner unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="malware scanner unavailable"
+        ) from exc
     if b"found" in response:
         raise HTTPException(status_code=422, detail="malware detected")
     if b"ok" not in response:
-        raise HTTPException(status_code=503, detail="malware scanner returned an unusable result")
+        raise HTTPException(
+            status_code=503, detail="malware scanner returned an unusable result"
+        )
 
 
 def validate_archive(content: bytes) -> None:
@@ -87,15 +94,33 @@ def validate_archive(content: bytes) -> None:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             infos = archive.infolist()
             if len(infos) > MAX_ZIP_ENTRIES:
-                raise HTTPException(status_code=422, detail="archive has too many entries")
+                raise HTTPException(
+                    status_code=422, detail="archive has too many entries"
+                )
             total_size = sum(info.file_size for info in infos)
-            if total_size > MAX_ZIP_UNCOMPRESSED or total_size > max(len(content), 1) * MAX_ZIP_RATIO:
-                raise HTTPException(status_code=422, detail="archive expanded size exceeds limit")
+            if (
+                total_size > MAX_ZIP_UNCOMPRESSED
+                or total_size > max(len(content), 1) * MAX_ZIP_RATIO
+            ):
+                raise HTTPException(
+                    status_code=422, detail="archive expanded size exceeds limit"
+                )
             for info in infos:
-                if info.filename.startswith(("/", "\\")) or ".." in Path(info.filename).parts:
-                    raise HTTPException(status_code=422, detail="archive path traversal")
-                if info.compress_size and info.file_size / info.compress_size > MAX_ZIP_RATIO:
-                    raise HTTPException(status_code=422, detail="archive compression ratio exceeds limit")
+                if (
+                    info.filename.startswith(("/", "\\"))
+                    or ".." in Path(info.filename).parts
+                ):
+                    raise HTTPException(
+                        status_code=422, detail="archive path traversal"
+                    )
+                if (
+                    info.compress_size
+                    and info.file_size / info.compress_size > MAX_ZIP_RATIO
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="archive compression ratio exceeds limit",
+                    )
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=422, detail="invalid archive") from exc
 
@@ -103,6 +128,7 @@ def validate_archive(content: bytes) -> None:
 def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
     suffix = Path(filename).suffix.lower()
     if suffix == ".json":
+
         def reject_non_finite(_constant: str) -> None:
             raise ValueError("non-finite JSON number")
 
@@ -123,11 +149,22 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
             return data
 
         try:
-            data = json.loads(content.decode("utf-8"), parse_constant=reject_non_finite, parse_float=reject_overflowing_number, object_pairs_hook=reject_duplicate_keys)
+            data = json.loads(
+                content.decode("utf-8"),
+                parse_constant=reject_non_finite,
+                parse_float=reject_overflowing_number,
+                object_pairs_hook=reject_duplicate_keys,
+            )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail="invalid JSON source") from exc
-        if data is None or (isinstance(data, str) and not data.strip()) or (isinstance(data, (dict, list)) and not data):
-            raise HTTPException(status_code=422, detail="source contains no extractable evidence")
+        if (
+            data is None
+            or (isinstance(data, str) and not data.strip())
+            or (isinstance(data, (dict, list)) and not data)
+        ):
+            raise HTTPException(
+                status_code=422, detail="source contains no extractable evidence"
+            )
         text = json.dumps(data, sort_keys=True, indent=2)
     elif suffix == ".pdf":
         try:
@@ -140,7 +177,9 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         except Exception as exc:
             raise HTTPException(status_code=422, detail="invalid PDF source") from exc
         try:
-            text = "\n".join(reader.pages[index].extract_text() or "" for index in range(page_count))
+            text = "\n".join(
+                reader.pages[index].extract_text() or "" for index in range(page_count)
+            )
         except Exception:
             text = ""
         if not text.strip():
@@ -150,7 +189,9 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         try:
             from openpyxl import load_workbook
 
-            workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
+            workbook = load_workbook(
+                io.BytesIO(content), read_only=True, data_only=False
+            )
             if len(workbook.worksheets) > MAX_XLSX_EXTRACT_WORKSHEETS:
                 raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
             lines: list[str] = []
@@ -172,16 +213,24 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
                 for row in sheet.iter_rows(values_only=True):
                     extracted_rows += 1
                     if extracted_rows > MAX_XLSX_EXTRACT_ROWS:
-                        raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
+                        raise HTTPException(
+                            status_code=422, detail=EXTRACTION_LIMIT_DETAIL
+                        )
                     if len(row) > MAX_XLSX_EXTRACT_COLUMNS:
-                        raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
+                        raise HTTPException(
+                            status_code=422, detail=EXTRACTION_LIMIT_DETAIL
+                        )
                     values = ["" if value is None else str(value) for value in row]
                     values.extend([""] * (MAX_XLSX_EXTRACT_COLUMNS - len(values)))
-                    has_cell_value = has_cell_value or any(value.strip() for value in values)
+                    has_cell_value = has_cell_value or any(
+                        value.strip() for value in values
+                    )
                     line = "\t".join(values)
                     append_xlsx_line(line)
             if not has_cell_value:
-                raise HTTPException(status_code=422, detail="source contains no extractable evidence")
+                raise HTTPException(
+                    status_code=422, detail="source contains no extractable evidence"
+                )
             text = "\n".join(lines)
         except HTTPException:
             raise
@@ -194,11 +243,17 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise HTTPException(status_code=422, detail="text source must be UTF-8") from exc
+            raise HTTPException(
+                status_code=422, detail="text source must be UTF-8"
+            ) from exc
     if suffix in {".txt", ".md"} and not text.strip():
-        raise HTTPException(status_code=422, detail="source contains no extractable evidence")
-    if suffix == ".csv" and not text.strip(" \t\r\n,\""):
-        raise HTTPException(status_code=422, detail="source contains no extractable evidence")
+        raise HTTPException(
+            status_code=422, detail="source contains no extractable evidence"
+        )
+    if suffix == ".csv" and not text.strip(' \t\r\n,"'):
+        raise HTTPException(
+            status_code=422, detail="source contains no extractable evidence"
+        )
     if len(text) > MAX_SOURCE_TEXT:
         raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
     blocks = []
@@ -206,11 +261,36 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         if line.strip():
             if len(line) > MAX_SOURCE_LINE:
                 raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
-            blocks.append({"block_id": f"b{index:05d}", "locator": {"line": index}, "text": line, "extractor_version": "builtin-v1", "confidence": "MEDIUM", "untrusted_data": True})
-    return blocks or [{"block_id": "b00001", "locator": {"line": 1}, "text": "", "extractor_version": "builtin-v1", "confidence": "LOW", "untrusted_data": True}]
+            blocks.append(
+                {
+                    "block_id": f"b{index:05d}",
+                    "locator": {"line": index},
+                    "text": line,
+                    "extractor_version": "builtin-v1",
+                    "confidence": "MEDIUM",
+                    "untrusted_data": True,
+                }
+            )
+    return blocks or [
+        {
+            "block_id": "b00001",
+            "locator": {"line": 1},
+            "text": "",
+            "extractor_version": "builtin-v1",
+            "confidence": "LOW",
+            "untrusted_data": True,
+        }
+    ]
 
 
-async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: str, upload: UploadFile, max_bytes: int) -> dict[str, Any]:
+async def ingest_upload(
+    catalog: SourceCatalog,
+    vault: Vault,
+    case_id: str,
+    actor: str,
+    upload: UploadFile,
+    max_bytes: int,
+) -> dict[str, Any]:
     filename = Path(upload.filename or "source.bin").name
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
@@ -225,9 +305,7 @@ async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: s
     sha256 = hashlib.sha256(content).hexdigest()
     blocks = extract_blocks(filename, content)
     vault_path = vault.put(content, sha256)
-    source_id = store._id("src")
     source = {
-        "id": source_id,
         "case_id": case_id,
         "filename": filename,
         "media_type": upload.content_type or "application/octet-stream",
@@ -239,57 +317,33 @@ async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: s
         "created_at": now_iso(),
         "withdrawn": False,
     }
-    with store.lock:
-        if any(existing["case_id"] == case_id and existing["sha256"] == sha256 and not existing.get("withdrawn") for existing in store.sources.values()):
-            raise HTTPException(status_code=409, detail="source content already active")
-        prior_source_set = store.source_sets.get(case_id)
-        audit_start = len(store.audit)
-        store.sources[source_id] = source
-        source_set = store.source_sets.get(case_id)
-        version = (source_set["version"] + 1) if source_set else 1
-        active_source_ids = [existing_id for existing_id in (source_set["source_ids"] if source_set else []) if not store.sources.get(existing_id, {}).get("withdrawn")]
-        new_source_set = {
-            "id": store._id("set"),
-            "case_id": case_id,
-            "version": version,
-            "source_ids": [*active_source_ids, source_id],
-            "created_by": actor,
-            "created_at": now_iso(),
-        }
-        store.register_source_set(new_source_set)
-        store.audit_event("source.ingested", actor, case_id=case_id, source_id=source_id, sha256=sha256)
-        try:
-            store.persist()
-        except Exception:
-            store.sources.pop(source_id, None)
-            if prior_source_set is None:
-                store.source_sets.pop(case_id, None)
-            else:
-                store.source_sets[case_id] = prior_source_set
-            store.source_set_history.pop(new_source_set["id"], None)
-            del store.audit[audit_start:]
-            raise
-    return {key: value for key, value in {**source, "source_set": store.source_sets[case_id].copy()}.items() if key != "vault_path"}
+    try:
+        return catalog.ingest(source, actor)
+    except ValueError as exc:
+        if str(exc) == "source content already active":
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
 
 
-def list_sources(store: MemoryStore, case_id: str) -> list[dict[str, Any]]:
-    with store.lock:
-        return [{key: value for key, value in source.items() if key != "vault_path"} for source in store.sources.values() if source["case_id"] == case_id and not source.get("withdrawn")]
+def list_sources(catalog: SourceCatalog, case_id: str) -> list[dict[str, Any]]:
+    return catalog.list_sources(case_id)
 
 
-def current_source_set(store: MemoryStore, case_id: str) -> dict[str, Any] | None:
-    with store.lock:
-        source_set = store.source_sets.get(case_id)
-        return dict(source_set) if source_set else None
+def current_source_set(catalog: SourceCatalog, case_id: str) -> dict[str, Any] | None:
+    return catalog.current_source_set(case_id)
 
 
-def pathway_fit(store: MemoryStore, case_id: str) -> dict[str, Any]:
-    sources = list_sources(store, case_id)
-    types = sorted({Path(source["filename"]).suffix.lower().lstrip(".") for source in sources})
+def pathway_fit(catalog: SourceCatalog, case_id: str) -> dict[str, Any]:
+    sources = list_sources(catalog, case_id)
+    types = sorted(
+        {Path(source["filename"]).suffix.lower().lstrip(".") for source in sources}
+    )
     return {
         "source_count": len(sources),
         "file_types": types,
         "fit": "READY" if sources else "NEEDS_SOURCE",
         "language": "Pathway fit is a source-coverage signal, not CP-0 readiness.",
-        "message": "Source coverage supports pathway selection." if sources else "Upload governed source material before selecting a route.",
+        "message": "Source coverage supports pathway selection."
+        if sources
+        else "Upload governed source material before selecting a route.",
     }

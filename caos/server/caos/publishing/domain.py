@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import copy
 import io
 from typing import Any
 
 from ..contracts import clean_json, digest
-from ..store import MemoryStore, now_iso
+from ..ledgers import PublicationLedger
 
 
 def model_report_identity(
@@ -67,7 +66,7 @@ def report_input_fingerprint(
 
 
 def freeze_report(
-    store: MemoryStore,
+    publications: PublicationLedger,
     case_id: str,
     actor: str,
     snapshot: dict[str, Any],
@@ -81,13 +80,17 @@ def freeze_report(
         raise ValueError("SNAPSHOT_REQUIRED")
     if not thesis or not recommendations:
         raise ValueError("THESIS_AND_RECOMMENDATIONS_REQUIRED")
-    if recommendations.get("stale") or any(not row.get("recommendation") for row in recommendations.get("rows", [])):
+    if recommendations.get("stale") or any(
+        not row.get("recommendation") for row in recommendations.get("rows", [])
+    ):
         raise ValueError("RECOMMENDATION_MATRIX_NOT_ELIGIBLE")
     if recommendations.get("accepted_snapshot_id") != snapshot["id"]:
         raise ValueError("RECOMMENDATION_SNAPSHOT_MISMATCH")
     if model_build is False:
         model_build = None
-    if model_build is True or (model_build is not None and not isinstance(model_build, dict)):
+    if model_build is True or (
+        model_build is not None and not isinstance(model_build, dict)
+    ):
         raise ValueError("MODEL_BUILD_INVALID")
     if include_model_export and model_build is None:
         raise ValueError("MODEL_EXPORT_MISMATCH")
@@ -108,38 +111,26 @@ def freeze_report(
     )
     preview_digest = digest(content)
     report = {
-        "id": store._id("report"),
         "case_id": case_id,
-        "created_by": actor,
-        "created_at": now_iso(),
-        "status": "PENDING_APPROVAL",
         "digest": preview_digest,
         "preview_digest": preview_digest,
         "input_fingerprint": content["input_fingerprint"],
         "snapshot_digest": content["snapshot_digest"],
         "content": content,
         "markdown": render_markdown(
-            store, snapshot, thesis, recommendations, preview_digest, model_identity
+            snapshot, thesis, recommendations, preview_digest, model_identity
         ),
     }
-    with store.lock:
-        previous_report = store.reports.get(case_id)
-        audit_start = len(store.audit)
-        store.reports[case_id] = report
-        store.audit_event("report.frozen", actor, case_id=case_id, report_id=report["id"])
-        try:
-            store.persist()
-        except Exception:
-            if previous_report is None:
-                store.reports.pop(case_id, None)
-            else:
-                store.reports[case_id] = previous_report
-            del store.audit[audit_start:]
-            raise
-    return copy.deepcopy(report)
+    return publications.freeze_report(case_id, actor, report)
 
 
-def render_markdown(store: MemoryStore, snapshot: dict[str, Any], thesis: dict[str, Any], recommendations: dict[str, Any], report_digest: str, model_identity: dict[str, Any] | None = None) -> str:
+def render_markdown(
+    snapshot: dict[str, Any],
+    thesis: dict[str, Any],
+    recommendations: dict[str, Any],
+    report_digest: str,
+    model_identity: dict[str, Any] | None = None,
+) -> str:
     lines = [
         "# CAOS Credit Snapshot",
         "",
@@ -156,7 +147,10 @@ def render_markdown(store: MemoryStore, snapshot: dict[str, Any], thesis: dict[s
         "| Instrument | Recommendation | Primary | Rationale |",
         "| --- | --- | --- | --- |",
     ]
-    lines.extend(f"| {row['instrument']} | {row['recommendation']} | {'Yes' if row.get('primary') else 'No'} | {row['rationale']} |" for row in recommendations["rows"])
+    lines.extend(
+        f"| {row['instrument']} | {row['recommendation']} | {'Yes' if row.get('primary') else 'No'} | {row['rationale']} |"
+        for row in recommendations["rows"]
+    )
     lines.extend(
         [
             "",
@@ -170,7 +164,14 @@ def render_markdown(store: MemoryStore, snapshot: dict[str, Any], thesis: dict[s
             ),
         ]
     )
-    lines.extend(["", "## Evidence & QA", "", "Every conclusion is bound to the accepted snapshot and its immutable artifact lineage."])
+    lines.extend(
+        [
+            "",
+            "## Evidence & QA",
+            "",
+            "Every conclusion is bound to the accepted snapshot and its immutable artifact lineage.",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -183,7 +184,11 @@ def render_pdf(report: dict[str, Any]) -> bytes:
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Length "
+        + str(len(stream)).encode()
+        + b" >>\nstream\n"
+        + stream
+        + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
     output = io.BytesIO()
@@ -193,9 +198,13 @@ def render_pdf(report: dict[str, Any]) -> bytes:
         offsets.append(output.tell())
         output.write(f"{index} 0 obj\n".encode() + obj + b"\nendobj\n")
     xref = output.tell()
-    output.write(f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n".encode())
-    output.write(b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:]))
-    output.write(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    output.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    output.write(
+        b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:])
+    )
+    output.write(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
     return output.getvalue()
 
 
