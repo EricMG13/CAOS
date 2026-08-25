@@ -37,6 +37,7 @@ AUDIT_ACTION_DETAILS = {
     "model.retried": {"case_id": "case", "build_id": "model"},
     "model.calculate.succeeded": {"case_id": "case", "build_id": "model"},
     "model.export.succeeded": {"case_id": "case", "build_id": "model"},
+    "model.export.queued": {"case_id": "case", "build_id": "model"},
     "model.export.failed": {"case_id": "case", "build_id": "model", "code": "MODEL_EXPORT_FAILED"},
     "model.export.downloaded": {"case_id": "case", "build_id": "model"},
     "report.approved": {"case_id": "case", "report_id": "report"},

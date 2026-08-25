@@ -337,6 +337,7 @@ class CaseBuildAuditEventResponse(AuditEventBaseResponse):
         "model.retried",
         "model.calculate.succeeded",
         "model.export.succeeded",
+        "model.export.queued",
         "model.export.downloaded",
     ]
     case_id: str
