@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any, Callable
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Protocol
 
 import anthropic
 from pydantic import BaseModel
@@ -39,6 +40,45 @@ class ProviderUnavailable(AgentError):
         super().__init__("AGENT_PROVIDER_UNAVAILABLE", message)
 
 
+@dataclass(frozen=True)
+class ProviderBlock:
+    type: str
+    id: str | None = None
+    name: str | None = None
+    input: dict[str, Any] | None = None
+    text: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderUsage:
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True)
+class ProviderMessage:
+    content: list[ProviderBlock]
+    stop_reason: str
+    usage: ProviderUsage
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderRequest:
+    system: str
+    messages: list[dict[str, Any]]
+    schema: dict[str, Any]
+    tools_enabled: bool
+    max_tokens: int | None = None
+    timeout: float | None = None
+
+
+class Provider(Protocol):
+    def count_tokens(self, request: ProviderRequest) -> int: ...
+
+    def create_message(self, request: ProviderRequest) -> ProviderMessage: ...
+
+
 def _block_value(block: Any, name: str, default: Any = None) -> Any:
     return block.get(name, default) if isinstance(block, dict) else getattr(block, name, default)
 
@@ -52,14 +92,104 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-class AnthropicGateway:
-    """Concrete bounded Anthropic Messages/client-tool loop."""
+class AnthropicProvider:
+    """Anthropic Messages transport normalized behind the provider port."""
 
     def __init__(self, api_key: str, model: str, timeout: float = 150.0, client: Any | None = None) -> None:
         if not api_key:
             raise ProviderUnavailable("ANTHROPIC_API_KEY is not configured")
         self.model = model
         self.client = client or anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=timeout)
+
+    @staticmethod
+    def _message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                content = [
+                    {key: value for key, value in vars(block).items() if value is not None}
+                    if isinstance(block, ProviderBlock)
+                    else block
+                    for block in content
+                ]
+            normalized.append({**message, "content": content})
+        return normalized
+
+    def _request_kwargs(self, request: ProviderRequest) -> dict[str, Any]:
+        try:
+            schema = anthropic.transform_schema(request.schema)
+        except (TypeError, ValueError) as exc:
+            raise AgentError("AGENT_OUTPUT_INVALID", "cannot transform agent output schema") from exc
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "system": request.system,
+            "messages": self._message_content(request.messages),
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        }
+        if request.tools_enabled:
+            kwargs.update(
+                tools=[READ_EVIDENCE_TOOL],
+                tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+            )
+        if request.max_tokens is not None:
+            kwargs["max_tokens"] = request.max_tokens
+        if request.timeout is not None:
+            kwargs["timeout"] = request.timeout
+        return kwargs
+
+    def _call(self, kind: str, request: ProviderRequest) -> Any:
+        try:
+            kwargs = self._request_kwargs(request)
+            if kind == "count_tokens":
+                return self.client.messages.count_tokens(**kwargs)
+            return self.client.messages.create(**kwargs)
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
+            raise AgentError("AGENT_PROVIDER_REJECTED") from exc
+        except (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.RateLimitError) as exc:
+            raise AgentError("AGENT_PROVIDER_TIMEOUT") from exc
+        except anthropic.APIStatusError as exc:
+            status = getattr(exc, "status_code", 0)
+            if 400 <= status < 500 and status not in {408, 409, 429}:
+                raise AgentError("AGENT_PROVIDER_REJECTED") from exc
+            if status in {408, 409, 429} or status >= 500:
+                raise AgentError("AGENT_PROVIDER_TIMEOUT") from exc
+            raise AgentError("AGENT_OUTPUT_INVALID") from exc
+
+    def count_tokens(self, request: ProviderRequest) -> int:
+        response = self._call("count_tokens", request)
+        return getattr(response, "input_tokens", None)
+
+    def create_message(self, request: ProviderRequest) -> ProviderMessage:
+        response = self._call("create", request)
+        usage = getattr(response, "usage", None)
+        content = getattr(response, "content", None)
+        blocks = [
+            ProviderBlock(
+                type=_block_value(block, "type"),
+                id=_block_value(block, "id"),
+                name=_block_value(block, "name"),
+                input=_block_value(block, "input"),
+                text=_block_value(block, "text"),
+            )
+            for block in content
+        ] if isinstance(content, list) else content
+        return ProviderMessage(
+            content=blocks,  # type: ignore[arg-type]
+            stop_reason=getattr(response, "stop_reason", None),
+            usage=ProviderUsage(
+                input_tokens=getattr(usage, "input_tokens", None),
+                output_tokens=getattr(usage, "output_tokens", None),
+            ),
+            request_id=getattr(response, "_request_id", None),
+        )
+
+
+class AgentLoop:
+    """Host-owned bounded evidence, budget, retry, repair, and validation policy."""
+
+    def __init__(self, provider: Provider) -> None:
+        self.provider = provider
 
     def run(
         self,
@@ -80,7 +210,7 @@ class AnthropicGateway:
     ) -> Any:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         try:
-            schema = anthropic.transform_schema(output_model.model_json_schema())
+            schema = output_model.model_json_schema()
         except (TypeError, ValueError) as exc:
             raise AgentError("AGENT_OUTPUT_INVALID", "cannot transform agent output schema") from exc
         retry_used = False
@@ -111,7 +241,12 @@ class AnthropicGateway:
             except Exception as exc:
                 raise abort("AGENT_OUTPUT_INVALID") from exc
 
-        def provider_call(kind: str, kwargs: dict[str, Any], before: Callable[[bool], None] | None = None) -> Any:
+        def provider_call(
+            kind: str,
+            operation: Callable[[ProviderRequest], Any],
+            request: ProviderRequest,
+            before: Callable[[bool], None] | None = None,
+        ) -> Any:
             nonlocal provider_interacted
             nonlocal retry_used
             retry = False
@@ -124,42 +259,29 @@ class AnthropicGateway:
                     try:
                         if before:
                             before(retry)
-                        call_kwargs = dict(kwargs)
+                        call_request = request
                         if remaining_time is not None:
-                            call_kwargs["timeout"] = remaining_time()
+                            call_request = replace(request, timeout=remaining_time())
                     except AgentError as exc:
                         raise abort(exc.code) from exc
                     started = time.monotonic()
                     provider_interacted = True
                     try:
-                        result = getattr(self.client.messages, kind)(**call_kwargs)
-                    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
-                        elapsed = time.monotonic() - started
-                        finish_interaction(kind, elapsed, retry=int(retry))
-                        raise abort("AGENT_PROVIDER_REJECTED") from exc
-                    except (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.RateLimitError) as exc:
-                        retryable = True
-                        error = exc
-                    except anthropic.APIStatusError as exc:
-                        status = getattr(exc, "status_code", 0)
-                        if 400 <= status < 500 and status not in {408, 409, 429}:
+                        result = operation(call_request)
+                    except AgentError as exc:
+                        if exc.code != "AGENT_PROVIDER_TIMEOUT":
                             elapsed = time.monotonic() - started
                             finish_interaction(kind, elapsed, retry=int(retry))
-                            raise abort("AGENT_PROVIDER_REJECTED") from exc
-                        retryable = status in {408, 409, 429} or status >= 500
-                        if not retryable:
-                            elapsed = time.monotonic() - started
-                            finish_interaction(kind, elapsed, retry=int(retry))
-                            raise abort("AGENT_OUTPUT_INVALID") from exc
+                            raise abort(exc.code) from exc
                         error = exc
                     else:
                         elapsed = time.monotonic() - started
-                        finish_interaction(kind, elapsed, retry=int(retry), request_id=getattr(result, "_request_id", None))
+                        finish_interaction(kind, elapsed, retry=int(retry), request_id=getattr(result, "request_id", None))
                         return result
                 finally:
                     semaphore.release()
                 finish_interaction(kind, time.monotonic() - started, retry=int(retry), terminal_code="AGENT_PROVIDER_TIMEOUT")
-                if not retryable or retry_used:
+                if retry_used:
                     raise abort("AGENT_PROVIDER_TIMEOUT") from error
                 record("provider_retry", operation=kind)
                 retry_used = True
@@ -169,37 +291,31 @@ class AnthropicGateway:
             nonlocal repair_used
             nonlocal tools_enabled
             while True:
-                common: dict[str, Any] = {
-                    "model": self.model,
-                    "system": system,
-                    "messages": messages,
-                    "output_config": {"format": {"type": "json_schema", "schema": schema}},
-                }
-                if tools_enabled:
-                    common.update(
-                        tools=[READ_EVIDENCE_TOOL],
-                        tool_choice={"type": "auto", "disable_parallel_tool_use": True},
-                    )
-                count = provider_call("count_tokens", common)
+                count_request = ProviderRequest(
+                    system=system,
+                    messages=messages,
+                    schema=schema,
+                    tools_enabled=tools_enabled,
+                )
+                counted_inputs = provider_call("count_tokens", self.provider.count_tokens, count_request)
                 try:
-                    counted_inputs = getattr(count, "input_tokens")
                     if not isinstance(counted_inputs, int) or isinstance(counted_inputs, bool) or counted_inputs < 0:
                         raise ValueError("negative input token count")
-                except (AttributeError, TypeError, ValueError) as exc:
+                except (TypeError, ValueError) as exc:
                     raise abort("AGENT_OUTPUT_INVALID", "malformed token-count response") from exc
-                create_kwargs = {**common, "max_tokens": max_tokens}
+                create_request = replace(count_request, max_tokens=max_tokens)
                 request_digest = hashlib.sha256(
-                    json.dumps(create_kwargs, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+                    json.dumps(create_request, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
                 ).hexdigest()
 
                 def reserve_attempt(retry: bool) -> None:
                     reserve(request_digest, counted_inputs, max_tokens, retry)
 
-                response = provider_call("create", create_kwargs, reserve_attempt)
-                usage = getattr(response, "usage", None)
+                response = provider_call("create", self.provider.create_message, create_request, reserve_attempt)
+                usage = response.usage
                 try:
-                    actual_inputs = getattr(usage, "input_tokens")
-                    actual_outputs = getattr(usage, "output_tokens")
+                    actual_inputs = usage.input_tokens
+                    actual_outputs = usage.output_tokens
                     if (
                         not isinstance(actual_inputs, int)
                         or isinstance(actual_inputs, bool)
@@ -212,30 +328,30 @@ class AnthropicGateway:
                 except (AttributeError, TypeError, ValueError) as exc:
                     raise abort("AGENT_OUTPUT_INVALID", "malformed provider usage") from exc
                 reconcile(request_digest, counted_inputs, max_tokens, actual_inputs, actual_outputs)
-                stop_reason = getattr(response, "stop_reason", None)
+                stop_reason = response.stop_reason
                 record(
                     "generation",
                     request_digest=request_digest,
-                    request_id=getattr(response, "_request_id", None),
+                    request_id=response.request_id,
                     input_tokens=actual_inputs,
                     output_tokens=actual_outputs,
                     stop_reason=stop_reason,
                 )
-                content = getattr(response, "content", None)
+                content = response.content
                 if not isinstance(content, list):
                     raise abort("AGENT_OUTPUT_INVALID", "response content must be a list")
-                block_types = [_block_value(block, "type") for block in content]
+                block_types = [block.type for block in content]
                 if "refusal" in block_types:
                     raise abort("AGENT_OUTPUT_INVALID", "provider refusal")
 
                 if stop_reason == "tool_use":
-                    tool_blocks = [block for block in content if _block_value(block, "type") == "tool_use"]
+                    tool_blocks = [block for block in content if block.type == "tool_use"]
                     if not tools_enabled or len(tool_blocks) != 1:
                         raise abort("AGENT_OUTPUT_INVALID", "exactly one evidence tool call is allowed")
                     tool = tool_blocks[0]
-                    if _block_value(tool, "name") != "read_evidence":
+                    if tool.name != "read_evidence":
                         raise abort("AGENT_OUTPUT_INVALID", "unexpected tool")
-                    arguments = _block_value(tool, "input")
+                    arguments = tool.input
                     if not isinstance(arguments, dict) or set(arguments) != {"source_id", "block_ids"}:
                         raise abort("AGENT_OUTPUT_INVALID", "malformed read_evidence arguments")
                     source_id = arguments["source_id"]
@@ -262,7 +378,7 @@ class AnthropicGateway:
                             "content": [
                                 {
                                     "type": "tool_result",
-                                    "tool_use_id": _block_value(tool, "id"),
+                                    "tool_use_id": tool.id,
                                     "content": json.dumps(evidence, sort_keys=True),
                                 }
                             ],
@@ -272,11 +388,11 @@ class AnthropicGateway:
 
                 if stop_reason != "end_turn":
                     raise abort("AGENT_OUTPUT_INVALID", f"unexpected stop reason: {stop_reason}")
-                if len(content) != 1 or block_types != ["text"] or not isinstance(_block_value(content[0], "text"), str):
+                if len(content) != 1 or block_types != ["text"] or not isinstance(content[0].text, str):
                     raise abort("AGENT_OUTPUT_INVALID", "final response must contain one structured text block")
                 validation_started = time.monotonic()
                 try:
-                    decoded = json.loads(_block_value(content[0], "text"), object_pairs_hook=_unique_object)
+                    decoded = json.loads(content[0].text, object_pairs_hook=_unique_object)
                     if not isinstance(decoded, dict):
                         raise ValueError("final JSON must be an object")
                     return validate(decoded)
@@ -310,3 +426,13 @@ class AnthropicGateway:
             raise abort(exc.code) from exc
         except Exception as exc:
             raise abort("AGENT_OUTPUT_INVALID") from exc
+
+
+class AnthropicGateway(AgentLoop):
+    """Compatibility facade for callers that still construct the Anthropic loop."""
+
+    def __init__(self, api_key: str, model: str, timeout: float = 150.0, client: Any | None = None) -> None:
+        provider = AnthropicProvider(api_key, model, timeout, client)
+        super().__init__(provider)
+        self.model = provider.model
+        self.client = provider.client

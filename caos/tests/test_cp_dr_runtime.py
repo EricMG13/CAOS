@@ -25,7 +25,16 @@ from caos.store import JobFencedError, MemoryStore, PostgresStore
 from caos.workflows import domain as workflow_domain
 from caos.workflows import provider as provider_module
 from caos.workflows.domain import WorkflowError, WorkflowRuntime, _LeaseFence
-from caos.workflows.provider import AgentError, AnthropicGateway, ProviderUnavailable
+from caos.workflows.provider import (
+    AgentError,
+    AgentLoop,
+    AnthropicGateway,
+    ProviderBlock,
+    ProviderMessage,
+    ProviderRequest,
+    ProviderUnavailable,
+    ProviderUsage,
+)
 
 
 DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
@@ -1044,6 +1053,110 @@ class _Client:
         self.messages = _Messages(responses)
 
 
+class _FakeProvider:
+    def __init__(self, responses: list[Any], counts: list[Any] | None = None) -> None:
+        self.responses = list(responses)
+        self.counts = list(counts or [20] * len(responses))
+        self.calls: list[tuple[str, ProviderRequest]] = []
+
+    def count_tokens(self, request: ProviderRequest) -> int:
+        self.calls.append(("count_tokens", copy.deepcopy(request)))
+        result = self.counts.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def create_message(self, request: ProviderRequest) -> ProviderMessage:
+        self.calls.append(("create", copy.deepcopy(request)))
+        result = self.responses.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+def test_agent_loop_provider_injection_handles_tools_and_reconciles_normalized_usage() -> None:
+    provider = _FakeProvider([
+        ProviderMessage(
+            content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b00001"]})],
+            stop_reason="tool_use",
+            usage=ProviderUsage(input_tokens=20, output_tokens=4),
+            request_id="req-tool",
+        ),
+        ProviderMessage(
+            content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
+            stop_reason="end_turn",
+            usage=ProviderUsage(input_tokens=24, output_tokens=30),
+            request_id="req-final",
+        ),
+    ])
+    reconciliations: list[tuple[Any, ...]] = []
+
+    result = AgentLoop(provider).run(
+        system="authority",
+        user="brief",
+        read_evidence=lambda source_id, block_ids: [{"source_id": source_id, "block_id": block_ids[0], "text": "evidence"}],
+        validate=lambda value: value,
+        lease_check=lambda: None,
+        reserve=lambda *_: None,
+        reconcile=lambda *args: reconciliations.append(args),
+        record=lambda *_args, **_kwargs: None,
+        active_time=lambda _elapsed: None,
+        semaphore=threading.BoundedSemaphore(2),
+    )
+
+    assert result["module_id"] == "CP-DR"
+    assert [kind for kind, _request in provider.calls] == ["count_tokens", "create", "count_tokens", "create"]
+    second_count = provider.calls[2][1]
+    assert second_count.messages[-2]["content"] == [
+        ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b00001"]}),
+    ]
+    assert second_count.messages[-1]["content"][0]["tool_use_id"] == "tool-1"
+    assert [items[-2:] for items in reconciliations] == [(20, 4), (24, 30)]
+
+
+def test_agent_loop_provider_injection_retries_one_normalized_timeout() -> None:
+    provider = _FakeProvider([
+        AgentError("AGENT_PROVIDER_TIMEOUT"),
+        ProviderMessage(
+            content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
+            stop_reason="end_turn",
+            usage=ProviderUsage(input_tokens=20, output_tokens=30),
+        ),
+    ], counts=[20])
+    reservations: list[tuple[Any, ...]] = []
+
+    result = AgentLoop(provider).run(
+        system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+        lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+        semaphore=threading.BoundedSemaphore(2),
+    )
+
+    assert result["module_id"] == "CP-DR"
+    assert provider.calls[1][1] == provider.calls[2][1]
+    assert [reservation[-1] for reservation in reservations] == [False, True]
+
+
+def test_agent_loop_provider_injection_rejects_malformed_normalized_usage() -> None:
+    provider = _FakeProvider([
+        ProviderMessage(
+            content=[ProviderBlock(type="text", text=json.dumps(_cpdr_payload()))],
+            stop_reason="end_turn",
+            usage=ProviderUsage(input_tokens=20, output_tokens=1.5),  # type: ignore[arg-type]
+        ),
+    ])
+    reconciliations: list[tuple[Any, ...]] = []
+
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        AgentLoop(provider).run(
+            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *args: reconciliations.append(args),
+            record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+            semaphore=threading.BoundedSemaphore(2),
+        )
+    assert reconciliations == []
+
+
 def test_gateway_preserves_assistant_content_and_orders_tool_results() -> None:
     tool_response = _Response("tool_use", [_Block("text", text="checking"), _Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": "src-1", "block_ids": ["b00001"]})])
     final_response = _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))], request_id="req-2")
@@ -1071,7 +1184,7 @@ def test_gateway_preserves_assistant_content_and_orders_tool_results() -> None:
     assert first["tools"][0]["name"] == "read_evidence" and first["tools"][0]["strict"] is True
     assert "output_config" in first and "output_format" not in first
     second_messages = client.messages.create_calls[1]["messages"]
-    assert [vars(block) for block in second_messages[-2]["content"]] == [vars(block) for block in tool_response.content]
+    assert second_messages[-2]["content"] == [vars(block) for block in tool_response.content]
     assert second_messages[-1]["content"][0]["type"] == "tool_result"
     assert len(reservations) == 2
 
@@ -1424,15 +1537,26 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
                 {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_cpdr_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
             ],
         )
-        request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-        client = _Client([
-            anthropic.APITimeoutError(request),
-            _Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})]),
-            _Response("tool_use", [_Block("tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_cpdr_2", "block_ids": ["b00002"]})]),
-            _Response("end_turn", [_Block("text", text="{}")], request_id="req-invalid"),
-            _Response("end_turn", [_Block("text", text=json.dumps(final))], request_id="req-final"),
+        provider = _FakeProvider([
+            AgentError("AGENT_PROVIDER_TIMEOUT"),
+            ProviderMessage(
+                content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
+                stop_reason="tool_use", usage=ProviderUsage(20, 30),
+            ),
+            ProviderMessage(
+                content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_cpdr_2", "block_ids": ["b00002"]})],
+                stop_reason="tool_use", usage=ProviderUsage(20, 30),
+            ),
+            ProviderMessage(
+                content=[ProviderBlock(type="text", text="{}")], stop_reason="end_turn",
+                usage=ProviderUsage(20, 30), request_id="req-invalid",
+            ),
+            ProviderMessage(
+                content=[ProviderBlock(type="text", text=json.dumps(final))], stop_reason="end_turn",
+                usage=ProviderUsage(20, 30), request_id="req-final",
+            ),
         ])
-        monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test", settings.anthropic_model, client=client))
+        monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AgentLoop(provider))
 
         runtime._execute(run["id"], "approver")
 
