@@ -104,6 +104,7 @@ export function workspaceAuthorityReducer(state: AuthorityState, event: Authorit
     }
     case "snapshotAccepted":
       if (!matchesAuthority(state, event.context)) return state;
+      if (state.pending) return { ...state, acceptedSnapshotId: event.snapshotId };
       return { ...state, status: "ready", pending: null, acceptedSnapshotId: event.snapshotId };
     case "invalidateCase":
       if (state.caseId !== event.caseId) return state;

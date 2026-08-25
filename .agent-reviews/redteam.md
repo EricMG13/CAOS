@@ -4319,3 +4319,20 @@ tests, lint, typecheck, webpack production build, registry-failure browser
 boundary, full workbench smoke, seeded 29-combination axe scan, rewrite
 tournament, confidence review, and staged graph detection pass. No API or
 component interface changed.
+
+## 2026-08-25 — Snapshot acceptance pending-lifecycle correction gate
+
+Decision under review: record a newly accepted snapshot pointer without letting
+that event resolve or erase an unrelated authority request already pending in
+the same case/run generation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-227 | Ordering saboteur | `snapshotAccepted` unconditionally sets `ready` and clears pending state, so acceptance racing a case or run refresh can hide loading/error lifecycle and make the refresh completion a no-op. | Critical | Resolved and red/green covered | After the existing generation/case/run guard, acceptance always records `acceptedSnapshotId`; when any request is pending it preserves status and the exact pending record. A regression failed before the patch (`ready`, expected `loading`) and now proves the later matching case success clears pending state normally while retaining the accepted ID. |
+| RT-2026-08-25-228 | Non-pending-path reviewer | Protecting pending requests could prevent ordinary acceptance from moving settled authority to ready or leave a prior error visible indefinitely. | High | Resolved by explicit branch | With no pending request, matching acceptance still sets `ready`, clears pending state, and records the ID. The existing settled-acceptance test was retained and renamed to make this contract explicit. |
+| RT-2026-08-25-229 | Stale-pointer reviewer | Recording the pointer before validating authority could let a late acceptance from the previous case/run overwrite the current case snapshot identity. | Critical | Resolved by existing fence | `matchesAuthority` remains the first operation. A new stale-context regression requires strict object identity and no pointer change. |
+
+Decision: accept the one-branch reducer correction after 30 frontend unit
+tests, lint, typecheck, webpack production build, full workbench smoke, seeded
+29-combination axe scan, rewrite tournament, confidence review, and staged graph
+detection pass. No API or component interface changed.

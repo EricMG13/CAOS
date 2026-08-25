@@ -192,7 +192,26 @@ test("rejects a stale failed request", () => {
   );
 });
 
-test("accepts a matching snapshot refresh", () => {
+test("records snapshot acceptance without resolving pending case authority", () => {
+  const pendingCase = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const context = requestContext(pendingCase);
+  const accepted = workspaceAuthorityReducer(pendingCase, {
+    type: "snapshotAccepted",
+    context,
+    snapshotId: "snapshot_a",
+  });
+
+  assert.equal(accepted.status, "loading");
+  assert.deepEqual(accepted.pending, pendingCase.pending);
+  assert.equal(accepted.acceptedSnapshotId, "snapshot_a");
+
+  const succeeded = workspaceAuthorityReducer(accepted, { type: "requestSucceeded", context, scope: "case" });
+  assert.equal(succeeded.status, "ready");
+  assert.equal(succeeded.pending, null);
+  assert.equal(succeeded.acceptedSnapshotId, "snapshot_a");
+});
+
+test("accepts a matching snapshot refresh when no authority request is pending", () => {
   const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
   const started = workspaceAuthorityReducer(hydrated, { type: "requestStarted", scope: "case" });
   const succeeded = workspaceAuthorityReducer(started, { type: "requestSucceeded", context: requestContext(started), scope: "case" });
@@ -205,6 +224,17 @@ test("accepts a matching snapshot refresh", () => {
   assert.equal(state.status, "ready");
   assert.equal(state.acceptedSnapshotId, "snapshot_a");
   assert.equal(state.pending, null);
+});
+
+test("rejects snapshot acceptance from a stale authority context", () => {
+  const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const staleContext = requestContext(hydrated);
+  const selected = workspaceAuthorityReducer(hydrated, { type: "selectCase", caseId: "case_b" });
+
+  assert.strictEqual(
+    workspaceAuthorityReducer(selected, { type: "snapshotAccepted", context: staleContext, snapshotId: "snapshot_a" }),
+    selected,
+  );
 });
 
 test("invalidates only the active case or run authority", () => {
