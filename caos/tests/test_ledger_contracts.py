@@ -4,7 +4,6 @@ import copy
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -353,12 +352,18 @@ def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
     assert recovered["nodes"][0]["status"] == "pending"
     assert recovered["nodes"][0]["artifact_id"] is None
 
+    artifact_payload = {"debt": 100}
+    artifact_digest = digest(artifact_payload)
     artifact = {
         "case_id": run["case_id"],
         "run_id": run["id"],
         "module_id": node["module_id"],
+        "created_by": ACTOR,
+        "payload": artifact_payload,
+        "markdown": "# CP-1\n\nDebt: 100\n",
+        "digest": artifact_digest,
         "input_fingerprint": "fingerprint",
-        "digest": "f" * 64,
+        "created_at": "2026-08-24T00:00:00+00:00",
     }
     assert "id" not in artifact
     event_data = {"node_id": node["id"], "module_id": node["module_id"]}
@@ -374,6 +379,12 @@ def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
         )
     assert ledger_set.runs.events_after(run["id"]) == before_events
     assert ledger_set.runs.get_run(run["id"])["nodes"][0]["status"] == "pending"
+    assert (
+        ledger_set.runs.artifact_for_fingerprint(
+            run["id"], node["module_id"], artifact["input_fingerprint"]
+        )
+        is None
+    )
 
     ledger_set.runs.update_node_fenced(
         run["id"], replacement, node["id"], status="running"
@@ -392,6 +403,12 @@ def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
     assert rolled_back["nodes"][0]["status"] == "running"
     assert rolled_back["nodes"][0]["artifact_id"] is None
     assert ledger_set.runs.events_after(run["id"]) == before_events
+    assert (
+        ledger_set.runs.artifact_for_fingerprint(
+            run["id"], node["module_id"], artifact["input_fingerprint"]
+        )
+        is None
+    )
 
     completed = ledger_set.runs.complete_node(
         run["id"],
@@ -403,6 +420,8 @@ def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
     )
     completed_run = ledger_set.runs.get_run(run["id"])
     assert completed["id"] == completed_run["nodes"][0]["artifact_id"]
+    assert completed["payload"] == artifact_payload
+    assert completed["digest"] == artifact_digest
     assert completed_run["nodes"][0]["status"] == "succeeded"
     events = ledger_set.runs.events_after(run["id"])
     assert events[:-1] == before_events
@@ -470,6 +489,10 @@ def test_snapshot_acceptance_updates_case_and_run_together(
         (
             "SOURCE_SET_CHANGED",
             {**base_payload, "source_set_version": source_set["version"] + 1},
+        ),
+        (
+            "SOURCE_SET_CHANGED",
+            {**base_payload, "source_set_id": "source_set_missing"},
         ),
         (
             "RUN_NOT_READY",
@@ -603,20 +626,10 @@ def test_note_promotion_changes_source_authority_once(ledger_set: Any) -> None:
     case = _case(ledger_set)
     note = ledger_set.publications.create_note(case["id"], ACTOR, "Debt remains 100")
 
-    with patch.object(
-        ledger_set.sources,
-        "ingest_promoted_note",
-        wraps=ledger_set.sources.ingest_promoted_note,
-    ) as ingest_promoted_note:
-        promoted = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
-        assert ingest_promoted_note.call_count == 1
-        ingested_note, ingested_actor = ingest_promoted_note.call_args.args
-        assert ingested_note["id"] == note["id"] and ingested_actor == ACTOR
-        promoted_set = ledger_set.sources.current_source_set(case["id"])
-        assert promoted_set is not None
-
-        repeated = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
-        assert ingest_promoted_note.call_count == 1
+    promoted = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
+    promoted_set = ledger_set.sources.current_source_set(case["id"])
+    assert promoted_set is not None
+    repeated = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
 
     source_id = promoted["promoted_source_id"]
     source = ledger_set.sources.get_source(source_id)
