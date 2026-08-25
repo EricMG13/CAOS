@@ -1304,6 +1304,68 @@ def test_gateway_retries_one_identical_timeout_request() -> None:
     assert [reservation[-1] for reservation in reservations] == [False, True]
 
 
+def test_gateway_preserves_legacy_request_digest_bytes_across_retry() -> None:
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    client = _Client([
+        anthropic.APITimeoutError(request),
+        _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))]),
+    ])
+    reservations: list[tuple[Any, ...]] = []
+
+    AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
+        system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+        lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+        semaphore=threading.BoundedSemaphore(2),
+    )
+
+    legacy_preimage = {
+        "model": "claude-sonnet-4-6",
+        "system": "authority",
+        "messages": [{"role": "user", "content": "brief"}],
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": anthropic.transform_schema(CPDRPayload.model_json_schema()),
+            }
+        },
+        "tools": [provider_module.READ_EVIDENCE_TOOL],
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+        "max_tokens": 2_000,
+    }
+    expected_bytes = json.dumps(legacy_preimage, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+    actual_bytes = json.dumps(
+        {key: value for key, value in client.messages.create_calls[0].items() if key != "timeout"},
+        sort_keys=True,
+        default=lambda value: vars(value),
+    ).encode("utf-8")
+    assert actual_bytes == expected_bytes
+    assert [reservation[0] for reservation in reservations] == [hashlib.sha256(expected_bytes).hexdigest()] * 2
+
+
+def test_gateway_schema_transform_failure_is_not_a_provider_interaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _Client([])
+    events: list[tuple[str, dict[str, Any]]] = []
+    charged: list[float] = []
+    monkeypatch.setattr(
+        provider_module.anthropic,
+        "transform_schema",
+        lambda _schema: (_ for _ in ()).throw(ValueError("invalid schema")),
+    )
+
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
+            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+            lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
+            record=lambda kind, **details: events.append((kind, details)), active_time=charged.append,
+            semaphore=threading.BoundedSemaphore(2),
+        )
+
+    assert client.messages.count_calls == []
+    assert events == []
+    assert charged == []
+
+
 def test_gateway_caps_each_sdk_call_to_decreasing_remaining_active_time() -> None:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     client = _Client([anthropic.APITimeoutError(request), _Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])

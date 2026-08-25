@@ -188,8 +188,16 @@ class AnthropicProvider:
 class AgentLoop:
     """Host-owned bounded evidence, budget, retry, repair, and validation policy."""
 
-    def __init__(self, provider: Provider) -> None:
+    def __init__(
+        self,
+        provider: Provider,
+        *,
+        schema_transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        request_preimage: Callable[[ProviderRequest], Any] | None = None,
+    ) -> None:
         self.provider = provider
+        self._schema_transform = schema_transform or (lambda schema: schema)
+        self._request_preimage = request_preimage or (lambda request: request)
 
     def run(
         self,
@@ -210,7 +218,7 @@ class AgentLoop:
     ) -> Any:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         try:
-            schema = output_model.model_json_schema()
+            schema = self._schema_transform(output_model.model_json_schema())
         except (TypeError, ValueError) as exc:
             raise AgentError("AGENT_OUTPUT_INVALID", "cannot transform agent output schema") from exc
         retry_used = False
@@ -305,7 +313,11 @@ class AgentLoop:
                     raise abort("AGENT_OUTPUT_INVALID", "malformed token-count response") from exc
                 create_request = replace(count_request, max_tokens=max_tokens)
                 request_digest = hashlib.sha256(
-                    json.dumps(create_request, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+                    json.dumps(
+                        self._request_preimage(create_request),
+                        sort_keys=True,
+                        default=lambda value: vars(value),
+                    ).encode("utf-8")
                 ).hexdigest()
 
                 def reserve_attempt(retry: bool) -> None:
@@ -433,6 +445,10 @@ class AnthropicGateway(AgentLoop):
 
     def __init__(self, api_key: str, model: str, timeout: float = 150.0, client: Any | None = None) -> None:
         provider = AnthropicProvider(api_key, model, timeout, client)
-        super().__init__(provider)
+        super().__init__(
+            provider,
+            schema_transform=anthropic.transform_schema,
+            request_preimage=provider._request_kwargs,
+        )
         self.model = provider.model
         self.client = provider.client
