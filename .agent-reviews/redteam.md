@@ -4111,3 +4111,20 @@ authority into the worker loop.
 Decision: accept the narrow public scheduling seam. Do not add a queue, worker
 protocol hierarchy, or duplicate claim policy; stores own discovery and runtimes
 remain authoritative for claims, leases, heartbeats, and fenced writes.
+
+## 2026-08-25 — Normalized model-job actor remediation gate
+
+Decision under review: remove the worker polling path's final dependency on the
+legacy state envelope by making requester identity a required normalized job
+field.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-177 | Persistence-boundary reviewer | Resolving the actor from `caos_state` keeps production scheduling coupled to the legacy envelope and makes normalized job rows incomplete. | High | Resolved and verified | Forward migration `004` adds non-null `model_build_jobs.actor`, backfills it from the foreign-keyed build creator, and pending reads now join only normalized jobs/builds. The worker query contract explicitly rejects `caos_state`. |
+| RT-2026-08-25-178 | Attribution reviewer | Calculate, retry, and export paths can drift if any normalized write omits or fails to replace the current requester. | High | Resolved and verified | Initial calculate insert, retry update, and export insert/upsert all parameterize actor in the same transaction as authoritative state. A store-level SQL capture regression proves analyst, reviewer, and approver identities respectively. |
+| RT-2026-08-25-179 | Rollout reviewer | Adding `NOT NULL` before populating existing jobs would fail deployment; a large table scan can also hold a migration lock. | High | Resolved / bounded rollout cost | The migration test enforces add → creator backfill → `NOT NULL` ordering, and the model-build foreign key plus non-null build creator makes the backfill total. The one-time scan/lock is accepted for the current bounded job table; no dual-read compatibility path remains. |
+
+Decision: accept the normalized actor migration. Do not retain JSON-envelope
+fallbacks or add a second actor source; normalized `model_build_jobs.actor` is
+the scheduling identity, with build creator fallback only for a malformed blank
+value.
