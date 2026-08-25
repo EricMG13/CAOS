@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import EvidenceChip from "./EvidenceChip";
 import FiledProof from "./FiledProof";
 import { api as request, type ArtifactRecord, type CaseRecord, type EvidenceOption, type LoanFinding, type LoanRow, type LoanUniverseResponse, type ModelBuild, type ModelInventory, type ModelReadiness, type ReportDraft, type ResearchPlan, type RunRecord, type SourceRecord, type WorksheetCell, type WorksheetResponse, type WorksheetTab } from "../lib/api";
+import { initialAuthorityState, matchesAuthority, requestContext, workspaceAuthorityReducer, type AuthorityEvent } from "../lib/workspaceAuthority";
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
-import WorkbenchShell, { type AuthorityStatus, type DrawerState } from "./WorkbenchShell";
+import WorkbenchShell, { type DrawerState } from "./WorkbenchShell";
 import { type Destination, type Snapshot, type SnapshotView, destinationFromSlug, routeDestinations, withQuery } from "../lib/workbench";
 
 const pathways = [
@@ -47,151 +48,153 @@ export default function Workspace({ destination, children }: { destination?: Des
   const routeArtifactId = searchParams.get("artifact") || "";
   const routeSourceId = searchParams.get("source") || "";
   const [cases, setCases] = useState<CaseRecord[]>([]);
-  const [caseId, setCaseId] = useState("");
-  const [runId, setRunId] = useState("");
+  const [authorityState, reducerDispatch] = useReducer(workspaceAuthorityReducer, initialAuthorityState);
+  const authorityRef = useRef(initialAuthorityState);
+  const dispatchAuthority = useCallback((event: AuthorityEvent) => {
+    const next = workspaceAuthorityReducer(authorityRef.current, event);
+    authorityRef.current = next;
+    reducerDispatch(event);
+    return next;
+  }, []);
+  const caseId = authorityState.caseId || "";
+  const runId = authorityState.runId || "";
+  const hydrated = authorityState.hydrated;
+  const authorityStatus = authorityState.status;
   const [run, setRun] = useState<RunRecord | null>(null);
   const [casesLoading, setCasesLoading] = useState(true);
   const [runLoading, setRunLoading] = useState(false);
   const [runError, setRunError] = useState("");
   const [error, setError] = useState("");
   const [pendingAction, setPendingAction] = useState("");
-  const [hydrated, setHydrated] = useState(false);
   const [role, setRole] = useState("ANALYST");
   const [authority, setAuthority] = useState<SnapshotView | null>(null);
-  const [authorityStatus, setAuthorityStatus] = useState<AuthorityStatus>("idle");
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const casesRequest = useRef(0);
-  const authorityRequest = useRef(0);
-  const runRequest = useRef(0);
-  const startRunRequest = useRef(0);
-  const caseIdRef = useRef("");
-  const runIdRef = useRef("");
+  const caseRefresh = useRef(0);
+  const runRefresh = useRef(0);
+  const runCreation = useRef(0);
   const routeAuthorityRef = useRef("");
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
   const caseIsAuthorized = selectedCase !== null;
 
   const selectCase = useCallback((nextCaseId: string, availableCases = cases) => {
-    if (nextCaseId === caseId) return true;
-    const draftKey = caseId ? `caos-report-draft:${caseId}` : "";
-    if (draftKey && nextCaseId !== caseId && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return false;
-    if (draftKey && nextCaseId !== caseId) window.sessionStorage.removeItem(draftKey);
-    // A case boundary owns both the active run and any in-flight run reads.
-    runRequest.current += 1;
-    startRunRequest.current += 1;
+    const currentCaseId = authorityRef.current.caseId || "";
+    if (nextCaseId === currentCaseId) return true;
+    const draftKey = currentCaseId ? `caos-report-draft:${currentCaseId}` : "";
+    if (draftKey && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return false;
+    if (draftKey) window.sessionStorage.removeItem(draftKey);
+    dispatchAuthority({ type: "selectCase", caseId: nextCaseId || null });
+    const nextRunId = availableCases.find((item) => item.id === nextCaseId)?.current_execution_id || "";
+    if (nextRunId) dispatchAuthority({ type: "selectRun", caseId: nextCaseId, runId: nextRunId });
     setRunLoading(false);
-    setPendingAction((current) => current === "start-run" ? "" : current);
-    caseIdRef.current = nextCaseId;
+    setPendingAction("");
     setDrawer(null);
     setAuthority(null);
-    setAuthorityStatus(nextCaseId ? "loading" : "idle");
-    setCaseId(nextCaseId);
-    const nextRunId = availableCases.find((item) => item.id === nextCaseId)?.current_execution_id || "";
-    runIdRef.current = nextRunId;
-    setRunId(nextRunId);
     setRun(null);
     setRunError("");
     setError("");
     return true;
-  }, [caseId, cases]);
+  }, [cases, dispatchAuthority]);
 
   const refreshCases = async (signal?: AbortSignal) => {
     const requestId = ++casesRequest.current;
+    const context = requestContext(authorityRef.current);
     setCasesLoading(true);
     try {
       const next = await request<CaseRecord[]>("/api/cases", {}, signal);
-      if (requestId !== casesRequest.current) return;
+      if (requestId !== casesRequest.current || !matchesAuthority(authorityRef.current, context)) return;
       setCases(next);
+      setCasesLoading(false);
+      dispatchAuthority({ type: "requestSucceeded", context, scope: "cases" });
       const requestedCaseId = queryParam("case");
       const requestedRunId = queryParam("run");
       const requestedCase = next.find((item) => item.id === requestedCaseId);
-      const currentCaseId = caseIdRef.current;
+      const currentCaseId = authorityRef.current.caseId || "";
       const resolvedCaseId = next.find((item) => item.id === currentCaseId)?.id || requestedCase?.id || next[0]?.id || "";
       if (resolvedCaseId !== currentCaseId) {
         if (requestedCaseId && !requestedCase) routeAuthorityRef.current = `${requestedCaseId}\u0000${requestedRunId}`;
         if (!selectCase(resolvedCaseId, next)) return;
         if (requestedRunId && (!requestedCaseId || requestedCase)) {
-          runIdRef.current = requestedRunId;
-          setRunId(requestedRunId);
+          dispatchAuthority({ type: "selectRun", caseId: resolvedCaseId, runId: requestedRunId });
         }
       }
-      if (!runIdRef.current && !requestedRunId) {
+      if (!authorityRef.current.runId && !requestedRunId) {
         const resolvedCase = next.find((item) => item.id === resolvedCaseId);
         if (resolvedCase?.current_execution_id) {
-          runIdRef.current = resolvedCase.current_execution_id;
-          setRunId(resolvedCase.current_execution_id);
+          dispatchAuthority({ type: "selectRun", caseId: resolvedCaseId, runId: resolvedCase.current_execution_id });
         }
       }
+      if (authorityRef.current.caseId) dispatchAuthority({ type: "requestStarted", scope: "case" });
     } catch (caught) {
-      if (requestId !== casesRequest.current) return;
-      if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(caught instanceof Error ? caught.message : "Unable to load cases");
-    } finally {
-      if (requestId !== casesRequest.current) return;
-      setCasesLoading(false);
+      if (requestId !== casesRequest.current || !matchesAuthority(authorityRef.current, context)) return;
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+        setError(caught instanceof Error ? caught.message : "Unable to load cases");
+        setCasesLoading(false);
+        dispatchAuthority({ type: "requestFailed", context, scope: "cases" });
+      }
     }
   };
 
   const refreshCase = async (id = caseId, signal?: AbortSignal) => {
-    if (!id || id !== caseIdRef.current) return;
-    const requestId = ++authorityRequest.current;
+    const context = requestContext(authorityRef.current);
+    if (!id || id !== context.caseId) return null;
+    const requestId = ++caseRefresh.current;
     try {
       const [detail, snapshot] = await Promise.all([
         request<CaseRecord>(`/api/cases/${id}`, {}, signal),
         request<SnapshotView>(`/api/cases/${id}/snapshot`, {}, signal),
       ]);
-      if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
+      if (requestId !== caseRefresh.current || !matchesAuthority(authorityRef.current, context)) return null;
       setCases((previous) => previous.map((item) => item.id === id ? { ...item, ...detail } : item));
       setAuthority(snapshot);
-      setAuthorityStatus("ready");
+      dispatchAuthority({ type: "requestSucceeded", context, scope: "case" });
+      if (snapshot.accepted) dispatchAuthority({ type: "snapshotAccepted", context, snapshotId: snapshot.accepted.id });
+      return snapshot;
     } catch (caught) {
-      if (requestId !== authorityRequest.current || id !== caseIdRef.current) return;
+      if (requestId !== caseRefresh.current || !matchesAuthority(authorityRef.current, context)) return null;
       if (!(caught instanceof DOMException && caught.name === "AbortError")) {
-        setAuthorityStatus("error");
         setError(caught instanceof Error ? caught.message : "Unable to load case authority");
+        dispatchAuthority({ type: "requestFailed", context, scope: "case" });
       }
+      return null;
     }
   };
 
   const refreshRun = async (id = runId) => {
-    const requestId = ++runRequest.current;
     if (!id) { setRun(null); setRunLoading(false); return; }
-    const expectedCaseId = caseIdRef.current;
+    const context = requestContext(authorityRef.current);
+    if (id !== context.runId) return;
+    const requestId = ++runRefresh.current;
     setRunLoading(true);
     setRunError("");
     try {
       const next = await request<RunRecord>(`/api/runs/${id}`);
-      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
-      if (next.case_id !== expectedCaseId) {
+      if (requestId !== runRefresh.current || !matchesAuthority(authorityRef.current, context)) return;
+      if (next.case_id !== context.caseId) {
         setRun(null);
         setRunLoading(false);
-        setRunId((current) => {
-          const nextRunId = current === id ? "" : current;
-          runIdRef.current = nextRunId;
-          return nextRunId;
-        });
         setRunError("Requested run does not belong to the selected case.");
+        dispatchAuthority({ type: "requestFailed", context, scope: "run" });
+        if (context.caseId) dispatchAuthority({ type: "invalidateRun", caseId: context.caseId, runId: id });
         return;
       }
       setRun(next);
+      dispatchAuthority({ type: "requestSucceeded", context, scope: "run" });
     } catch (caught) {
-      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
+      if (requestId !== runRefresh.current || !matchesAuthority(authorityRef.current, context)) return;
       const message = caught instanceof Error ? caught.message : "Unable to refresh run";
       setRunError(message);
       setError(message);
+      dispatchAuthority({ type: "requestFailed", context, scope: "run" });
     } finally {
-      if (requestId !== runRequest.current || expectedCaseId !== caseIdRef.current || id !== runIdRef.current) return;
+      if (requestId !== runRefresh.current || !matchesAuthority(authorityRef.current, context)) return;
       setRunLoading(false);
     }
   };
 
   useEffect(() => {
     // URL-derived state is hydrated after the server render to keep the shell deterministic.
-    caseIdRef.current = requestedCaseId;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCaseId(requestedCaseId);
-    setAuthorityStatus(requestedCaseId ? "loading" : "idle");
-    runIdRef.current = requestedRunId;
-    setRunId(requestedRunId);
-    setHydrated(true);
+    dispatchAuthority({ type: "hydrate", caseId: requestedCaseId || null, runId: requestedRunId || null });
     const controller = new AbortController();
     const guardDraftNavigation = (event: MouseEvent) => {
       const currentCaseId = queryParam("case");
@@ -233,8 +236,7 @@ export default function Workspace({ destination, children }: { destination?: Des
           return;
         }
         if (requestedRunId) {
-          runIdRef.current = requestedRunId;
-          setRunId(requestedRunId);
+          dispatchAuthority({ type: "selectRun", caseId: authorizedCase.id, runId: requestedRunId });
         }
         routeAuthorityRef.current = routeAuthority;
         return;
@@ -243,19 +245,17 @@ export default function Workspace({ destination, children }: { destination?: Des
       // current execution. An explicit run query always wins for the same case.
       if (requestedRunId && requestedRunId !== runId) {
         setRun(null);
-        runIdRef.current = requestedRunId;
-        setRunId(requestedRunId);
+        dispatchAuthority({ type: "selectRun", caseId, runId: requestedRunId });
       }
       routeAuthorityRef.current = routeAuthority;
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [caseId, cases, casesLoading, hydrated, requestedCaseId, requestedRunId, runId, selectCase]);
+  }, [caseId, cases, casesLoading, dispatchAuthority, hydrated, requestedCaseId, requestedRunId, runId, selectCase]);
 
   useEffect(() => {
-    authorityRequest.current += 1;
     // The visible authority and contextual drawer must clear at the external case boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAuthority(null); setDrawer(null); setAuthorityStatus(caseId ? "loading" : "idle");
+    setAuthority(null); setDrawer(null);
     if (!caseId || !caseIsAuthorized) return;
     const controller = new AbortController();
     void refreshCase(caseId, controller.signal);
@@ -305,23 +305,44 @@ export default function Workspace({ destination, children }: { destination?: Des
     event.preventDefault(); setError("");
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const context = requestContext(authorityRef.current);
     setPendingAction("create-case");
     try {
       const created = await request<CaseRecord>("/api/cases", { method: "POST", body: JSON.stringify({ name: form.get("name"), issuer: form.get("issuer"), sector: form.get("sector") || "Unclassified" }) });
+      if (!matchesAuthority(authorityRef.current, context)) return;
       casesRequest.current += 1;
-      setCases((previous) => [created, ...previous]); selectCase(created.id); formElement.reset();
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to create case"); }
-    finally { setPendingAction(""); }
+      setCases((previous) => [created, ...previous]);
+      dispatchAuthority({ type: "requestSucceeded", context, scope: "create-case" });
+      setPendingAction("");
+      selectCase(created.id); formElement.reset();
+    } catch (caught) {
+      if (!matchesAuthority(authorityRef.current, context)) return;
+      setError(caught instanceof Error ? caught.message : "Unable to create case");
+      dispatchAuthority({ type: "requestFailed", context, scope: "create-case" });
+    } finally {
+      if (matchesAuthority(authorityRef.current, context)) setPendingAction("");
+    }
   };
 
   const upload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!caseId) return; setError("");
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const context = requestContext(authorityRef.current);
     setPendingAction("upload");
-    try { await request(`/api/cases/${caseId}/sources`, { method: "POST", body: form }); await refreshCase(caseId); formElement.reset(); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to upload source"); }
-    finally { setPendingAction(""); }
+    try {
+      await request(`/api/cases/${caseId}/sources`, { method: "POST", body: form });
+      if (!matchesAuthority(authorityRef.current, context)) return;
+      dispatchAuthority({ type: "requestSucceeded", context, scope: "upload" });
+      await refreshCase(caseId);
+      if (matchesAuthority(authorityRef.current, context)) formElement.reset();
+    } catch (caught) {
+      if (!matchesAuthority(authorityRef.current, context)) return;
+      setError(caught instanceof Error ? caught.message : "Unable to upload source");
+      dispatchAuthority({ type: "requestFailed", context, scope: "upload" });
+    } finally {
+      if (matchesAuthority(authorityRef.current, context)) setPendingAction("");
+    }
   };
 
   const startRun = async (event: FormEvent<HTMLFormElement>) => {
@@ -343,23 +364,31 @@ export default function Workspace({ destination, children }: { destination?: Des
       must_answer: mustAnswer,
       exclusions,
     } : undefined;
-    const expectedCaseId = caseIdRef.current;
-    const requestId = ++startRunRequest.current;
+    const context = requestContext(authorityRef.current);
+    const expectedCaseId = context.caseId;
+    if (!expectedCaseId) return;
+    const requestId = ++runCreation.current;
     setPendingAction("start-run");
     try {
       const created = await request<RunRecord>(`/api/cases/${expectedCaseId}/runs`, { method: "POST", body: JSON.stringify({ pathway, depth, focus_questions: [], ...(researchBrief ? { research_brief: researchBrief } : {}) }) });
-      if (requestId !== startRunRequest.current || expectedCaseId !== caseIdRef.current) return;
+      if (requestId !== runCreation.current || !matchesAuthority(authorityRef.current, context)) return;
       if (created.case_id !== expectedCaseId) {
         const message = "Started run does not belong to the selected case.";
         setRunError(message);
         setError(message);
+        dispatchAuthority({ type: "requestFailed", context, scope: "start-run" });
         return;
       }
-      setRun(created); runIdRef.current = created.id; setRunId(created.id);
+      setRun(created);
+      dispatchAuthority({ type: "requestSucceeded", context, scope: "start-run" });
+      setPendingAction((current) => current === "start-run" ? "" : current);
+      dispatchAuthority({ type: "selectRun", caseId: expectedCaseId, runId: created.id });
     } catch (caught) {
-      if (requestId === startRunRequest.current && expectedCaseId === caseIdRef.current) setError(caught instanceof Error ? caught.message : "Unable to start run");
+      if (requestId !== runCreation.current || !matchesAuthority(authorityRef.current, context)) return;
+      setError(caught instanceof Error ? caught.message : "Unable to start run");
+      dispatchAuthority({ type: "requestFailed", context, scope: "start-run" });
     } finally {
-      if (requestId === startRunRequest.current) setPendingAction((current) => current === "start-run" ? "" : current);
+      if (requestId === runCreation.current && matchesAuthority(authorityRef.current, context)) setPendingAction((current) => current === "start-run" ? "" : current);
     }
   };
 
@@ -369,35 +398,66 @@ export default function Workspace({ destination, children }: { destination?: Des
       return;
     }
     if (!window.confirm("Accept this analytical snapshot as the visible authority for the case?")) return;
+    const context = requestContext(authorityRef.current);
     setPendingAction("accept-run");
-    try { await request(`/api/runs/${runId}/accept`, { method: "POST" }); await refreshCase(caseId); await refreshRun(); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to accept snapshot"); }
-    finally { setPendingAction(""); }
+    try {
+      const accepted = await request<Snapshot>(`/api/runs/${runId}/accept`, { method: "POST" });
+      if (!matchesAuthority(authorityRef.current, context)) return;
+      dispatchAuthority({ type: "snapshotAccepted", context, snapshotId: accepted.id });
+      await refreshCase(caseId); await refreshRun(runId);
+    } catch (caught) {
+      if (!matchesAuthority(authorityRef.current, context)) return;
+      setError(caught instanceof Error ? caught.message : "Unable to accept snapshot");
+      dispatchAuthority({ type: "requestFailed", context, scope: "accept-run" });
+    } finally {
+      if (matchesAuthority(authorityRef.current, context)) setPendingAction("");
+    }
   };
 
   const approveResearchPlan = async (planHash: string) => {
     if (!runId || !run || run.id !== runId || run.case_id !== caseId) return;
-    const expectedCaseId = caseId;
-    const expectedRunId = runId;
+    const context = requestContext(authorityRef.current);
+    const expectedCaseId = context.caseId;
+    const expectedRunId = context.runId;
+    if (!expectedCaseId || !expectedRunId) return;
     setError("");
     setPendingAction("approve-research-plan");
     try {
       await request(`/api/runs/${expectedRunId}/research-plan/approve`, { method: "POST", body: JSON.stringify({ plan_hash: planHash }) });
-      if (expectedCaseId === caseIdRef.current && expectedRunId === runIdRef.current) await refreshRun(expectedRunId);
+      if (!matchesAuthority(authorityRef.current, context)) return;
+      dispatchAuthority({ type: "requestSucceeded", context, scope: "research-plan" });
+      await refreshRun(expectedRunId);
     } catch (caught) {
-      if (expectedCaseId === caseIdRef.current && expectedRunId === runIdRef.current) setError(caught instanceof Error ? caught.message : "Unable to approve research plan");
+      if (!matchesAuthority(authorityRef.current, context)) return;
+      setError(caught instanceof Error ? caught.message : "Unable to approve research plan");
+      dispatchAuthority({ type: "requestFailed", context, scope: "research-plan" });
     } finally {
-      setPendingAction((current) => current === "approve-research-plan" ? "" : current);
+      if (matchesAuthority(authorityRef.current, context)) setPendingAction((current) => current === "approve-research-plan" ? "" : current);
+    }
+  };
+
+  const switchSnapshot = async (snapshotId: string) => {
+    const context = requestContext(authorityRef.current);
+    if (!context.caseId) return null;
+    try {
+      const switched = await request<Snapshot>(`/api/cases/${context.caseId}/snapshot/switch`, { method: "POST", body: JSON.stringify({ snapshot_id: snapshotId }) });
+      if (!matchesAuthority(authorityRef.current, context)) return null;
+      dispatchAuthority({ type: "snapshotAccepted", context, snapshotId: switched.id });
+      return refreshCase(context.caseId);
+    } catch (caught) {
+      if (!matchesAuthority(authorityRef.current, context)) return null;
+      dispatchAuthority({ type: "requestFailed", context, scope: "switch-snapshot" });
+      throw caught;
     }
   };
 
   const renderDestination = () => {
     if (!selectedCase && active !== "Cases" && active !== "Admin Studio") return <EmptyState text="Create or select a case before entering an analytical workspace." action="Open Cases" href="/cases/" />;
     switch (active) {
-      case "Cases": return <CasesView cases={cases} casesLoading={casesLoading} selectedCase={selectedCase} caseId={caseId} setCaseId={selectCase} createCase={createCase} upload={upload} pendingAction={pendingAction} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} />;
+      case "Cases": return <CasesView cases={cases} casesLoading={casesLoading} selectedCase={selectedCase} caseId={caseId} onCaseChange={selectCase} createCase={createCase} upload={upload} pendingAction={pendingAction} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} />;
       case "Sources": return <SourcesView selectedCase={selectedCase} artifactId={routeArtifactId} sourceId={routeSourceId} upload={upload} pendingAction={pendingAction} onOpenEvidence={(evidenceId, source) => setDrawer({ kind: "evidence", evidenceId, source })} />;
       case "Run Console": return <RunConsole caseId={caseId} selectedCase={selectedCase} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} approveResearchPlan={approveResearchPlan} pendingAction={pendingAction} />;
-      case "Deep-Dive": return <DeepDive selectedCase={selectedCase} question={routeQuestion} caseId={caseId} pendingAction={pendingAction} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} />;
+      case "Deep-Dive": return <DeepDive selectedCase={selectedCase} question={routeQuestion} caseId={caseId} pendingAction={pendingAction} run={run} runLoading={runLoading} runError={runError} startRun={startRun} acceptRun={acceptRun} onSwitchSnapshot={switchSnapshot} />;
       case "RV Screener": return <RVView key={caseId} caseId={caseId} />;
       case "Command Center": return <CommandView caseId={caseId} question={routeQuestion} />;
       case "Model Builder": return <ModelView caseId={caseId} role={role} />;
@@ -438,7 +498,7 @@ function ActionState({ title, detail, action, href, warning = false }: { title: 
   return <div className={`action-state${warning ? " warning" : ""}`}><strong>{title}</strong><p>{detail}</p><Link className="button small" href={href}>{action}</Link></div>;
 }
 
-function CasesView({ cases, casesLoading, selectedCase, caseId, setCaseId, createCase, upload, pendingAction, run, runLoading, runError, startRun, acceptRun }: { cases: CaseRecord[]; casesLoading: boolean; selectedCase: CaseRecord | null; caseId: string; setCaseId: (id: string) => void; createCase: (event: FormEvent<HTMLFormElement>) => void; upload: (event: FormEvent<HTMLFormElement>) => void; pendingAction: string; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void }) {
+function CasesView({ cases, casesLoading, selectedCase, caseId, onCaseChange, createCase, upload, pendingAction, run, runLoading, runError, startRun, acceptRun }: { cases: CaseRecord[]; casesLoading: boolean; selectedCase: CaseRecord | null; caseId: string; onCaseChange: (id: string) => void; createCase: (event: FormEvent<HTMLFormElement>) => void; upload: (event: FormEvent<HTMLFormElement>) => void; pendingAction: string; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void }) {
   const [search, setSearch] = useState("");
   const [snapshotFilter, setSnapshotFilter] = useState<"all" | "accepted" | "unaccepted">("all");
   const visibleCases = useMemo(() => cases.filter((item) => {
@@ -448,7 +508,7 @@ function CasesView({ cases, casesLoading, selectedCase, caseId, setCaseId, creat
     return matchesSearch && matchesFilter;
   }), [cases, search, snapshotFilter]);
   return <div className="grid cases-layout">
-    <section className="panel cases-register"><div className="panel-header"><h2>Case register</h2><span className="panel-meta">{casesLoading ? "Loading…" : `${visibleCases.length} of ${cases.length}`}</span></div><div className="worklist-toolbar"><div className="field"><label htmlFor="case-search">Search cases</label><input id="case-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Issuer, case, or sector" /></div><div className="field"><label htmlFor="case-snapshot-filter">Snapshot</label><select id="case-snapshot-filter" value={snapshotFilter} onChange={(event) => setSnapshotFilter(event.target.value as "all" | "accepted" | "unaccepted")}><option value="all">All</option><option value="accepted">Accepted</option><option value="unaccepted">Not accepted</option></select></div></div><div className="panel-body table-wrap" tabIndex={0} role="region" aria-label="Scrollable table"><table><thead><tr><th scope="col">Issuer</th><th scope="col">Case</th><th scope="col">Sources</th><th scope="col">Snapshot</th><th scope="col">Actions</th></tr></thead><tbody>{visibleCases.map((item) => <tr key={item.id}><td>{item.issuer}</td><td>{item.name}<div className="muted">{item.sector}</div></td><td className="num">{item.source_count ?? "—"}</td><td>{item.accepted_snapshot ? <span className="status success">accepted</span> : <span className="status warning">not accepted</span>}</td><td><button className="button small" type="button" aria-pressed={caseId === item.id} onClick={() => setCaseId(item.id)}>{caseId === item.id ? "Selected" : "Select"}</button></td></tr>)}</tbody></table>{!visibleCases.length && <LoadState loading={casesLoading} empty={cases.length ? "No cases match this search and filter." : "No cases yet. Create the first case to establish the context boundary."} />}</div></section>
+    <section className="panel cases-register"><div className="panel-header"><h2>Case register</h2><span className="panel-meta">{casesLoading ? "Loading…" : `${visibleCases.length} of ${cases.length}`}</span></div><div className="worklist-toolbar"><div className="field"><label htmlFor="case-search">Search cases</label><input id="case-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Issuer, case, or sector" /></div><div className="field"><label htmlFor="case-snapshot-filter">Snapshot</label><select id="case-snapshot-filter" value={snapshotFilter} onChange={(event) => setSnapshotFilter(event.target.value as "all" | "accepted" | "unaccepted")}><option value="all">All</option><option value="accepted">Accepted</option><option value="unaccepted">Not accepted</option></select></div></div><div className="panel-body table-wrap" tabIndex={0} role="region" aria-label="Scrollable table"><table><thead><tr><th scope="col">Issuer</th><th scope="col">Case</th><th scope="col">Sources</th><th scope="col">Snapshot</th><th scope="col">Actions</th></tr></thead><tbody>{visibleCases.map((item) => <tr key={item.id}><td>{item.issuer}</td><td>{item.name}<div className="muted">{item.sector}</div></td><td className="num">{item.source_count ?? "—"}</td><td>{item.accepted_snapshot ? <span className="status success">accepted</span> : <span className="status warning">not accepted</span>}</td><td><button className="button small" type="button" aria-pressed={caseId === item.id} onClick={() => onCaseChange(item.id)}>{caseId === item.id ? "Selected" : "Select"}</button></td></tr>)}</tbody></table>{!visibleCases.length && <LoadState loading={casesLoading} empty={cases.length ? "No cases match this search and filter." : "No cases yet. Create the first case to establish the context boundary."} />}</div></section>
     <section className="panel cases-create"><div className="panel-header"><h2>Create case</h2></div><div className="panel-body"><form onSubmit={createCase}><div className="field"><label htmlFor="case-name">Case name</label><input id="case-name" name="name" autoComplete="off" required placeholder="Q3 credit review…" /></div><div className="field"><label htmlFor="issuer">Issuer</label><input id="issuer" name="issuer" autoComplete="organization" required placeholder="Issuer legal name…" /></div><div className="field"><label htmlFor="sector">Sector</label><input id="sector" name="sector" autoComplete="off" placeholder="Business services…" /></div><button className={`button ${selectedCase ? "" : "primary"}`} type="submit" disabled={pendingAction === "create-case"}>{pendingAction === "create-case" ? "Creating…" : "Create case"}</button></form></div></section>
     <section className="panel cases-fit"><div className="panel-header"><h2>Pathway fit</h2></div><div className="panel-body">{selectedCase ? <><span className={`status ${selectedCase.pathway_fit?.fit === "READY" ? "success" : "warning"}`}>{selectedCase.pathway_fit?.fit || "NEEDS_SOURCE"}</span><p>{selectedCase.pathway_fit?.message || "Upload a source to see fit."}</p></> : <div className="empty">Select a case to inspect pathway fit.</div>}</div></section>
     <section className="panel cases-intake"><div className="panel-header"><h2>Source intake</h2><span className="panel-meta">Immutable · versioned</span></div><div className="panel-body">{selectedCase ? <><p className="muted">{selectedCase.issuer} / {selectedCase.name}</p><form onSubmit={upload}><div className="field"><label htmlFor="case-source">Source file</label><input id="case-source" name="file" type="file" accept=".pdf,.xlsx,.json,.txt,.md,.csv" required /></div><button className="button primary" type="submit" disabled={pendingAction === "upload"}>{pendingAction === "upload" ? "Uploading…" : "Upload and version source set"}</button></form></> : <div className="empty">Select a case before adding governed source material.</div>}</div></section>
@@ -630,7 +690,7 @@ function ResearchPlanView({ plan, planHash, approving, onApprove }: { plan: Rese
   </section>;
 }
 
-function DeepDive({ selectedCase, question, caseId, pendingAction, run, runLoading, runError, startRun, acceptRun }: { selectedCase: CaseRecord | null; question: string; caseId: string; pendingAction: string; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void }) {
+function DeepDive({ selectedCase, question, caseId, pendingAction, run, runLoading, runError, startRun, acceptRun, onSwitchSnapshot }: { selectedCase: CaseRecord | null; question: string; caseId: string; pendingAction: string; run: RunRecord | null; runLoading: boolean; runError: string; startRun: (event: FormEvent<HTMLFormElement>) => void; acceptRun: () => void; onSwitchSnapshot: (snapshotId: string) => Promise<SnapshotView | null> }) {
   const [view, setView] = useState<{ accepted: Snapshot | null; latest_accepted: Snapshot | null; switch_required: boolean } | null>(null);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -647,8 +707,9 @@ function DeepDive({ selectedCase, question, caseId, pendingAction, run, runLoadi
   const switchSnapshot = async () => {
     if (!selectedCase || !view?.latest_accepted) return;
     try {
-      await request(`/api/cases/${selectedCase.id}/snapshot/switch`, { method: "POST", body: JSON.stringify({ snapshot_id: view.latest_accepted.id }) });
-      setView(await request<typeof view>(`/api/cases/${selectedCase.id}/snapshot`));
+      const next = await onSwitchSnapshot(view.latest_accepted.id);
+      if (!next) return;
+      setView(next);
       setMessage("Visible snapshot switched.");
     } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to switch snapshot"); }
   };

@@ -90,6 +90,21 @@ test("rejects a late result after the selected run changes", () => {
   assert.equal(matchesAuthority(nextRun, lateContext), false);
 });
 
+test("rejects a late response after selecting a different case and run", () => {
+  const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const started = workspaceAuthorityReducer(hydrated, { type: "requestStarted", scope: "run" });
+  const lateContext = requestContext(started);
+  const nextCase = workspaceAuthorityReducer(started, { type: "selectCase", caseId: "case_b" });
+  const nextRun = workspaceAuthorityReducer(nextCase, { type: "selectRun", caseId: "case_b", runId: "run_b" });
+
+  assert.strictEqual(
+    workspaceAuthorityReducer(nextRun, { type: "requestSucceeded", context: lateContext, scope: "run" }),
+    nextRun,
+  );
+  assert.deepEqual(requestContext(nextRun), { generation: 4, caseId: "case_b", runId: "run_b" });
+  assert.equal(matchesAuthority(nextRun, lateContext), false);
+});
+
 test("rejects a stale failed request", () => {
   const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
   const started = workspaceAuthorityReducer(hydrated, { type: "requestStarted", scope: "case" });
