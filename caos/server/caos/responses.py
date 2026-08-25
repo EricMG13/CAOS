@@ -47,7 +47,7 @@ class SourceBlockResponse(WireModel):
     extractor_version: str
 
 
-class SourceResponse(WireModel):
+class SourceBaseResponse(WireModel):
     id: str
     case_id: str
     filename: str
@@ -58,7 +58,24 @@ class SourceResponse(WireModel):
     created_at: str
     blocks: list[SourceBlockResponse]
     withdrawn: bool
+
+
+class UploadedSourceResponse(SourceBaseResponse):
     source_set: SourceSetResponse
+
+
+class StoredSourceResponse(SourceBaseResponse):
+    pass
+
+
+class PromotedNoteSourceResponse(SourceBaseResponse):
+    source_kind: Literal["analyst_note"]
+
+
+class SourceResponse(
+    RootModel[UploadedSourceResponse | PromotedNoteSourceResponse | StoredSourceResponse]
+):
+    pass
 
 
 class RunNodeResponse(WireModel):
@@ -178,21 +195,72 @@ class ModelExportResponse(WireModel):
     error: ErrorResponse | None
 
 
-class ModelBuildResponse(WireModel):
+class ModelBuildBaseResponse(WireModel):
     id: str
     case_id: str
     accepted_run_id: str
     accepted_snapshot_id: str
     source_set_id: str
     input_fingerprint: str
-    status: str
     queued_at: str
-    started_at: str | None
-    completed_at: str | None
-    error: ErrorResponse | None
     export: ModelExportResponse
     worksheet_schema_version: str
     calculation_runtime: CalculationRuntimeResponse
+
+
+class QueuedModelBuildResponse(ModelBuildBaseResponse):
+    status: Literal["QUEUED"]
+    started_at: None
+    completed_at: None
+    error: None
+
+
+class FailedModelBuildResponse(ModelBuildBaseResponse):
+    status: Literal["FAILED"]
+    started_at: str | None
+    completed_at: str
+    error: ErrorResponse
+
+
+class ModelSemanticCheckResponse(WireModel):
+    check_id: str
+    status: str
+    period_id: str | None
+    difference: float | int | str | None
+    tolerance: float | int | str | None
+    detail: str
+
+
+class ModelSourceManifestResponse(WireModel):
+    module_id: str
+    filename: str
+    sha256: str
+
+
+class ModelQualityResponse(WireModel):
+    status: Literal["PASS"]
+    semantic_checks: list[ModelSemanticCheckResponse]
+    semantic_check_count: int
+    formula_count: int
+    worksheet_cell_count: int
+    limitation_flags: list[str]
+    validation_warnings: list[str]
+    source_manifest: list[ModelSourceManifestResponse]
+
+
+class ReadyModelBuildResponse(ModelBuildBaseResponse):
+    status: Literal["READY"]
+    started_at: str | None
+    completed_at: str
+    error: None
+    qa: ModelQualityResponse
+    payload_digest: str
+
+
+class ModelBuildResponse(
+    RootModel[QueuedModelBuildResponse | FailedModelBuildResponse | ReadyModelBuildResponse]
+):
+    pass
 
 
 class ReportContentResponse(WireModel):
@@ -238,6 +306,12 @@ class SourceIngestedAuditEventResponse(AuditEventBaseResponse):
     sha256: str
 
 
+class CaseSourceAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["source.withdrawn"]
+    case_id: str
+    source_id: str
+
+
 class RunCreatedAuditEventResponse(AuditEventBaseResponse):
     action: Literal["run.created"]
     case_id: str
@@ -251,10 +325,29 @@ class SnapshotAcceptedAuditEventResponse(AuditEventBaseResponse):
     snapshot_id: str
 
 
-class ModelQueuedAuditEventResponse(AuditEventBaseResponse):
-    action: Literal["model.queued"]
+class SnapshotVisibleSwitchedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["snapshot.visible_switched"]
+    case_id: str
+    snapshot_id: str
+
+
+class CaseBuildAuditEventResponse(AuditEventBaseResponse):
+    action: Literal[
+        "model.queued",
+        "model.retried",
+        "model.calculate.succeeded",
+        "model.export.succeeded",
+        "model.export.downloaded",
+    ]
     case_id: str
     build_id: str
+
+
+class CaseBuildFailedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["model.calculate.failed", "model.export.failed"]
+    case_id: str
+    build_id: str
+    code: str
 
 
 class ThesisVersionedAuditEventResponse(AuditEventBaseResponse):
@@ -269,8 +362,8 @@ class RecommendationVersionedAuditEventResponse(AuditEventBaseResponse):
     version: int
 
 
-class ReportFrozenAuditEventResponse(AuditEventBaseResponse):
-    action: Literal["report.frozen"]
+class CaseReportAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["report.frozen", "report.approved"]
     case_id: str
     report_id: str
 
@@ -281,16 +374,77 @@ class MethodologyDraftCreatedAuditEventResponse(AuditEventBaseResponse):
     module_id: str
 
 
+class MethodologyDraftValidatedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["methodology.draft_validated"]
+    draft_id: str
+
+
+class MethodologyDraftConfirmedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["methodology.draft_confirmed"]
+    draft_id: str
+    signature: str
+
+
+class CaseMemberAddedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["case.member_added"]
+    case_id: str
+    member: str
+    role: str
+
+
+class CaseVersionedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["rv.universe_versioned"]
+    case_id: str
+    version: int
+
+
+class CaseNoteAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["note.created"]
+    case_id: str
+    note_id: str
+
+
+class CaseNoteSourceAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["note.promoted"]
+    case_id: str
+    note_id: str
+    source_id: str
+
+
+class CaseAssumptionAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["assumption.created"]
+    case_id: str
+    assumption_id: str
+
+
+class ResearchPlanApprovedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["research.plan_approved"]
+    case_id: str
+    run_id: str
+    plan_hash: str
+
+
 AuditEvent = Annotated[
     CaseCreatedAuditEventResponse
     | SourceIngestedAuditEventResponse
+    | CaseSourceAuditEventResponse
     | RunCreatedAuditEventResponse
     | SnapshotAcceptedAuditEventResponse
-    | ModelQueuedAuditEventResponse
+    | SnapshotVisibleSwitchedAuditEventResponse
+    | CaseBuildAuditEventResponse
+    | CaseBuildFailedAuditEventResponse
     | ThesisVersionedAuditEventResponse
     | RecommendationVersionedAuditEventResponse
-    | ReportFrozenAuditEventResponse
-    | MethodologyDraftCreatedAuditEventResponse,
+    | CaseReportAuditEventResponse
+    | MethodologyDraftCreatedAuditEventResponse
+    | MethodologyDraftValidatedAuditEventResponse
+    | MethodologyDraftConfirmedAuditEventResponse
+    | CaseMemberAddedAuditEventResponse
+    | CaseVersionedAuditEventResponse
+    | CaseNoteAuditEventResponse
+    | CaseNoteSourceAuditEventResponse
+    | CaseAssumptionAuditEventResponse
+    | ResearchPlanApprovedAuditEventResponse,
     Field(discriminator="action"),
 ]
 
@@ -304,9 +458,8 @@ class SemanticDiffResponse(WireModel):
     after: str
 
 
-class MethodologyDraftResponse(WireModel):
+class MethodologyDraftBaseResponse(WireModel):
     id: str
-    status: str
     expected_build_id: str
     module_id: str
     field: str
@@ -317,3 +470,30 @@ class MethodologyDraftResponse(WireModel):
     created_at: str
     semantic_diff: SemanticDiffResponse
     digest: str
+
+
+class DraftMethodologyDraftResponse(MethodologyDraftBaseResponse):
+    status: Literal["DRAFT"]
+
+
+class ValidatedMethodologyDraftResponse(MethodologyDraftBaseResponse):
+    status: Literal["VALIDATED"]
+    validated_by: str
+    validated_at: str
+
+
+class ConfirmedMethodologyDraftResponse(ValidatedMethodologyDraftResponse):
+    status: Literal["CONFIRMED_PENDING_SIGNED_AUTHORITY"]
+    confirmed_by: str
+    confirmed_at: str
+    signature: str
+
+
+class MethodologyDraftResponse(
+    RootModel[
+        DraftMethodologyDraftResponse
+        | ValidatedMethodologyDraftResponse
+        | ConfirmedMethodologyDraftResponse
+    ]
+):
+    pass

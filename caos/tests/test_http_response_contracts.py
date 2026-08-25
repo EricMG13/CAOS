@@ -30,6 +30,23 @@ from caos.store import MemoryStore
 
 DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
 
+AUDIT_ACTION_DETAILS = {
+    "case.member_added": {"case_id": "case", "member": "member", "role": "READER"},
+    "source.withdrawn": {"case_id": "case", "source_id": "source"},
+    "snapshot.visible_switched": {"case_id": "case", "snapshot_id": "snapshot"},
+    "model.retried": {"case_id": "case", "build_id": "model"},
+    "model.calculate.succeeded": {"case_id": "case", "build_id": "model"},
+    "model.export.succeeded": {"case_id": "case", "build_id": "model"},
+    "model.export.failed": {"case_id": "case", "build_id": "model", "code": "MODEL_EXPORT_FAILED"},
+    "model.export.downloaded": {"case_id": "case", "build_id": "model"},
+    "report.approved": {"case_id": "case", "report_id": "report"},
+    "research.plan_approved": {"case_id": "case", "run_id": "run", "plan_hash": "a" * 64},
+    "note.created": {"case_id": "case", "note_id": "note"},
+    "note.promoted": {"case_id": "case", "note_id": "note", "source_id": "source"},
+    "assumption.created": {"case_id": "case", "assumption_id": "assumption"},
+    "rv.universe_versioned": {"case_id": "case", "version": 1},
+}
+
 
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
@@ -53,7 +70,7 @@ def _succeeded_run(client: TestClient, run_id: str) -> dict[str, Any]:
 
 
 @pytest.fixture
-def response_payloads(client: TestClient) -> dict[str, dict[str, Any]]:
+def response_payloads(client: TestClient) -> dict[str, Any]:
     identity = client.get("/api/me").json()
     case = client.post(
         "/api/cases",
@@ -91,6 +108,48 @@ def response_payloads(client: TestClient) -> dict[str, dict[str, Any]]:
         "local-analyst",
     )
     model_build = client.get(f"/api/cases/{case_id}/models/{build['id']}").json()
+    failed_build, _ = store.queue_model_build(
+        {
+            **build,
+            "id": store._id("model"),
+            "input_fingerprint": "1" * 64,
+        },
+        "local-analyst",
+    )
+    failed_token = store.claim_model_job(failed_build["id"], "contract-test")
+    assert failed_token is not None
+    store.fail_model_job(
+        failed_build["id"],
+        failed_token,
+        {"code": "MODEL_CALCULATION_FAILED", "detail": "Contract failure."},
+        "contract-test",
+    )
+    failed_model_build = client.get(f"/api/cases/{case_id}/models/{failed_build['id']}").json()
+    ready_build, _ = store.queue_model_build(
+        {
+            **build,
+            "id": store._id("model"),
+            "input_fingerprint": "2" * 64,
+        },
+        "local-analyst",
+    )
+    store.model_builds[ready_build["id"]].update(
+        status="READY",
+        completed_at="2026-08-25T00:00:00+00:00",
+        error=None,
+        payload_digest="a" * 64,
+        qa={
+            "status": "PASS",
+            "semantic_checks": [],
+            "semantic_check_count": 0,
+            "formula_count": 0,
+            "worksheet_cell_count": 0,
+            "limitation_flags": [],
+            "validation_warnings": [],
+            "source_manifest": [],
+        },
+    )
+    ready_model_build = client.get(f"/api/cases/{case_id}/models/{ready_build['id']}").json()
     readiness = client.get(f"/api/cases/{case_id}/model").json()
     thesis = client.post(
         f"/api/cases/{case_id}/thesis",
@@ -147,21 +206,41 @@ def response_payloads(client: TestClient) -> dict[str, dict[str, Any]]:
             "rationale": "Contract coverage",
         },
     ).json()
+    validated_draft = client.post(f"/api/admin/drafts/{draft['id']}/validate", headers=admin_headers).json()
+    confirmed_draft = client.post(
+        f"/api/admin/drafts/{draft['id']}/confirm",
+        headers=admin_headers,
+        json={"confirmation": "CONFIRM_DRAFT"},
+    ).json()
+    source_detail = client.get(f"/api/cases/{case_id}/sources/{source['id']}").json()
+    note = client.post(f"/api/cases/{case_id}/notes", json={"body": "Promoted note"}).json()
+    promoted = client.post(f"/api/cases/{case_id}/notes/{note['id']}/promote").json()
+    promoted_source_detail = client.get(
+        f"/api/cases/{case_id}/sources/{promoted['promoted_source_id']}"
+    ).json()
+    for action, details in AUDIT_ACTION_DETAILS.items():
+        store.audit_event(action, "contract-test", **details)
     audit_events = client.get("/api/admin/audit", headers=admin_headers).json()
     return {
         "identity": identity,
         "case": case,
         "source": source,
+        "source_detail": source_detail,
+        "promoted_source_detail": promoted_source_detail,
         "source_set": source["source_set"],
         "run": run,
         "snapshot": snapshot,
         "artifact": artifact,
         "model_readiness": readiness,
         "model_build": model_build,
+        "failed_model_build": failed_model_build,
+        "ready_model_build": ready_model_build,
         "report": report,
         "audit": audit,
         "audit_events": audit_events,
         "methodology_draft": draft,
+        "validated_methodology_draft": validated_draft,
+        "confirmed_methodology_draft": confirmed_draft,
     }
 
 
@@ -409,7 +488,7 @@ def test_representative_response_payloads_preserve_exact_key_sets(
 
 
 def test_model_build_rejects_unknown_calculation_runtime_fields(
-    response_payloads: dict[str, dict[str, Any]],
+    response_payloads: dict[str, Any],
 ) -> None:
     payload = {
         **response_payloads["model_build"],
@@ -420,7 +499,7 @@ def test_model_build_rejects_unknown_calculation_runtime_fields(
 
 
 def test_model_readiness_uses_the_shared_model_build_shape(
-    response_payloads: dict[str, dict[str, Any]],
+    response_payloads: dict[str, Any],
 ) -> None:
     payload = {**response_payloads["model_readiness"], "build": response_payloads["model_build"]}
     assert ModelReadinessResponse.model_validate(payload).model_dump(mode="json") == payload
@@ -431,3 +510,31 @@ def test_audit_event_model_validates_every_captured_event(
 ) -> None:
     for payload in response_payloads["audit_events"]:
         assert AuditEventResponse.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_model_build_response_validates_each_lifecycle_shape(
+    response_payloads: dict[str, Any],
+) -> None:
+    for name in ("model_build", "failed_model_build", "ready_model_build"):
+        payload = response_payloads[name]
+        assert ModelBuildResponse.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_methodology_draft_response_validates_each_lifecycle_shape(
+    response_payloads: dict[str, Any],
+) -> None:
+    for name in (
+        "methodology_draft",
+        "validated_methodology_draft",
+        "confirmed_methodology_draft",
+    ):
+        payload = response_payloads[name]
+        assert MethodologyDraftResponse.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_source_response_validates_upload_and_stored_source_shapes(
+    response_payloads: dict[str, Any],
+) -> None:
+    for name in ("source", "source_detail", "promoted_source_detail"):
+        payload = response_payloads[name]
+        assert SourceResponse.model_validate(payload).model_dump(mode="json") == payload
