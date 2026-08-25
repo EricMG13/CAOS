@@ -198,6 +198,27 @@ def test_protocol_inventory_is_exact() -> None:
     } == {"SourceCatalog", "RunLedger", "PublicationLedger", "ModelLedger"}
 
 
+def test_memory_ledger_set_keeps_one_private_state(ledger_set: Any) -> None:
+    adapters = (
+        ledger_set.sources,
+        ledger_set.runs,
+        ledger_set.publications,
+        ledger_set.models,
+    )
+    assert {name for name in dir(ledger_set) if not name.startswith("_")} == {
+        "sources",
+        "runs",
+        "publications",
+        "models",
+    }
+    assert len({id(adapter._state) for adapter in adapters}) == 1
+    assert len({id(adapter._state.lock) for adapter in adapters}) == 1
+
+    case = _case(ledger_set)
+    case["name"] = "mutated outside the ledger"
+    assert ledger_set.runs.get_case(case["id"])["name"] == "Contract case"
+
+
 def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
     case = _case(ledger_set)
     source = _source(case["id"])
@@ -428,6 +449,66 @@ def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
     assert events[-1]["id"] == len(before_events) + 1
     assert events[-1]["event"] == "node.succeeded"
     assert events[-1]["data"] == {**event_data, "artifact_id": completed["id"]}
+
+
+def test_node_completion_copy_failure_is_atomic_and_retryable(ledger_set: Any) -> None:
+    class CopyFailure:
+        def __deepcopy__(self, memo: dict[int, Any]) -> None:
+            raise RuntimeError("forced research copy failure")
+
+    _, run = _queued_run(ledger_set)
+    node = run["nodes"][0]
+    token = ledger_set.runs.claim(run["id"], "worker")
+    assert token is not None
+    ledger_set.runs.update_node_fenced(run["id"], token, node["id"], status="running")
+    payload = {"debt": 100}
+    artifact = {
+        "case_id": run["case_id"],
+        "run_id": run["id"],
+        "module_id": node["module_id"],
+        "created_by": ACTOR,
+        "payload": payload,
+        "markdown": "# CP-1\n\nDebt: 100\n",
+        "digest": digest(payload),
+        "input_fingerprint": "copy-failure",
+        "created_at": "2026-08-24T00:00:00+00:00",
+    }
+    event_data = {"node_id": node["id"], "module_id": node["module_id"]}
+    before_run = ledger_set.runs.get_run(run["id"])
+    before_events = ledger_set.runs.events_after(run["id"])
+
+    with pytest.raises(RuntimeError, match="forced research copy failure"):
+        ledger_set.runs.complete_node(
+            run["id"],
+            token,
+            node["id"],
+            artifact,
+            research={"value": CopyFailure()},
+            event_data=event_data,
+        )
+
+    assert ledger_set.runs.get_run(run["id"]) == before_run
+    assert ledger_set.runs.events_after(run["id"]) == before_events
+    assert ledger_set.runs.is_current(run["id"], token) is True
+    assert (
+        ledger_set.runs.artifact_for_fingerprint(
+            run["id"], node["module_id"], artifact["input_fingerprint"]
+        )
+        is None
+    )
+
+    completed = ledger_set.runs.complete_node(
+        run["id"],
+        token,
+        node["id"],
+        artifact,
+        research={"phase": "complete"},
+        event_data=event_data,
+    )
+    completed_run = ledger_set.runs.get_run(run["id"])
+    assert completed_run["nodes"][0]["artifact_id"] == completed["id"]
+    assert completed_run["research"] == {"phase": "complete"}
+    assert ledger_set.runs.events_after(run["id"])[-1]["event"] == "node.succeeded"
 
 
 def test_snapshot_acceptance_updates_case_and_run_together(
@@ -663,6 +744,49 @@ def test_note_promotion_changes_source_authority_once(ledger_set: Any) -> None:
     assert source is not None and source["source_kind"] == "analyst_note"
     assert source_set is not None and source_set["source_ids"] == [source_id]
     assert source_set["version"] == promoted_set["version"]
+
+
+def test_note_promotion_delegation_rolls_back_on_source_failure(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    note = ledger_set.publications.create_note(case["id"], ACTOR, "Debt remains 100")
+    real_sources = ledger_set.publications._sources
+
+    class FailingSourceCatalog:
+        calls = 0
+        failed_source_id: str | None = None
+        failed_source_set_id: str | None = None
+
+        def ingest_promoted_note(self, candidate: dict[str, Any], actor: str) -> None:
+            self.calls += 1
+            promoted = real_sources.ingest_promoted_note(candidate, actor)
+            source_set = real_sources.current_source_set(case["id"])
+            self.failed_source_id = promoted["promoted_source_id"]
+            self.failed_source_set_id = source_set["id"]
+            raise RuntimeError("forced downstream failure")
+
+    failing_sources = FailingSourceCatalog()
+    ledger_set.publications._sources = failing_sources
+    before_audit = ledger_set.publications.list_audit()
+
+    with pytest.raises(RuntimeError, match="forced downstream failure"):
+        ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
+
+    assert failing_sources.calls == 1
+    assert ledger_set.publications.list_notes(case["id"]) == [note]
+    assert ledger_set.sources.list_sources(case["id"]) == []
+    assert ledger_set.sources.current_source_set(case["id"]) is None
+    assert failing_sources.failed_source_id is not None
+    assert failing_sources.failed_source_set_id is not None
+    assert ledger_set.sources.get_source(failing_sources.failed_source_id) is None
+    assert ledger_set.sources.source_set(failing_sources.failed_source_set_id) is None
+    assert ledger_set.publications.list_audit() == before_audit
+
+    ledger_set.publications._sources = real_sources
+    promoted = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
+    assert promoted["promoted"] is True
+    assert ledger_set.sources.current_source_set(case["id"])["version"] == 1
 
 
 def test_report_freeze_and_approval_require_exact_preview(

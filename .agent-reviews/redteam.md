@@ -4384,3 +4384,35 @@ Decision: accept the bounded architecture for detailed planning. The plan must
 land methodology authority before UI authoring, use atomic revision identities,
 preserve current frozen-report governance, and make semantic PDF/XLSX content
 tests a release gate. No legacy engine or unrestricted editor is in scope.
+
+## 2026-08-25 — Private memory-ledger implementation gate
+
+Decision under review: add the four private in-memory ledger adapters while
+leaving existing `MemoryStore` callers green until the planned caller cutover.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-201 | Encapsulation reviewer | Reusing the proven `MemoryStore` carrier could accidentally preserve a public mutable-bucket API under the new ledger name. | Critical | Resolved and verified | `MemoryLedgerSet` exposes only `sources`, `runs`, `publications`, and `models`; all adapters share one private `_MemoryState` and one `RLock`. No bucket or lock property is proxied. The legacy store remains unchanged only for pre-cutover callers. |
+| RT-2026-08-25-202 | Atomicity reviewer | Snapshot, node, source-withdrawal, publication, or model transitions could leave partial records after validation or fencing failure. | Critical | Resolved and verified | Compound writes validate authority and fences before mutation or use the existing internal rollback boundary. The 12 shared contracts prove withdrawal cascades, node/artifact/event rollback, snapshot pointer rollback, optimistic conflicts, report governance, and model digest/fencing recovery. |
+| RT-2026-08-25-203 | Lineage reviewer | Set equality could accept duplicate snapshot artifact references and therefore misrepresent exact run lineage. | Critical | Resolved and verified | Snapshot acceptance now requires reference cardinality, record shape, exact ID equality, run/module/case identity, and stored payload digest integrity. An adversarial duplicate-reference probe fails closed with `RUN_NOT_READY`. |
+| RT-2026-08-25-204 | Trust-boundary reviewer | Malformed snapshot/report/model records could leak `AttributeError` or JSON serialization errors instead of stable domain failures. | High | Resolved and verified | Snapshot digest validation catches non-JSON payloads; report content and model identity require mappings. Adversarial probes now return `RUN_NOT_READY`, `SNAPSHOT_REQUIRED`, or `MODEL_SNAPSHOT_MISMATCH`. |
+| RT-2026-08-25-205 | Rollout reviewer | Replacing `MemoryStore` before production callers migrate would break direct-bucket callers or tempt proxy properties that keep mutable state public. | Critical | Risk bounded by rollout | GitNexus reports `MemoryStore` as CRITICAL (35 direct dependents, 37 total). Task 2 therefore leaves `store.py` untouched, adds no proxy buckets, and keeps the full server suite green. Removal/composition cutover remains Task 4 after all callers use ledger interfaces. |
+| RT-2026-08-25-206 | Persistence reviewer | Passing memory contracts alone cannot prove normalized PostgreSQL transactions or two-connection races. | Critical | Deferred by approved task boundary | Task 3 owns fresh-database PostgreSQL adapters and race proofs. No legacy `caos_state` migration, backfill, or dual read was introduced here. |
+
+Decision: accept the private memory adapters and the temporary unchanged
+`MemoryStore` compatibility bridge. Do not expose bucket proxies or remove the
+legacy implementation until every production caller has migrated.
+
+## 2026-08-25 — Memory node-completion atomicity correction
+
+Correction under review: the preceding RT-202 disposition overstated the node
+transition proof because it covered fencing and validator failures only, both of
+which occurred before the first mutation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-207 | Atomicity reviewer | `complete_node` stored an artifact and marked its node succeeded before deep-copying research, event data, and the return value; a later copy failure left a partial artifact/node transition with no research or success event. | Critical | Resolved and verified | The adapter now materializes the stored artifact, optional research, event payload/item, and isolated return record before its first write. A black-box regression forces the formerly post-mutation research-copy failure, proves run/node/artifact/events and the active fence remain unchanged, then completes successfully with the same attempt token. |
+
+Decision: accept the correction. RT-202 is superseded only for this specific
+node-completion failure mode; the append-only historical statement remains as
+the review record.

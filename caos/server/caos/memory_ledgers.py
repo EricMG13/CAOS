@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from .contracts import clean_json, digest
+from .ledgers import SourceCatalog
 from .store import (
     MAX_ACTIVE_JOBS,
     JobFencedError,
@@ -550,22 +551,28 @@ class _MemoryRunLedger(_Adapter):
                 candidate["id"] = state.new_id("art")
             if artifact_validator is not None and not artifact_validator(candidate):
                 raise ValueError("ARTIFACT_INVALID")
-            if completed is None:
-                state.artifacts[candidate["id"]] = copy.deepcopy(candidate)
-            node.update(status="succeeded", artifact_id=candidate["id"], error=None)
-            if research is not None:
-                state.runs[run_id]["research"] = copy.deepcopy(research)
+            stored = copy.deepcopy(candidate) if completed is None else None
+            stored_research = copy.deepcopy(research) if research is not None else None
+            run = state.runs[run_id] if research is not None else None
+            event_payload = copy.deepcopy(event_data)
             item = {
-                "id": len(state.events.setdefault(run_id, [])) + 1,
+                "id": len(state.events.get(run_id, [])) + 1,
                 "event": "node.succeeded",
                 "at": now_iso(),
-                "data": {**copy.deepcopy(event_data), "artifact_id": candidate["id"]},
+                "data": {**event_payload, "artifact_id": candidate["id"]},
             }
-            state.events[run_id].append(item)
+            result = copy.deepcopy(candidate)
+
+            if completed is None:
+                state.artifacts[candidate["id"]] = stored
+            node.update(status="succeeded", artifact_id=candidate["id"], error=None)
+            if run is not None:
+                run["research"] = stored_research
+            state.events.setdefault(run_id, []).append(item)
             condition = state.event_conditions.get(run_id)
             if condition:
                 condition.notify_all()
-            return copy.deepcopy(candidate)
+            return result
 
     def finalize_success(
         self,
@@ -718,7 +725,7 @@ class _MemoryRunLedger(_Adapter):
 
 
 class _MemoryPublicationLedger(_Adapter):
-    def __init__(self, state: _MemoryState, sources: _MemorySourceCatalog) -> None:
+    def __init__(self, state: _MemoryState, sources: SourceCatalog) -> None:
         super().__init__(state)
         self._sources = sources
 
