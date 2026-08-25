@@ -4178,3 +4178,327 @@ Decision: accept the bounded architecture for detailed planning. The plan must
 land methodology authority before UI authoring, use atomic revision identities,
 preserve current frozen-report governance, and make semantic PDF/XLSX content
 tests a release gate. No legacy engine or unrestricted editor is in scope.
+## 2026-08-25 — Explicit HTTP response-model gate
+
+Decision under review: attach strict FastAPI response models to every JSON
+success route without changing the existing wire protocol.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-163 | Compatibility reviewer | FastAPI response serialization can silently remove undeclared fields or add defaults, changing live payloads while OpenAPI looks more precise. | Critical | Resolved and verified | Route models use exact strict variants for omission-sensitive and lifecycle-dependent shapes. Existing key-set fixtures, populated HTTP variants, and the full server suite verify unchanged payloads. |
+| RT-2026-08-25-164 | Lifecycle reviewer | Representative queued/failed fixtures miss transient model builds, ready exports, detailed readiness requirements, approved reports, Deep Research runs, and loan-universe audit events. | High | Resolved and verified | The route contracts extend the shared Task 1 families with concrete strict variants for each persisted lifecycle shape; focused model, Deep Research, publishing, and loan tests exercise populated variants. |
+| RT-2026-08-25-165 | Schema-quality reviewer | A permissive root object could satisfy superficial OpenAPI coverage without documenting a usable response contract. | High | Resolved and verified | Every JSON success response references named component schemas, representative new components forbid unknown properties, and no catch-all root response model was introduced. Dynamic dictionaries remain only where the handler intentionally carries methodology, worksheet, artifact, or recipe payload data. |
+| RT-2026-08-25-166 | Transport reviewer | Modeling SSE or binary downloads as JSON could corrupt streaming/file semantics or advertise false response media types. | Critical | Resolved and verified | Run events, model downloads, and report exports retain their original `StreamingResponse`, `FileResponse`, or binary `Response` declarations and are explicitly exempt from JSON schema coverage. |
+
+Decision: accept the explicit response-model interface after full-suite
+verification. Do not add generated clients, permissive catch-all schemas, or
+models for the three non-JSON transport routes.
+
+## 2026-08-25 — HTTP response-model review remediation gate
+
+Decision under review: close the idempotent loan-import validation gap and
+replace the remaining permissive nested response payloads without changing the
+wire protocol.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-167 | Transport-contract reviewer | Returning an idempotent import as a prebuilt `JSONResponse` bypasses FastAPI response validation and leaves the real 200 success variant undocumented. | High | Resolved and verified | The route now declares the same strict loan-universe model for 201 and 200, injects the response to select 200 for an idempotent import, and returns the ordinary record through FastAPI validation. OpenAPI and a deliberately invalid idempotent result prove both paths. |
+| RT-2026-08-25-168 | Schema-boundary reviewer | Free-form canonical generation, research, and finding objects preserve unknown fields and advertise unusably broad nested schemas. | High | Resolved and verified | Concrete strict models now cover exact budgets, generation progress, research briefs/plans/workstreams, persisted attempt variants, and finding locators. Raw round-trip, omission, variant, unknown-field, and nested OpenAPI assertions pass. |
+| RT-2026-08-25-169 | Failure-lifecycle reviewer | CP-DR mutates its latest attempt with `terminal_code`; strict models that cover only ordinary attempts would reject real retry-budget or post-handoff failures. | High | Resolved and verified | Terminal-overlay variants include provider calls, provider retry, evidence, generation, repair, and handoff shapes. Adversarial retry and handoff fixtures reproduce the two least-obvious persisted variants. |
+
+Decision: accept the remediation after focused loan/API coverage and the full
+server suite. Preserve the dual 201-created/200-idempotent status contract and
+keep the nested response families strict.
+
+## 2026-08-25 — Workflow provider composition-root gate
+
+Decision under review: inject one provider-owned `AgentLoop` into
+`WorkflowRuntime` for canonical Full Credit and CP-DR instead of constructing an
+Anthropic gateway inside each module execution.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-170 | Boot-path reviewer | Eagerly constructing the Anthropic client can make local or provider-disabled app boot require credentials and transport dependencies that no enabled pathway uses. | High | Resolved in composition contract | `create_app` constructs `AnthropicProvider` only when an API key exists and at least one provider-backed pathway is enabled; otherwise the runtime receives `None` and the existing pathway/key guards retain `AGENT_PROVIDER_UNAVAILABLE`. |
+| RT-2026-08-25-171 | Runtime-isolation reviewer | Constructing a fresh gateway per node prevents deterministic fake injection and can let canonical and CP-DR paths drift onto different provider objects or policies. | High | Resolved in runtime contract | `WorkflowRuntime` owns exactly one optional `AgentLoop`, created from the injected two-method `Provider`; both execution paths call that same loop and tests inject provider-neutral fakes without module-global patches. |
+| RT-2026-08-25-172 | Accounting reviewer | Moving off the Anthropic compatibility facade could alter retries, reservation/reconciliation, fencing, timeout, repair, or terminal telemetry. | Critical | Verification required | Both paths retain the unchanged host callbacks, semaphore, limits, and `AgentLoop.run` contract. Focused CP-DR/canonical tests plus the full server suite must pass before commit; direct adapter tests remain the legacy Anthropic serialization/digest tripwire. |
+
+Decision: proceed with the narrow constructor and composition-root change. Do
+not widen the `Provider` port, add a provider factory, or construct a transport
+inside workflow execution.
+
+## 2026-08-25 — Public worker-scheduling seam gate
+
+Decision under review: discover pending work through store APIs and submit it
+through public runtime scheduling methods without moving claim or fencing
+authority into the worker loop.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-173 | Runtime-boundary saboteur | A nominal dispatch helper could keep reading in-process store mirrors or submitting private executors, leaving production discovery coupled to stale process state. | Critical | Resolved and verified | The worker calls only `pending_runs`, `pending_model_jobs`, `schedule`, and `schedule_export`. Interface-only fakes omit dictionaries, locks, executors, refresh hooks, and private methods; focused tests and a forbidden-access scan pass. |
+| RT-2026-08-25-174 | Concurrency reviewer | Multiple pollers can discover the same queued or claimed identity and submit duplicate futures, potentially executing one job more than once. | Critical | Resolved by existing authority | A process-local future key suppresses repeat submission within one worker. Cross-worker discovery remains intentionally duplicate-tolerant because workflow and model runtimes claim leases before work and fence every authoritative write; the existing takeover/fencing suites pass. |
+| RT-2026-08-25-175 | Audit-attribution reviewer | PostgreSQL discovery from `model_build_jobs` alone cannot recover the retry/export requester because that normalized table has no actor column, silently reverting audits to the model creator. | High | Resolved and verified | Discovery remains bound to normalized model job/build rows, while the query resolves the persisted job actor from authoritative state and falls back to normalized `model_builds.created_by` only for legacy/blank actor records. Memory and PostgreSQL query-contract tests cover both paths. |
+| RT-2026-08-25-176 | Operations reviewer | A transient PostgreSQL read failure terminates the polling process rather than backing off inside the loop. | High | Accepted existing deployment contract | The prior `refresh()` path had the same fail-fast behavior, and Compose supervises the worker with `restart: unless-stopped`. This seam does not add retry policy; add bounded in-process backoff only if restart churn becomes observable. |
+
+Decision: accept the narrow public scheduling seam. Do not add a queue, worker
+protocol hierarchy, or duplicate claim policy; stores own discovery and runtimes
+remain authoritative for claims, leases, heartbeats, and fenced writes.
+
+## 2026-08-25 — Normalized model-job actor remediation gate
+
+Decision under review: remove the worker polling path's final dependency on the
+legacy state envelope by making requester identity a required normalized job
+field.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-177 | Persistence-boundary reviewer | Resolving the actor from `caos_state` keeps production scheduling coupled to the legacy envelope and makes normalized job rows incomplete. | High | Resolved and verified | Forward migration `004` adds non-null `model_build_jobs.actor`, backfills it from the foreign-keyed build creator, and pending reads now join only normalized jobs/builds. The worker query contract explicitly rejects `caos_state`. |
+| RT-2026-08-25-178 | Attribution reviewer | Calculate, retry, and export paths can drift if any normalized write omits or fails to replace the current requester. | High | Resolved and verified | Initial calculate insert, retry update, and export insert/upsert all parameterize actor in the same transaction as authoritative state. A store-level SQL capture regression proves analyst, reviewer, and approver identities respectively. |
+| RT-2026-08-25-179 | Rollout reviewer | Adding `NOT NULL` before populating existing jobs would fail deployment; a large table scan can also hold a migration lock. | High | Resolved / bounded rollout cost | The migration test enforces add → creator backfill → `NOT NULL` ordering, and the model-build foreign key plus non-null build creator makes the backfill total. The one-time scan/lock is accepted for the current bounded job table; no dual-read compatibility path remains. |
+
+Decision: accept the normalized actor migration. Do not retain JSON-envelope
+fallbacks or add a second actor source; normalized `model_build_jobs.actor` is
+the scheduling identity, with build creator fallback only for a malformed blank
+value.
+
+## 2026-08-25 — Memory-ledger ingress atomicity correction gate
+
+Decision under review: correct Task 2's in-memory node-completion and promoted-note
+ingress boundaries without changing the ledger contracts or the temporary
+`MemoryStore` compatibility bridge.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-180 | Transaction saboteur | `complete_node` can publish an artifact and mark its node succeeded before copying research or event ingress; a failing copy then leaves partial state without the success event. | Critical | Resolved and verified | Candidate validation and independent artifact, research, event, and return snapshots now complete under the shared `RLock` before the first state mutation. Parameterized regressions inject a post-validation copy failure in research and event data and prove the run, artifact lookup, and event stream are unchanged. |
+| RT-2026-08-25-181 | Authority-boundary reviewer | Direct promoted-note ingestion can trust a caller-owned record, mutate it, or manufacture authority from an unstored or foreign note. | High | Resolved and verified | The adapter deep-copies ingress, resolves the matching canonical stored note under the shared lock, authorizes and promotes only that record, and rejects missing or foreign identities. Black-box tests prove forged bodies cannot alter the promoted note/source and later caller mutation cannot alias stored state. |
+| RT-2026-08-25-182 | Dependency-inversion reviewer | Typing publication composition against the concrete memory source adapter needlessly couples Task 2 to one implementation and obstructs the planned PostgreSQL adapter. | Medium | Resolved | `_MemoryPublicationLedger` now accepts the existing `SourceCatalog` protocol; runtime composition remains the same and no dependency or abstraction was added. |
+
+Decision: accept the focused correction after the ledger-focused and full server
+suites pass. Keep `MemoryStore` unchanged until caller cutover, and do not expose
+mutable memory buckets or parameterize these memory-internal regressions over the
+future PostgreSQL suite.
+
+## 2026-08-25 — Normalized PostgreSQL ledger authority gate
+
+Decision under review: make fresh-database normalized PostgreSQL tables implement
+the four ledger protocols without reading, writing, importing, migrating, or
+dropping the legacy whole-state envelope.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-183 | Concurrency saboteur | Separate validation and write calls could let duplicate sources, optimistic publications, claims, or stale worker output win between connections. | Critical | Resolved in implementation; live proof environment-gated | Same-case source and publication transitions serialize on the case row; claims use advisory budget locking plus `FOR UPDATE SKIP LOCKED` and conditional updates; every fenced artifact/node/event/build transition locks the unexpired attempt in the same transaction. Four explicit two-connection proofs run when `CAOS_TEST_DATABASE_URL` exists. |
+| RT-2026-08-25-184 | Authority-integrity reviewer | Snapshot acceptance could publish pointers after a stale completion, a changed source set, a foreign artifact, or a digest mismatch. | Critical | Resolved and statically/focused verified | Fenced success stamps `final_attempt_token`; acceptance locks case and run, requires that token, validates the current pinned source set and exact node artifact set/digests, then inserts the snapshot and updates case/run pointers, audit, and event in one transaction. Shared memory contracts prove the public readiness/error behavior. |
+| RT-2026-08-25-185 | Contract-parity reviewer | Normalized columns can silently drop optional record keys or add defaults that the memory adapter does not expose. | High | Resolved and regression covered | Source, artifact, snapshot, model, report, publication, and RV domain rows preserve their full public record in row-local JSON while normalized authority columns remain queryable. The whole-state envelope is absent. A shared contract proves a minimal completed artifact gains only its adapter-owned ID. |
+| RT-2026-08-25-186 | Migration reviewer | Reusing the stale planned migration number or retaining unconditional digest uniqueness would either collide with migration 004 or prevent legitimate re-ingest after withdrawal. | High | Resolved | The forward migration is `005_normalized_authority.sql`; it removes the old `(case_id, sha256)` constraint and adds a partial unique active-source index, normalized authority tables/columns, claim indexes, and foreign/unique keys. Static tests reject destructive, legacy, and `caos_state` SQL. |
+| RT-2026-08-25-187 | Verification reviewer | Static and memory tests cannot prove PostgreSQL syntax, constraints, transaction behavior, or race outcomes against a real server. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` is unavailable in this environment. PostgreSQL contract, apply-once, and race cases cleanly skip; no live-DB pass is claimed. Run the focused environment-gated command against a fresh PostgreSQL database before production cutover. |
+
+Decision: accept the Task 3 commit with the live-PostgreSQL gate explicitly open.
+Do not connect this adapter to production composition until that fresh-database
+gate passes; do not add a legacy backfill, dual read, ORM, or generic bucket API.
+
+## 2026-08-25 — Normalized ledger independent-review correction gate
+
+Decision under review: close the independent Task 3 findings without weakening
+the fresh-database normalized authority boundary or introducing a legacy state
+path.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-188 | Finalization-race saboteur | A worker can commit run success, die before `finish`, lose its lease, and let a replacement claim while snapshot acceptance still trusts the superseded final token. | Critical | Resolved and regression covered | `finalize_success` now locks the claim then run and atomically/idempotently succeeds both with one final token and one event. Claims exclude terminal runs; snapshot acceptance locks and verifies the retired job token. A shared regression finalizes before `finish`, waits beyond the lease, rejects takeover, retries idempotently past an expired deadline, and accepts only the authoritative snapshot. |
+| RT-2026-08-25-189 | Deadlock reviewer | Export queueing locks build→job while claiming/completion locks job→build, allowing a two-transaction cycle and an aborted request. | Critical | Resolved in implementation; live proof environment-gated | Export queue and claim share per-build advisory serialization and job→build row-lock order; claims retain the global budget lock, `SKIP LOCKED`, and conditional update. A barrier-synchronized two-connection queue-versus-claim proof fails on deadlock, timeout, or aborted follow-up reads. |
+| RT-2026-08-25-190 | Source-authority reviewer | Promoted notes can bypass active digest uniqueness, diverge from memory, or leak a raw PostgreSQL uniqueness exception after partially changing note/source authority. | High | Resolved and shared-contract covered | Both adapters compare the canonical note-body digest before mutation and raise exactly `ValueError('DUPLICATE_SOURCE')`. PostgreSQL also maps the unique-index race to that error; its transaction rolls back the note, source, source set, audit, and pointer changes. |
+| RT-2026-08-25-191 | Contract-quality reviewer | A callability inventory can claim parity while leaving membership, list/get/switch/wait, methodology, RV, export/download, and other protocol behavior unexecuted; unsynchronized races can pass without overlap. | High | Resolved statically and in memory; PostgreSQL live gate open | Grouped shared contracts now invoke all 72 protocol methods (11 source, 29 run, 20 publication, 12 model) with stable errors. The first three two-instance PostgreSQL proofs use barriers; the stale-token proof is explicitly sequential because it verifies deterministic fencing after takeover. |
+| RT-2026-08-25-192 | Verification reviewer | Static SQL analysis and memory parity still cannot prove PostgreSQL lock scheduling, syntax, rollback, or deadlock behavior. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` remains unavailable. PostgreSQL contracts, five two-connection proofs, and migration apply-once skip with one explicit reason; no live pass is claimed. Fresh-database execution remains mandatory before production composition. |
+
+Decision: accept the correction only after the focused/static/full gates and
+rewrite/confidence reviews pass. Keep the live PostgreSQL gate open, retain the
+normalized-only authority boundary, and do not reconnect `caos_state`.
+
+## 2026-08-25 — Normalized ledger final re-review correction gate
+
+Decision under review: close the final lock-order, public-shape, and behavioral-
+coverage findings without changing migration 005 or widening the ledger API.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-193 | Deadlock saboteur | Model retry locks build→job while claim, completion, and failure lock job→build, so a retry racing a failure can force PostgreSQL to abort one transaction. | Critical | Resolved in implementation; live proof environment-gated | Retry now locks the calculate job before the build. A barrier-synchronized two-connection retry-versus-fail proof has bounded futures and follow-up reads, so a deadlock, aborted transaction, or divergent committed state fails the test. A second audit found queue-export, claim, complete, and fail consistently job→build; download locks only the build and queue-build creates new rows. |
+| RT-2026-08-25-194 | Contract-boundary reviewer | Memory stores `final_attempt_token` in the public run dictionary even though PostgreSQL keeps that normalized authority column internal. | High | Resolved and shared-contract covered | Memory now stores the final token in private adapter state, rolls it back with run/job/event state, and uses it only for idempotent finalization and snapshot authority. The shared finalized-run contract rejects the internal key and preserves the pre-finalization key set; PostgreSQL `_run_record` continues to omit its internal column. |
+| RT-2026-08-25-195 | Coverage reviewer | The 72-method claim counts two methods that execute only in PostgreSQL-gated proofs, so an environment without a DSN behaviorally exercises only 70. | High | Resolved and memory-verified | Shared contracts now execute `emit_fenced` with success and stale-token assertions and `append_thesis` with version/list and optimistic-conflict assertions. An AST inventory compares every direct shared call with all four protocol method sets: 11 source, 29 run, 20 publication, 12 model, total 72 with no missing or extra method. |
+| RT-2026-08-25-196 | Verification reviewer | The new retry race and all other PostgreSQL lock behavior remain unproved against a server in this environment. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` is unset. The PostgreSQL retry race and shared contracts skip cleanly; static lock-order audit, memory contracts, and the full server suite pass. A fresh-database live run remains mandatory before production composition. |
+
+Decision: accept the focused correction after rewrite, confidence, static,
+focused, full-suite, and change-scope gates pass. Keep the live PostgreSQL gate
+open and preserve the normalized-only authority boundary.
+
+## 2026-08-25 — Normalized ledger authority-establishment and bounded-proof gate
+
+Decision under review: ensure only atomic finalization can authorize a snapshot
+and make the two deadlock proofs terminate and clean up independently of lock
+scheduling.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-197 | Authority-bypass saboteur | Generic `update_run_fenced(status='succeeded')` stamps the final attempt token, so a later standalone `finish` can manufacture the two fields snapshot acceptance trusts without running atomic finalization or emitting `run.succeeded`. | Critical | Resolved and shared-contract covered | Generic fenced updates no longer write `final_attempt_token`; a writer audit leaves only `finalize_success`. The shared regression performs generic success → finish → accept and requires `RUN_NOT_READY`, unchanged case/run pointers, and no event. |
+| RT-2026-08-25-198 | Concurrency-test saboteur | `future.result(timeout=10)` inside a `ThreadPoolExecutor` context does not bound the test because context teardown waits forever for blocked workers, potentially leaking connections and stalling the suite. | High | Resolved in harness; live proof environment-gated | PostgreSQL test DSNs now set `connect_timeout=3`, `lock_timeout=2s`, and `statement_timeout=5s`. The two deadlock proofs use a 12-second completion guard, then unconditionally join/cancel the executor; context-managed adapter connections close before results or errors propagate. |
+| RT-2026-08-25-199 | Verification reviewer | Static DSN construction and memory parity cannot prove PostgreSQL applies the timeouts or rejects generic-success snapshot authority against real rows. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` remains unset. `make_conninfo` construction, writer audit, shared memory regression, focused/static checks, and the full server suite pass, while all PostgreSQL behavior skips honestly. A fresh-database live run remains mandatory. |
+
+Decision: accept the focused correction after all review and change-scope gates.
+Do not weaken the finalizer-only authority rule or remove the database-side bounds
+from concurrency proofs; keep the live PostgreSQL gate open.
+
+## 2026-08-25 — Domain-to-ledger caller cutover gate
+
+Decision under review: replace every production domain and HTTP dependency on
+concrete stores or mutable buckets with the four approved ledger ports in one
+interface-preserving cutover.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-200 | Atomicity saboteur | Creating a run, then separately adding nodes, research state, canonical state, and schedulability can expose a partially initialized or wrongly claimable run. | Critical | Resolved and shared-contract covered | `create_run_with_nodes` now accepts narrowly typed optional initial status/error/research/canonical fields. Both adapters create run and nodes atomically, create work only for queued runs, and requeue the planning job only on exact plan approval. Migration `006_run_canonical_generation.sql` adds the one missing normalized field without a legacy path. |
+| RT-2026-08-25-201 | HTTP compatibility reviewer | Moving source withdrawal into the catalog made a repeated withdrawal look missing, changing the prior idempotent 200 response into a 404. | High | Resolved and route/contract covered | Both catalogs now return the already-withdrawn public source without creating a new source-set version or audit transition. Shared and HTTP regressions prove the repeated response and source-set version are unchanged. |
+| RT-2026-08-25-202 | Canonical-authority reviewer | Computing canonical reporting date immediately before atomic creation can cross UTC midnight and make the stored generation disagree with the run's authoritative `created_at`. | High | Resolved and shared-contract covered | Each run ledger derives the stored generation reporting period from the same `created_at` used for the run record. The contract injects a deliberately wrong date and requires canonicalization to the persisted run date. |
+| RT-2026-08-25-203 | Filesystem-boundary auditor | Reconstructing a workbook path from a malformed stored digest without validating lowercase SHA-256 form can permit traversal outside the source vault. | High | Resolved and regression covered | `source_bytes` rejects any digest that is not exactly 64 lowercase hexadecimal characters before path construction, preserving the bounded `RV_SOURCE_BYTES_UNAVAILABLE` error. |
+| RT-2026-08-25-204 | Governance reviewer | Moving methodology-draft validation into a persistence adapter that does not own the runtime bundle can silently drop the current-build revalidation. | High | Resolved and route covered | The HTTP orchestration reloads the draft through `PublicationLedger`, compares `expected_build_id` with the current verified bundle, then invokes the ledger's atomic lifecycle transition. A test-only ledger fixture proves a superseded draft still returns the exact 422 detail. |
+| RT-2026-08-25-205 | Maintainability reviewer | Replacing concrete-store tests can erase behavior coverage or tempt tests to import adapter buckets directly. | Medium | Resolved / constrained | Shared ledger contracts own atomicity, fencing, publication, snapshot, model, and concurrency behavior; domain/HTTP suites use port methods. Exceptional state construction is isolated in `caos/tests/ledger_helpers.py`, and direct tests have no concrete store imports or production bucket access. |
+| RT-2026-08-25-206 | Verification reviewer | Memory parity and static SQL cannot prove migration 006, rollback, locking, and cross-connection behavior against a real PostgreSQL server. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` is unset, so 27 environment-gated cases skip honestly. Static migration/no-legacy checks, all memory contracts, exact coupling searches, and the 318-test server suite pass. Run the gated suite against a fresh PostgreSQL database before production deployment. |
+
+Decision: accept the caller cutover after the final static, focused, full-suite,
+rewrite, confidence, and graph-scope gates pass. Keep the fresh-PostgreSQL gate
+open; do not add a compatibility store, proxy dictionary, generic persistence
+API, dual read, or `caos_state` fallback.
+
+## 2026-08-25 — Ledger cutover independent-review correction gate
+
+Decision under review: correct frozen-report authority and restore the runtime
+and HTTP regression coverage removed during the caller cutover.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-207 | Publication-authority saboteur | Validating against `case.accepted_snapshot_id` and the latest thesis/recommendation makes a frozen, visible S1 or explicit v1 fail merely because newer accepted or authored records coexist. | Critical | Resolved and shared-contract covered | Both adapters reload the exact snapshot ID and exact publication versions frozen in content, recompute their digests/fingerprint, and retain the recommendation-to-snapshot binding. S1-visible/S2-latest and frozen-v1/newer-v2 both approve when the frozen authority is unchanged. |
+| RT-2026-08-25-208 | Tamper reviewer | Relaxing latest-pointer checks could turn frozen content into an unchecked historical blob and permit modified snapshot, publication, model, or export authority. | Critical | Resolved and regression covered | Approval re-runs exact-record snapshot digest, thesis/recommendation fingerprint, model build identity, and optional export identity checks. Missing versions, forged model/export identities, and post-freeze exact-row corruption fail closed without replacing or approving the report. |
+| RT-2026-08-25-209 | Runtime-coverage reviewer | Adapter contracts alone do not prove `WorkflowRuntime` joins heartbeats, stops after lease loss, fences terminal events, or respects the atomic finalization/deadline boundary. | High | Resolved in memory; PostgreSQL stream environment-gated | Restored ledger-driven runtime integrations cover both lease-loss modes, success/failure lifecycle events, terminal fencing, post-mutation rollback, expired deadlines, and cross-connection streaming. The live PostgreSQL stream test skips only when the DSN is absent. |
+| RT-2026-08-25-210 | HTTP-compatibility reviewer | Removing old store-backed tests left source withdrawal, promoted-note recovery, exact approval governance, and binary export behavior unproved through FastAPI. | Medium | Resolved route-level | Restored route tests use only public HTTP plus the injected ledger set and preserve the exact 422/409/403/200 shapes and Markdown/PDF/XLSX signatures. |
+| RT-2026-08-25-211 | Verification reviewer | Memory and static SQL still cannot prove exact-version PostgreSQL queries or cross-process event visibility against a real server. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` is unset. The PostgreSQL variants and event stream skip honestly; focused/static/full gates pass, and a fresh-database run remains required before production deployment. |
+
+Decision: accept the focused correction after exact coupling, static, focused,
+full-suite, rewrite, confidence, and graph-scope gates. Preserve frozen identity
+semantics and keep the fresh-PostgreSQL verification gate open.
+
+## 2026-08-25 — Frozen report visible-authority correction gate
+
+Decision under review: retain exact historical identity resolution while
+requiring the frozen snapshot to remain the case's effective visible authority.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-212 | Visible-authority reviewer | Exact historical rows alone allow approval after an analyst explicitly switches the case view away from the frozen snapshot, publishing a report that no longer matches the case's selected authority. | Critical | Resolved and route/shared-contract covered | Both validators compare the frozen snapshot with `visible_snapshot_id` or, only when absent, `accepted_snapshot_id`, returning `STALE_PREVIEW` before any approval mutation. The HTTP regression freezes S1, accepts and switches to S2, and proves 409 plus an unchanged pending report. |
+| RT-2026-08-25-213 | Freshness reviewer | Reintroducing a pointer check can accidentally make latest acceptance authoritative again, invalidating S2 merely because S3 is accepted while S2 remains visible. | High | Resolved in shared contract | The contract switches visible authority to S2 before freeze, accepts S3 without switching, and successfully approves the exact frozen S2 identities. S1-visible/S2-latest remains valid as well. |
+| RT-2026-08-25-214 | Concurrency reviewer | Approval could validate a visible pointer that changes before the report mutation commits. | High | Resolved by existing boundary | Memory holds the shared state lock; PostgreSQL `approve_report` locks the case row before revalidation and mutation. The pointer check and approval therefore share the existing atomic publication boundary. |
+| RT-2026-08-25-215 | Verification reviewer | PostgreSQL pointer fallback and row-lock behavior remain unexecuted without a live server. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` remains unset. Shared memory and HTTP regressions plus static/full gates pass; the fresh-database run remains required. |
+
+Decision: accept the visible-authority correction after focused/full/static,
+rewrite, confidence, and change-scope gates. Do not substitute latest acceptance
+for the explicit visible pointer.
+
+## 2026-08-25 — Whole-state PostgreSQL envelope deletion gate
+
+Decision under review: delete the unused concrete stores and every live whole-
+state refresh/persist path after the domain caller cutover, without reading,
+changing, migrating, or dropping any legacy table.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-216 | Legacy-boundary saboteur | A surviving constructor, middleware refresh, helper, or SQL statement could silently recreate or mutate the removed whole-state authority despite normalized ledgers being the visible composition root. | Critical | Resolved statically and regression covered | `MemoryStore`, `PostgresStore`, merge/snapshot/restore/adopt/persist helpers, request refresh, and all live legacy-table SQL are deleted. Exact production searches have zero envelope matches. A DSN-gated test migrates a unique fresh schema, creates an unrelated legacy-named row afterward, boots the PostgreSQL-ledger app, drives case/source/run/snapshot HTTP transitions, and requires byte-stable legacy bytes while normalized rows change. |
+| RT-2026-08-25-217 | Test-isolation reviewer | A cleanup path that drops a random schema even when creation failed could destroy a preexisting schema on a name collision, violating the test's stronger safety contract. | High | Resolved in test | Cleanup is guarded by successful `CREATE SCHEMA`; the unique schema is the only destructive target, search-path options are scoped to that schema, and teardown resets search path before `DROP SCHEMA IF EXISTS ... CASCADE`. The test never touches a caller-provided schema or table. |
+| RT-2026-08-25-218 | Memory-parity reviewer | Removing inheritance could omit a carrier dictionary/helper, retain a public proxy bucket, or change rollback/copy semantics for local and contract tests. | High | Resolved and shared-contract covered | `_MemoryState` owns exactly the dictionaries and transitive helpers reached by the four private adapters under one `RLock`; an AST reachability audit finds no unused carrier member. The last no-op persistence call is gone. The rewrite winner uses shallow container rollback plus an explicit copy of the sole in-place superseded-universe mutation; focused and full contracts pass. |
+| RT-2026-08-25-219 | Verification reviewer | Static SQL absence and a gated test cannot prove byte-level inertness against PostgreSQL when no live DSN is available. | High | Accepted explicit gap | `CAOS_TEST_DATABASE_URL` is unset, so the isolated-schema inertness test and PostgreSQL adapter variants skip honestly. Migration/ledger, exact reachability, Ruff/compile/diff, memory contracts, and the full server suite pass. Run the gated test against a fresh PostgreSQL database before production deployment. |
+
+Decision: accept the deletion after the final staged change-scope and commit
+gates. Keep the live PostgreSQL proof open; never add compatibility SQL,
+backfill, dual-read, or destructive legacy-table handling.
+
+## 2026-08-25 — Codebase-deepening final repository verification gate
+
+Decision under review: accept the complete HTTP-contract, provider-composition,
+browser-authority, normalized-ledger, caller-cutover, report-governance, and
+whole-state deletion branch after repository-wide production gates.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-220 | Async-authority saboteur | A run refresh completing while case authority is still pending can clear the shared loading state, expose partial authority, or suppress a later case failure; selecting or invalidating authority without recording its pending scope can then leave the shell loading forever once completions are scope-checked. | Critical | Resolved and production-smoke verified | The reducer now lets only the completion matching the current pending request scope set `ready`/`error` or clear pending state. Hydration, case selection, run selection, and active-run invalidation establish the case refresh as pending in their new generation. Deterministic overlap/failure/invalidation regressions, 25 frontend units, lint, typecheck, a rebuilt production workbench smoke, and the full axe matrix pass without an API or component-interface change. |
+| RT-2026-08-25-221 | Build-environment reviewer | The default Next.js build can be mistaken for a product failure when this clean linked worktree borrows dependencies through a symlink outside Turbopack's inferred filesystem root. | Medium | Accepted environment limitation; alternate gate passed | Default `next build` fails exactly with `TurbopackInternalError: Symlink [project]/node_modules is invalid, it points out of the filesystem root`. The lockfile-identical external dependency tree is untracked and unstaged. `next build --webpack` completes all 12 static pages, and that output passes the combined FastAPI workbench and axe gates. |
+| RT-2026-08-25-222 | Production-data reviewer | A local empty or synthetic register cannot prove the historical 130-source, six-pathway, 250/50 RV production-inventory thresholds, and development identity cannot emulate the approver role assertion. | High | Accepted explicit environment gap | The inventory runner was attempted against the combined app and failed first at the development-only role boundary (`ANALYST`, expected `APPROVER`). Production mode requires a PostgreSQL DSN, none is available, and the historical dense dump is legacy-envelope shaped and incompatible with the fresh-only normalized cutover. No false inventory pass is claimed; rerun with a freshly seeded normalized PostgreSQL fixture and production identity configuration. |
+| RT-2026-08-25-223 | Persistence/concurrency verifier | Memory contracts, static lock-order review, and exact no-envelope searches still cannot execute PostgreSQL transaction scheduling, rollback, fencing, migrations, or legacy-row inertness. | High | Accepted explicit environment gap | The full server suite passes `333 passed, 29 skipped`; skips are the declared DSN-gated PostgreSQL variants. Ruff, compileall, migration guards, exact removed-store/public-bucket/legacy-SQL searches, report/model/source governance contracts, provider-digest tests, and memory ledger contracts pass. Run the same suite with `CAOS_TEST_DATABASE_URL` pointed at a disposable fresh PostgreSQL database before production deployment. |
+
+Decision: accept the confirmed reducer correction and final repository gates.
+The only open items require external PostgreSQL/dense-fixture or Turbopack
+worktree support; preserve the normalized-only and fresh-database boundaries.
+
+## 2026-08-25 — Final authority reducer independent-review correction gate
+
+Decision under review: preserve exact-scope success ordering while allowing a
+failed upstream registry or case dependency to fail closed over pending child
+authority in the same generation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-224 | Initial-load saboteur | Hydration records pending `case` authority, but an initial `/api/cases` failure reports scope `cases`; exact-scope failure matching ignores it and leaves global authority loading forever. | Critical | Resolved and red/green covered | Failure matching now recognizes only the explicit dependency relation `cases → case/run` and `case → run`, after the existing generation/case/run guard. The initial hydrated-case plus registry-failure regression failed before the patch (`loading`, expected `error`) and now clears pending state with `error`. A production-static browser intercept surfaces `registry unavailable` with no visible “Sources loading” state. |
+| RT-2026-08-25-225 | Reverse-ordering reviewer | Treating dependency scopes symmetrically could let a successful case request resolve pending run authority, recreating the same premature-ready race in reverse. | Critical | Resolved by asymmetric rule | Success remains exact-scope only. A deterministic pending-run regression proves case success is identity-preserving and only run success clears pending state; the existing run-success-while-case-pending regression remains green. |
+| RT-2026-08-25-226 | Stale-failure reviewer | A broad parent-failure rule could let a previous registry generation poison a newer case/run selection. | High | Resolved by existing authority fence | `matchesAuthority` remains mandatory before the dependency relation is considered. A stale-generation `cases` failure against current pending run authority is a strict no-op. Unknown/action scopes retain exact-only failure matching. |
+
+Decision: accept the narrow reducer-only correction after 28 frontend unit
+tests, lint, typecheck, webpack production build, registry-failure browser
+boundary, full workbench smoke, seeded 29-combination axe scan, rewrite
+tournament, confidence review, and staged graph detection pass. No API or
+component interface changed.
+
+## 2026-08-25 — Snapshot acceptance pending-lifecycle correction gate
+
+Decision under review: record a newly accepted snapshot pointer without letting
+that event resolve or erase an unrelated authority request already pending in
+the same case/run generation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-227 | Ordering saboteur | `snapshotAccepted` unconditionally sets `ready` and clears pending state, so acceptance racing a case or run refresh can hide loading/error lifecycle and make the refresh completion a no-op. | Critical | Resolved and red/green covered | After the existing generation/case/run guard, acceptance always records `acceptedSnapshotId`; when any request is pending it preserves status and the exact pending record. A regression failed before the patch (`ready`, expected `loading`) and now proves the later matching case success clears pending state normally while retaining the accepted ID. |
+| RT-2026-08-25-228 | Non-pending-path reviewer | Protecting pending requests could prevent ordinary acceptance from moving settled authority to ready or leave a prior error visible indefinitely. | High | Resolved by explicit branch | With no pending request, matching acceptance still sets `ready`, clears pending state, and records the ID. The existing settled-acceptance test was retained and renamed to make this contract explicit. |
+| RT-2026-08-25-229 | Stale-pointer reviewer | Recording the pointer before validating authority could let a late acceptance from the previous case/run overwrite the current case snapshot identity. | Critical | Resolved by existing fence | `matchesAuthority` remains the first operation. A new stale-context regression requires strict object identity and no pointer change. |
+
+Decision: accept the one-branch reducer correction after 30 frontend unit
+tests, lint, typecheck, webpack production build, full workbench smoke, seeded
+29-combination axe scan, rewrite tournament, confidence review, and staged graph
+detection pass. No API or component interface changed.
+
+## 2026-08-25 — Public source and empty-success boundary correction gate
+
+Decision under review: keep internal source-withdrawal metadata out of the
+strict public source schema and treat HTTP 204 as the one successful response
+that does not require JSON parsing.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-230 | Schema-boundary saboteur | A withdrawn source detail can leak the adapter-only `withdrawn_at` field into strict `SourceResponse`, turning a valid GET into a FastAPI response-validation failure instead of a 200. | Critical | Resolved and red/green covered | Both memory and PostgreSQL public serializers now omit `withdrawn_at` without widening the response model. A backend-neutral upload → withdraw → detail regression failed at strict validation before the patch and now requires 200 plus the exact stored-source key set. |
+| RT-2026-08-25-231 | Audit-retention reviewer | Filtering withdrawal time too early could erase the canonical timestamp needed by persistence, audit, and withdrawal cascades. | High | Resolved by boundary-specific filtering | Memory continues to retain the timestamp in its private source state. PostgreSQL continues to write both the normalized `withdrawn_at` column and private JSON record through `_source_record(..., public=False)`; only public return paths filter it. The regression probes the memory raw state and has a PostgreSQL raw column/record assertion that runs when the DSN gate is available. |
+| RT-2026-08-25-232 | HTTP semantics reviewer | Making every empty success resolve could mask malformed 200 responses or weaken existing structured error extraction. | Critical | Resolved by exact status branch | Only status 204 returns `undefined`; a successful empty 200 still raises `SyntaxError`, ordinary JSON successes still parse, and non-OK JSON detail extraction is unchanged. All four focused cases and the full frontend unit suite pass. |
+| RT-2026-08-25-233 | Persistence verifier | The local environment cannot execute the PostgreSQL half of the new backend-neutral HTTP/internal-storage regression. | High | Accepted explicit environment gap | The main-project virtualenv suite passes 334 tests with 30 DSN-gated skips. Static tracing confirms the PostgreSQL withdrawal writes the timestamp before public filtering. Rerun with `CAOS_TEST_DATABASE_URL` against a disposable fresh database to execute the normalized column and JSON record assertions. |
+
+Decision: accept the two narrow boundary corrections after red/green focused
+tests, 334-test server suite, ruff, compileall, 31 frontend unit tests, lint,
+typecheck, webpack production build, rewrite tournaments, confidence review,
+and staged graph detection. No response model, API route, or component
+interface widened.
+
+## 2026-08-26 — Normalized-ledger merge integration gate
+
+Decision under review: merge the normalized-ledger branch into the newer main
+line while preserving main's source-ingestion and leveraged-loan release gates.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-234 | Upgrade-path reviewer | Main's one-time `004_rv_loan_universe_source_fk.sql` compatibility backfill reads `caos_state`, contradicting the branch's earlier fresh-only rule and risking a restored runtime dependency. | High | Accepted as a bounded main-line integration exception | The migration may read an existing envelope only to backfill normalized source rows before validating the foreign key; it never mutates the envelope. The runtime store, request refresh, dual-read, and persistence paths remain deleted. A migration guard permits this named compatibility file and rejects envelope references everywhere else. |
+| RT-2026-08-26-235 | Schema reviewer | Applying main's source foreign key and the branch's independently named equivalent would leave two redundant constraints on every fresh database. | High | Resolved statically | The normalized-authority migration now relies on the earlier source-FK migration. A static regression requires exactly one `source_id → sources(id)` foreign-key declaration across the migration set. |
+| RT-2026-08-26-236 | Regression reviewer | Selecting the new ledger implementation could silently discard main's digest-integrity, extraction-limit, withdrawal-race, and migration-hardening proofs because those tests still instantiate the removed stores. | Critical | Resolved and focused-suite covered | The tests now compose `MemoryLedgerSet`/`PostgresLedgerSet`, retain main's assertions, and exercise the normalized source catalog. The focused HTTP, source, loan-universe, migration, and ledger suites pass `91 passed, 33 skipped`. |
+| RT-2026-08-26-237 | Persistence verifier | The merge-specific PostgreSQL concurrency and migration checks still cannot execute without a disposable live database. | High | Accepted explicit environment gap | `CAOS_TEST_DATABASE_URL` is unset, so DSN-gated checks skip honestly. Full server, frontend, static, and graph gates must pass on the merged tree; the live PostgreSQL suite remains required before production deployment. |
+
+Decision: accept the bounded compatibility migration and normalized-ledger test
+port, subject to the full merged-tree verification gates. Runtime authority
+remains normalized-only; no whole-state store or request path is restored.

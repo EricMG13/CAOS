@@ -8,7 +8,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from ..artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid
 from ..config import Settings
@@ -23,9 +23,10 @@ from ..methodology.canonical import (
 )
 from ..methodology.cpdr import CPDRValidationError, confidence_inputs, render_cpdr_markdown, validate_cpdr_payload
 from ..methodology.prompt import compile_cpdr_prompts
+from ..ledgers import RunLedger, SourceCatalog
 from ..sources.domain import Vault, current_source_set
-from ..store import JobFencedError, MemoryStore, now_iso
-from .provider import AgentError, AnthropicGateway, ProviderUnavailable
+from ..store import JobFencedError, now_iso
+from .provider import AgentError, AgentLoop, Provider, ProviderRequest, ProviderUnavailable
 
 
 HEARTBEAT_INTERVAL_SECONDS = 20
@@ -101,7 +102,7 @@ def _build_cpdr_envelope(
 
 
 def _source_manifest(
-    store: MemoryStore,
+    sources: SourceCatalog,
     run: dict[str, Any],
     source_ids: list[str],
     fail: Any,
@@ -109,73 +110,72 @@ def _source_manifest(
     manifest: list[dict[str, Any]] = []
     manifest_bytes = 2
     manifest_blocks = 0
-    with store.lock:
-        for source_id in source_ids:
-            source = store.sources.get(source_id)
-            if not source or source.get("case_id") != run["case_id"] or source.get("withdrawn"):
-                fail("AGENT_AUTHORITY_MISMATCH", "pinned source is unavailable")
-            blocks = source.get("blocks") or []
-            source_digest = source.get("sha256")
+    for source_id in source_ids:
+        source = sources.get_source(source_id)
+        if not source or source.get("case_id") != run["case_id"] or source.get("withdrawn"):
+            fail("AGENT_AUTHORITY_MISMATCH", "pinned source is unavailable")
+        blocks = source.get("blocks") or []
+        source_digest = source.get("sha256")
+        if (
+            not isinstance(source_digest, str)
+            or len(source_digest) != 64
+            or any(character not in "0123456789abcdef" for character in source_digest)
+        ):
+            fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
+        filename = source.get("filename", source_id)
+        media_type = source.get("media_type", "application/octet-stream")
+        if (
+            not _manifest_text_is_bounded(source_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
+            or not _manifest_text_is_bounded(filename, MAX_CPDR_MANIFEST_FILENAME_CHARS)
+            or not _manifest_text_is_bounded(media_type, MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS)
+        ):
+            fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
+        manifest_source = {
+            "source_id": source_id,
+            "digest": source_digest,
+            "filename": filename,
+            "media_type": media_type,
+            "blocks": [],
+        }
+        encoded_empty_source = json.dumps(
+            manifest_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        source_bytes = len(encoded_empty_source.encode("utf-8"))
+        for block in blocks:
+            manifest_blocks += 1
+            if manifest_blocks > MAX_CPDR_MANIFEST_BLOCKS:
+                fail("AGENT_BUDGET_EXCEEDED", "source manifest block ceiling exceeded")
+            if not isinstance(block, dict):
+                fail("AGENT_BUDGET_EXCEEDED", "source manifest block is invalid")
+            manifest_block = {
+                "block_id": block.get("block_id"),
+                "locator": block.get("locator"),
+                "extractor_version": block.get("extractor_version"),
+                "confidence": block.get("confidence"),
+            }
             if (
-                not isinstance(source_digest, str)
-                or len(source_digest) != 64
-                or any(character not in "0123456789abcdef" for character in source_digest)
-            ):
-                fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
-            filename = source.get("filename", source_id)
-            media_type = source.get("media_type", "application/octet-stream")
-            if (
-                not _manifest_text_is_bounded(source_id, MAX_CPDR_MANIFEST_FIELD_CHARS)
-                or not _manifest_text_is_bounded(filename, MAX_CPDR_MANIFEST_FILENAME_CHARS)
-                or not _manifest_text_is_bounded(media_type, MAX_CPDR_MANIFEST_MEDIA_TYPE_CHARS)
+                not _manifest_text_is_bounded(manifest_block["block_id"], MAX_CPDR_MANIFEST_FIELD_CHARS)
+                or not _manifest_locator_is_bounded(manifest_block["locator"])
+                or not _manifest_text_is_bounded(manifest_block["extractor_version"], MAX_CPDR_MANIFEST_FIELD_CHARS)
+                or not _manifest_text_is_bounded(manifest_block["confidence"], MAX_CPDR_MANIFEST_FIELD_CHARS)
             ):
                 fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
-            manifest_source = {
-                "source_id": source_id,
-                "digest": source_digest,
-                "filename": filename,
-                "media_type": media_type,
-                "blocks": [],
-            }
-            encoded_empty_source = json.dumps(
-                manifest_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            encoded_block = json.dumps(
+                manifest_block, sort_keys=True, separators=(",", ":"), ensure_ascii=True
             )
-            source_bytes = len(encoded_empty_source.encode("utf-8"))
-            for block in blocks:
-                manifest_blocks += 1
-                if manifest_blocks > MAX_CPDR_MANIFEST_BLOCKS:
-                    fail("AGENT_BUDGET_EXCEEDED", "source manifest block ceiling exceeded")
-                if not isinstance(block, dict):
-                    fail("AGENT_BUDGET_EXCEEDED", "source manifest block is invalid")
-                manifest_block = {
-                    "block_id": block.get("block_id"),
-                    "locator": block.get("locator"),
-                    "extractor_version": block.get("extractor_version"),
-                    "confidence": block.get("confidence"),
-                }
-                if (
-                    not _manifest_text_is_bounded(manifest_block["block_id"], MAX_CPDR_MANIFEST_FIELD_CHARS)
-                    or not _manifest_locator_is_bounded(manifest_block["locator"])
-                    or not _manifest_text_is_bounded(manifest_block["extractor_version"], MAX_CPDR_MANIFEST_FIELD_CHARS)
-                    or not _manifest_text_is_bounded(manifest_block["confidence"], MAX_CPDR_MANIFEST_FIELD_CHARS)
-                ):
-                    fail("AGENT_BUDGET_EXCEEDED", "source manifest field ceiling exceeded")
-                encoded_block = json.dumps(
-                    manifest_block, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-                )
-                source_bytes += len(encoded_block.encode("utf-8")) + (1 if manifest_source["blocks"] else 0)
-                if manifest_bytes + source_bytes + (1 if manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
-                    fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
-                manifest_source["blocks"].append(manifest_block)
+            source_bytes += len(encoded_block.encode("utf-8")) + (1 if manifest_source["blocks"] else 0)
             if manifest_bytes + source_bytes + (1 if manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
                 fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
-            manifest_bytes += source_bytes + (1 if manifest else 0)
-            manifest.append(manifest_source)
+            manifest_source["blocks"].append(manifest_block)
+        if manifest_bytes + source_bytes + (1 if manifest else 0) > MAX_CPDR_MANIFEST_BYTES:
+            fail("AGENT_BUDGET_EXCEEDED", "source manifest byte ceiling exceeded")
+        manifest_bytes += source_bytes + (1 if manifest else 0)
+        manifest.append(manifest_source)
     return manifest
 
 
 def _read_pinned_evidence(
-    store: MemoryStore,
+    sources: SourceCatalog,
     run: dict[str, Any],
     source_set: dict[str, Any],
     source_id: str,
@@ -184,40 +184,16 @@ def _read_pinned_evidence(
 ) -> list[dict[str, Any]]:
     if not block_ids or len(block_ids) > 50 or len(block_ids) != len(set(block_ids)):
         fail("AGENT_OUTPUT_INVALID", "evidence block IDs must be unique and bounded")
-    with store.lock:
-        pinned = store.source_set_by_id(source_set["id"])
-        source = store.sources.get(source_id)
-        if not pinned or source_id not in pinned["source_ids"]:
-            fail("AGENT_AUTHORITY_MISMATCH", "source is not pinned to this run")
-        if not source or source.get("case_id") != run["case_id"]:
-            fail("AGENT_AUTHORITY_MISMATCH", "cross-case evidence read")
-        if source.get("withdrawn"):
-            fail("AGENT_AUTHORITY_MISMATCH", "withdrawn evidence source")
-        source_blocks = source.get("blocks") or []
-        by_id = {block.get("block_id"): block for block in source_blocks if isinstance(block, dict)}
-        if len(by_id) != len(source_blocks) or any(block_id not in by_id for block_id in block_ids):
-            fail("AGENT_OUTPUT_INVALID", "evidence block is absent")
-        source_digest = source.get("sha256")
-        if (
-            not isinstance(source_digest, str)
-            or len(source_digest) != 64
-            or any(character not in "0123456789abcdef" for character in source_digest)
-        ):
-            fail("AGENT_AUTHORITY_MISMATCH", "canonical source-content digest is unavailable")
-        return [
-            {
-                "source_id": source_id,
-                "source_digest": source_digest,
-                "origin_family": source_digest,
-                "authority_class": "unclassified",
-                "block_id": block_id,
-                "locator": by_id[block_id].get("locator"),
-                "extractor_version": by_id[block_id].get("extractor_version"),
-                "confidence": by_id[block_id].get("confidence"),
-                "text": by_id[block_id].get("text", ""),
-            }
-            for block_id in block_ids
-        ]
+    try:
+        return sources.read_pinned_evidence(
+            run["case_id"], source_set["id"], source_id, block_ids
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "AGENT_AUTHORITY_MISMATCH":
+            fail(code, "source is not pinned to this run")
+        fail("AGENT_OUTPUT_INVALID", "evidence block is absent")
+    return []
 
 
 class _LeaseFence:
@@ -246,8 +222,19 @@ class _PlanningPause(Exception):
 
 
 class WorkflowRuntime:
-    def __init__(self, store: MemoryStore, bundle: DeployVBundle, settings: Settings) -> None:
-        self.store = store
+    def __init__(
+        self,
+        runs: RunLedger,
+        sources: SourceCatalog,
+        bundle: DeployVBundle,
+        settings: Settings,
+        provider: Provider | None = None,
+        *,
+        schema_transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        request_preimage: Callable[[ProviderRequest], Any] | None = None,
+    ) -> None:
+        self.runs = runs
+        self.sources = sources
         self.bundle = bundle
         self.settings = settings
         self.vault = Vault(settings)
@@ -258,6 +245,15 @@ class WorkflowRuntime:
         self._provider_slots = threading.BoundedSemaphore(2)
         # ponytail: serial state updates; split per-module budgets if canonical generation throughput becomes material.
         self._canonical_generation_lock = threading.Lock()
+        self._agent_loop = (
+            AgentLoop(
+                provider,
+                schema_transform=schema_transform,
+                request_preimage=request_preimage,
+            )
+            if provider is not None
+            else None
+        )
         self.canonical_runner = CanonicalModuleRunner(bundle) if settings.canonical_agent_enabled else None
         self._futures: dict[str, Future[Any]] = {}
         self._futures_lock = threading.Lock()
@@ -265,20 +261,20 @@ class WorkflowRuntime:
     def close(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
+    def schedule(self, run_id: str, actor: str) -> Any:
+        return self.executor.submit(self._execute, run_id, actor)
+
     def start_run(self, case_id: str, actor: str, pathway: str, depth: Depth, focus_questions: list[str], research_brief: dict[str, Any] | None = None, upgraded_from_run_id: str | None = None) -> dict[str, Any]:
-        source_set = current_source_set(self.store, case_id)
+        source_set = current_source_set(self.sources, case_id)
         plan = self.bundle.compile(pathway, depth, source_set["id"] if source_set else None, focus_questions, source_set["version"] if source_set else None)
-        run = self.store.create_run(case_id, actor, plan, [], upgraded_from_run_id)
+        canonical_generation = None
         if self.settings.canonical_agent_enabled and is_canonical_full_credit(plan):
-            self.store.update_run(
-                run["id"],
-                canonical_generation=canonical_generation_state(
-                    self.settings.anthropic_model,
-                    run["created_at"][:10],
-                ),
+            canonical_generation = canonical_generation_state(
+                self.settings.anthropic_model, now_iso()[:10]
             )
+        research = None
         if pathway == "DEEP_RESEARCH":
-            case = self.store.get_case(case_id)
+            case = self.runs.get_case(case_id)
             if not case or research_brief is None:
                 raise WorkflowError("RESEARCH_BRIEF_REQUIRED")
             brief = {
@@ -291,7 +287,7 @@ class WorkflowRuntime:
                 "plan_approval": "required",
             }
             budget_limits = {"turns": 8, "evidence_reads": 12, "evidence_bytes": 1024 * 1024, "input_tokens": 100_000, "output_tokens": 8_000, "active_minutes": 3, "provider_retries": 1, "repairs": 1}
-            self.store.update_run(run["id"], research={
+            research = {
                 "brief": brief,
                 "phase": "planning",
                 "proposed_plan": None,
@@ -304,31 +300,32 @@ class WorkflowRuntime:
                 "budget_used": {key: 0 for key in budget_limits},
                 "inflight_request_digest": None,
                 "attempts": [],
-            })
-        node_records = []
-        logical_ids: dict[str, str] = {}
-        for plan_node in plan["nodes"]:
-            node = self.store.add_node(run["id"], case_id, plan_node["module_id"], plan_node["dependencies"], plan_node["stage"])
-            node_records.append(node)
-            logical_ids[plan_node["module_id"]] = node["id"]
+            }
         runnable = bool(source_set and source_set["source_ids"])
         empty_source_error = None if runnable else {"code": "SOURCE_SET_EMPTY", "message": "Upload and version source material before execution."}
-        self.store.update_run(run["id"], node_ids=[node["id"] for node in node_records], status="queued" if runnable else "paused", error=empty_source_error)
-        with self.store.lock:
-            self.store.cases[case_id]["current_execution_id"] = run["id"]
-            self.store.persist()
-        self.store.emit(run["id"], "run.created", {"run_id": run["id"], "plan_digest": plan["plan_digest"], "profile_id": plan["profile_id"], "selection_id": plan["selection_id"]})
+        run = self.runs.create_run_with_nodes(
+            case_id,
+            actor,
+            plan,
+            plan["nodes"],
+            upgraded_from_run_id,
+            initial_status="queued" if runnable else "paused",
+            initial_error=empty_source_error,
+            initial_research=research,
+            canonical_generation=canonical_generation,
+        )
+        self.runs.emit(run["id"], "run.created", {"run_id": run["id"], "plan_digest": plan["plan_digest"], "profile_id": plan["profile_id"], "selection_id": plan["selection_id"]})
         if not runnable:
-            self.store.emit(run["id"], "run.paused", {"code": "SOURCE_SET_EMPTY"})
+            self.runs.emit(run["id"], "run.paused", {"code": "SOURCE_SET_EMPTY"})
         elif self.settings.environment != "production":
             future = self.executor.submit(self._execute, run["id"], actor)
             with self._futures_lock:
                 self._futures[run["id"]] = future
-        return self.store.get_run(run["id"]) or run
+        return self.runs.get_run(run["id"]) or run
 
     def _execute(self, run_id: str, actor: str) -> None:
         worker = threading.current_thread().name
-        attempt_token = self.store.claim_job(run_id, worker)
+        attempt_token = self.runs.claim(run_id, worker)
         if not attempt_token:
             return
         heartbeat_stop = threading.Event()
@@ -340,7 +337,7 @@ class WorkflowRuntime:
         def heartbeat() -> None:
             while not heartbeat_stop.wait(HEARTBEAT_INTERVAL_SECONDS):
                 try:
-                    if self.store.renew_job(run_id, attempt_token):
+                    if self.runs.renew(run_id, attempt_token):
                         continue
                 except Exception:
                     pass
@@ -348,27 +345,27 @@ class WorkflowRuntime:
                 return
 
         def lease_check() -> None:
-            if lease_fence.lost.is_set() or not self.store.job_is_current(run_id, attempt_token):
+            if lease_fence.lost.is_set() or not self.runs.is_current(run_id, attempt_token):
                 raise JobFencedError("lost workflow lease")
 
         def charge_final_cpdr_work(elapsed: float) -> tuple[dict[str, Any], bool]:
-            current = self.store.get_run(run_id) or {}
+            current = self.runs.get_run(run_id) or {}
             research = copy.deepcopy(current.get("research") or {})
             used = research.get("budget_used") or {}
             limit = (research.get("budget_limits") or {}).get("active_minutes", 3)
             used["active_minutes"] = used.get("active_minutes", 0) + max(0.0, elapsed) / 60
             research["budget_used"] = used
-            fenced_call(self.store.update_run_fenced, research=research)
+            fenced_call(self.runs.update_run_fenced, research=research)
             return research, used["active_minutes"] >= limit
 
         def reserve_cpdr_finalization() -> tuple[dict[str, Any], bool]:
-            current = self.store.get_run(run_id) or {}
+            current = self.runs.get_run(run_id) or {}
             research = copy.deepcopy(current.get("research") or {})
             used = research.get("budget_used") or {}
             limit = (research.get("budget_limits") or {}).get("active_minutes", 3)
             used["active_minutes"] = used.get("active_minutes", 0) + CPDR_FINALIZATION_ALLOWANCE_SECONDS / 60
             research["budget_used"] = used
-            fenced_call(self.store.update_run_fenced, research=research)
+            fenced_call(self.runs.update_run_fenced, research=research)
             return research, used["active_minutes"] >= limit
 
         def fail_final_cpdr(node: dict[str, Any], research: dict[str, Any], code: str) -> None:
@@ -380,21 +377,21 @@ class WorkflowRuntime:
                 "module_id": "CP-DR",
                 "message": "CP-DR agent execution failed.",
             }
-            fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
+            fenced_call(self.runs.update_node_fenced, node["id"], status="failed", error=error)
             fenced_call(
-                self.store.update_run_fenced,
+                self.runs.update_run_fenced,
                 status="failed",
                 current_node_id=None,
                 error=error,
                 research=research,
             )
             fenced_call(
-                self.store.emit_fenced,
+                self.runs.emit_fenced,
                 "node.failed",
                 {"node_id": node["id"], "module_id": "CP-DR", "code": code},
             )
             fenced_call(
-                self.store.emit_fenced,
+                self.runs.emit_fenced,
                 "run.failed",
                 {"code": code, "module_id": "CP-DR"},
             )
@@ -405,10 +402,10 @@ class WorkflowRuntime:
                 "module_id": node["module_id"],
                 "message": "Canonical Full Credit generation failed.",
             }
-            fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
-            fenced_call(self.store.update_run_fenced, status="failed", error=error)
+            fenced_call(self.runs.update_node_fenced, node["id"], status="failed", error=error)
+            fenced_call(self.runs.update_run_fenced, status="failed", error=error)
             fenced_call(
-                self.store.emit_fenced,
+                self.runs.emit_fenced,
                 "node.failed",
                 {
                     "node_id": node["id"],
@@ -417,7 +414,7 @@ class WorkflowRuntime:
                 },
             )
             fenced_call(
-                self.store.emit_fenced,
+                self.runs.emit_fenced,
                 "run.failed",
                 {"code": error["code"], "module_id": node["module_id"]},
             )
@@ -425,12 +422,12 @@ class WorkflowRuntime:
         heartbeat_thread = threading.Thread(target=heartbeat, name=f"{worker}-heartbeat", daemon=True)
         heartbeat_thread.start()
         try:
-            fenced_call(self.store.update_run_fenced, status="running", error=None)
-            fenced_call(self.store.emit_fenced, "run.running", {"run_id": run_id, "worker": worker})
+            fenced_call(self.runs.update_run_fenced, status="running", error=None)
+            fenced_call(self.runs.emit_fenced, "run.running", {"run_id": run_id, "worker": worker})
             while True:
-                if lease_fence.lost.is_set() or not self.store.job_is_current(run_id, attempt_token):
+                if lease_fence.lost.is_set() or not self.runs.is_current(run_id, attempt_token):
                     return
-                run = self.store.get_run(run_id)
+                run = self.runs.get_run(run_id)
                 if lease_fence.lost.is_set() or not run:
                     return
                 pending = [node for node in run["nodes"] if node["status"] in {"pending", "ready"}]
@@ -440,7 +437,7 @@ class WorkflowRuntime:
                     cpdr_node = None
                     for node in run["nodes"]:
                         artifact_id = node.get("artifact_id")
-                        artifact = self.store.get_artifact(artifact_id) if artifact_id else None
+                        artifact = self.runs.get_artifact(artifact_id) if artifact_id else None
                         if (
                             node.get("status") != "succeeded"
                             or not artifact
@@ -452,7 +449,9 @@ class WorkflowRuntime:
                         if node.get("module_id") == "CP-DR":
                             cpdr_node = node
                             validation_started = time.monotonic()
-                            valid = cpdr_artifact_is_valid(self.store, run, node, artifact, self.bundle)
+                            valid = cpdr_artifact_is_valid(
+                                self.runs, self.sources, run, node, artifact, self.bundle
+                            )
                             research, exceeded = charge_final_cpdr_work(time.monotonic() - validation_started)
                             run["research"] = research
                             if exceeded:
@@ -460,8 +459,8 @@ class WorkflowRuntime:
                                 return
                             blocked = blocked or not valid
                     if blocked:
-                        fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "Planned nodes are incomplete or missing artifacts."})
-                        fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
+                        fenced_call(self.runs.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "Planned nodes are incomplete or missing artifacts."})
+                        fenced_call(self.runs.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
                         return
                     if cpdr_node is not None:
                         finalization_deadline = None
@@ -470,12 +469,12 @@ class WorkflowRuntime:
                         except JobFencedError:
                             raise
                         except AgentError as exc:
-                            fail_final_cpdr(cpdr_node, copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {}), exc.code)
+                            fail_final_cpdr(cpdr_node, copy.deepcopy((self.runs.get_run(run_id) or {}).get("research") or {}), exc.code)
                             return
                         except Exception:
                             fail_final_cpdr(
                                 cpdr_node,
-                                copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {}),
+                                copy.deepcopy((self.runs.get_run(run_id) or {}).get("research") or {}),
                                 "AGENT_OUTPUT_INVALID",
                             )
                             return
@@ -488,7 +487,7 @@ class WorkflowRuntime:
                         finalization_deadline = None
                     try:
                         fenced_call(
-                            self.store.finalize_run_success_fenced,
+                            self.runs.finalize_success,
                             research,
                             {"run_id": run_id},
                             **({"deadline": finalization_deadline} if finalization_deadline is not None else {}),
@@ -513,12 +512,12 @@ class WorkflowRuntime:
                     return
                 ready = [node for node in pending if set(node["dependencies"]).issubset(completed)]
                 if not ready:
-                    fenced_call(self.store.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "No dependency-safe ready nodes remain."})
-                    fenced_call(self.store.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
+                    fenced_call(self.runs.update_run_fenced, status="failed", error={"code": "DAG_BLOCKED", "message": "No dependency-safe ready nodes remain."})
+                    fenced_call(self.runs.emit_fenced, "run.failed", {"code": "DAG_BLOCKED"})
                     return
                 for node in ready:
-                    fenced_call(self.store.update_node_fenced, node["id"], status="running", attempt=node["attempt"] + 1)
-                    fenced_call(self.store.emit_fenced, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
+                    fenced_call(self.runs.update_node_fenced, node["id"], status="running", attempt=node["attempt"] + 1)
+                    fenced_call(self.runs.emit_fenced, "node.running", {"node_id": node["id"], "module_id": node["module_id"]})
                 with ThreadPoolExecutor(max_workers=min(4, len(ready)), thread_name_prefix="caos-node") as pool:
                     futures = {pool.submit(self._build_artifact_with_slot, run, node, actor, fenced_call, lease_check): node for node in ready}
                     for future, node in ((future, futures[future]) for future in futures):
@@ -529,20 +528,23 @@ class WorkflowRuntime:
                                 return
                             completion_research = None
                             if node["module_id"] == "CP-DR":
-                                completion_research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                                completion_research = copy.deepcopy((self.runs.get_run(run_id) or {}).get("research") or {})
                                 completion_research["phase"] = "complete"
                             artifact_validator = None
                             if node["module_id"] == "CP-DR":
                                 def artifact_validator(candidate: dict[str, Any]) -> bool:
-                                    return cpdr_artifact_is_valid(self.store, run, node, candidate, self.bundle)
+                                    return cpdr_artifact_is_valid(
+                                        self.runs, self.sources, run, node, candidate, self.bundle
+                                    )
                             completion_started = time.monotonic()
                             try:
                                 artifact = fenced_call(
-                                    self.store.complete_node_fenced,
+                                    self.runs.complete_node,
                                     node["id"],
                                     artifact_data,
                                     completion_research,
-                                    artifact_validator,
+                                    {"node_id": node["id"], "module_id": node["module_id"]},
+                                    artifact_validator=artifact_validator,
                                 )
                             finally:
                                 if completion_active_time is not None:
@@ -553,9 +555,9 @@ class WorkflowRuntime:
                             if lease_fence.lost.is_set():
                                 return
                             try:
-                                fenced_call(self.store.pause_research_plan_fenced, node["id"], outcome.research)
-                                fenced_call(self.store.emit_fenced, "research.plan_ready", {"plan_hash": outcome.research["proposed_plan_hash"]})
-                                fenced_call(self.store.emit_fenced, "run.paused", {"code": "PLAN_APPROVAL_REQUIRED"})
+                                fenced_call(self.runs.pause_research_plan, node["id"], outcome.research)
+                                fenced_call(self.runs.emit_fenced, "research.plan_ready", {"plan_hash": outcome.research["proposed_plan_hash"]})
+                                fenced_call(self.runs.emit_fenced, "run.paused", {"code": "PLAN_APPROVAL_REQUIRED"})
                             except JobFencedError:
                                 return
                             return
@@ -568,16 +570,16 @@ class WorkflowRuntime:
                                 except JobFencedError:
                                     return
                                 return
-                            research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                            research = copy.deepcopy((self.runs.get_run(run_id) or {}).get("research") or {})
                             research["phase"] = "failed"
                             if node["module_id"] == "CP-DR" and research.get("attempts"):
                                 research["attempts"][-1]["terminal_code"] = exc.code
                             error = {"code": exc.code, "module_id": node["module_id"], "message": "CP-DR agent execution failed."}
                             try:
-                                fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
-                                fenced_call(self.store.update_run_fenced, status="failed", error=error, research=research)
-                                fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "code": exc.code})
-                                fenced_call(self.store.emit_fenced, "run.failed", {"code": exc.code, "module_id": node["module_id"]})
+                                fenced_call(self.runs.update_node_fenced, node["id"], status="failed", error=error)
+                                fenced_call(self.runs.update_run_fenced, status="failed", error=error, research=research)
+                                fenced_call(self.runs.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "code": exc.code})
+                                fenced_call(self.runs.emit_fenced, "run.failed", {"code": exc.code, "module_id": node["module_id"]})
                             except JobFencedError:
                                 return
                             return
@@ -585,16 +587,16 @@ class WorkflowRuntime:
                             if lease_fence.lost.is_set():
                                 return
                             if node["module_id"] == "CP-DR":
-                                research = copy.deepcopy((self.store.get_run(run_id) or {}).get("research") or {})
+                                research = copy.deepcopy((self.runs.get_run(run_id) or {}).get("research") or {})
                                 research["phase"] = "failed"
                                 if research.get("attempts"):
                                     research["attempts"][-1]["terminal_code"] = "AGENT_OUTPUT_INVALID"
                                 error = {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR", "message": "CP-DR agent execution failed."}
                                 try:
-                                    fenced_call(self.store.update_node_fenced, node["id"], status="failed", error=error)
-                                    fenced_call(self.store.update_run_fenced, status="failed", error=error, research=research)
-                                    fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": "CP-DR", "code": "AGENT_OUTPUT_INVALID"})
-                                    fenced_call(self.store.emit_fenced, "run.failed", {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR"})
+                                    fenced_call(self.runs.update_node_fenced, node["id"], status="failed", error=error)
+                                    fenced_call(self.runs.update_run_fenced, status="failed", error=error, research=research)
+                                    fenced_call(self.runs.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": "CP-DR", "code": "AGENT_OUTPUT_INVALID"})
+                                    fenced_call(self.runs.emit_fenced, "run.failed", {"code": "AGENT_OUTPUT_INVALID", "module_id": "CP-DR"})
                                 except JobFencedError:
                                     return
                                 return
@@ -605,21 +607,20 @@ class WorkflowRuntime:
                                     return
                                 return
                             try:
-                                fenced_call(self.store.update_node_fenced, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
-                                fenced_call(self.store.update_run_fenced, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
+                                fenced_call(self.runs.update_node_fenced, node["id"], status="failed", error={"code": "NODE_ERROR", "message": str(exc)})
+                                fenced_call(self.runs.update_run_fenced, status="failed", error={"code": "NODE_ERROR", "module_id": node["module_id"], "message": str(exc)})
                             except JobFencedError:
                                 return
-                            fenced_call(self.store.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
-                            fenced_call(self.store.emit_fenced, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
+                            fenced_call(self.runs.emit_fenced, "node.failed", {"node_id": node["id"], "module_id": node["module_id"], "message": str(exc)})
+                            fenced_call(self.runs.emit_fenced, "run.failed", {"code": "NODE_ERROR", "module_id": node["module_id"]})
                             return
-                        fenced_call(self.store.emit_fenced, "node.succeeded", {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]})
         except JobFencedError:
             return
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join()
             if not lease_fence.lost.is_set():
-                self.store.finish_job(run_id, attempt_token)
+                self.runs.finish(run_id, attempt_token)
 
     def _build_artifact_with_slot(self, run: dict[str, Any], node: dict[str, Any], actor: str, fenced_call: Any | None = None, lease_check: Any | None = None) -> dict[str, Any]:
         with self._node_slots:
@@ -627,14 +628,14 @@ class WorkflowRuntime:
 
     def _build_artifact(self, run: dict[str, Any], node: dict[str, Any], actor: str, fenced_call: Any | None = None, lease_check: Any | None = None) -> dict[str, Any]:
         plan = run["plan"]
-        source_set = self.store.source_set_by_id(plan.get("source_set_id"))
+        source_set = self.sources.source_set(plan.get("source_set_id"))
         if not source_set:
             raise WorkflowError("SOURCE_SET_CHANGED")
         source_ids = list(source_set["source_ids"])
         upstream_artifacts = []
         for dependency in node["dependencies"]:
             dependency_node = next((candidate for candidate in run["nodes"] if candidate["module_id"] == dependency), None)
-            dependency_artifact = self.store.get_artifact(dependency_node["artifact_id"]) if dependency_node and dependency_node.get("artifact_id") else None
+            dependency_artifact = self.runs.get_artifact(dependency_node["artifact_id"]) if dependency_node and dependency_node.get("artifact_id") else None
             if not dependency_artifact:
                 raise WorkflowError("UPSTREAM_ARTIFACT_MISSING")
             upstream_artifacts.append({"module_id": dependency, "artifact_id": dependency_artifact["id"], "digest": dependency_artifact["digest"]})
@@ -642,7 +643,7 @@ class WorkflowRuntime:
         loan_universe_identity = None
         loan_universe_rows = None
         if node["module_id"] == "CP-3":
-            active_loan_universe = self.store.active_loan_universe(run["case_id"], include_rows=True)
+            active_loan_universe = self.sources.active_loan_universe(run["case_id"], include_rows=True)
             if active_loan_universe and active_loan_universe["source_id"] in source_ids:
                 loan_universe_identity = {
                     field: active_loan_universe[field]
@@ -683,20 +684,22 @@ class WorkflowRuntime:
                 if fenced_call is None or lease_check is None:
                     return
                 lease_check()
-                latest = self.store.get_run(run["id"])
+                latest = self.runs.get_run(run["id"])
                 latest_research = copy.deepcopy((latest or {}).get("research") or research)
                 used = latest_research["budget_used"]
                 used["active_minutes"] = used.get("active_minutes", 0) + elapsed / 60
-                fenced_call(self.store.update_run_fenced, research=latest_research)
+                fenced_call(self.runs.update_run_fenced, research=latest_research)
                 if used["active_minutes"] >= latest_research["budget_limits"]["active_minutes"]:
                     raise AgentError("AGENT_BUDGET_EXCEEDED", "active worker time exhausted")
 
-            existing = self.store.artifact_for_fingerprint(run["id"], node["module_id"], input_fingerprint)
+            existing = self.runs.artifact_for_fingerprint(run["id"], node["module_id"], input_fingerprint)
             existing_valid = False
             if existing and research.get("phase") in {"approved", "researching", "complete"}:
                 validation_started = time.monotonic()
                 try:
-                    existing_valid = cpdr_artifact_is_valid(self.store, run, node, existing, self.bundle)
+                    existing_valid = cpdr_artifact_is_valid(
+                        self.runs, self.sources, run, node, existing, self.bundle
+                    )
                 finally:
                     charge_reuse_time(max(0.0, time.monotonic() - validation_started))
             if existing_valid:
@@ -710,7 +713,7 @@ class WorkflowRuntime:
                 used["active_minutes"] += (time.monotonic() - planning_started) / 60
                 if used["active_minutes"] > research["budget_limits"]["active_minutes"]:
                     if fenced_call is not None:
-                        fenced_call(self.store.update_run_fenced, research=research)
+                        fenced_call(self.runs.update_run_fenced, research=research)
                     raise AgentError("AGENT_BUDGET_EXCEEDED", "active worker time exhausted during planning")
                 research.update(phase="awaiting_approval", proposed_plan=proposed_plan, proposed_plan_hash=proposed_plan_hash)
                 raise _PlanningPause(research)
@@ -765,7 +768,6 @@ class WorkflowRuntime:
         payload = self.bundle.validate_payload(payload, node["module_id"])
         markdown = self.bundle.render_markdown(payload)
         artifact = {
-            "id": self.store._id("art"),
             "case_id": run["case_id"],
             "run_id": run["id"],
             "module_id": node["module_id"],
@@ -790,7 +792,7 @@ class WorkflowRuntime:
         fenced_call: Any,
         lease_check: Any,
     ) -> dict[str, Any]:
-        latest = self.store.get_run(run["id"]) or run
+        latest = self.runs.get_run(run["id"]) or run
         generation = copy.deepcopy(latest.get("canonical_generation") or {})
         limits = generation.get("budget_limits") or {}
         used = generation.get("budget_used") or {}
@@ -800,7 +802,7 @@ class WorkflowRuntime:
             lease_check()
             generation["budget_used"] = used
             fenced_call(
-                self.store.update_run_fenced,
+                self.runs.update_run_fenced,
                 canonical_generation=copy.deepcopy(generation),
             )
 
@@ -845,25 +847,25 @@ class WorkflowRuntime:
             self.bundle.verify()
             if generation.get("model") != self.settings.anthropic_model:
                 fail("AGENT_AUTHORITY_MISMATCH", "model identity mismatch")
-            current_set = current_source_set(self.store, run["case_id"])
+            current_set = current_source_set(self.sources, run["case_id"])
             if not current_set or (
                 current_set.get("id"), current_set.get("version")
             ) != (source_set.get("id"), source_set.get("version")):
                 fail("AGENT_AUTHORITY_MISMATCH", "source-set identity mismatch")
             if generation.get("inflight_request_digest"):
                 fail("AGENT_BUDGET_EXCEEDED", "unresolved provider request from a prior lease")
-            case = self.store.get_case(run["case_id"])
+            case = self.runs.get_case(run["case_id"])
             if not case:
                 fail("AGENT_AUTHORITY_MISMATCH", "case identity is unavailable")
 
             upstream_full: list[dict[str, Any]] = []
             for item in upstream_artifacts:
-                artifact = self.store.get_artifact(item["artifact_id"])
+                artifact = self.runs.get_artifact(item["artifact_id"])
                 if not artifact or artifact.get("digest") != item["digest"] or not isinstance(artifact.get("markdown"), str):
                     fail("AGENT_AUTHORITY_MISMATCH", "validated upstream Markdown is unavailable")
                 upstream_full.append({**item, "markdown": artifact["markdown"]})
 
-            manifest = _source_manifest(self.store, run, source_ids, fail)
+            manifest = _source_manifest(self.sources, run, source_ids, fail)
             charge_checkpoint()
             returned_evidence: dict[tuple[str, str], dict[str, str]] = {}
             authority_digest = ""
@@ -954,7 +956,7 @@ class WorkflowRuntime:
                 if used["evidence_reads"] + 1 > limits["evidence_reads"]:
                     fail("AGENT_BUDGET_EXCEEDED", "evidence read budget exhausted")
                 result = _read_pinned_evidence(
-                    self.store,
+                    self.sources,
                     run,
                     source_set,
                     source_id,
@@ -1019,12 +1021,9 @@ class WorkflowRuntime:
                     authority_digest=authority_digest,
                 )
 
-            gateway = AnthropicGateway(
-                self.settings.anthropic_api_key,
-                self.settings.anthropic_model,
-                self.settings.anthropic_timeout_seconds,
-            )
-            built = gateway.run(
+            if self._agent_loop is None:
+                fail("AGENT_PROVIDER_UNAVAILABLE", "ANTHROPIC_API_KEY is not configured")
+            built = self._agent_loop.run(
                 system=system,
                 user=user,
                 read_evidence=read_evidence,
@@ -1051,7 +1050,6 @@ class WorkflowRuntime:
             generation["phase"] = "complete" if completed == set(CANONICAL_MODULES) else "generating"
             persist_generation()
             artifact = {
-                "id": self.store._id("art"),
                 "case_id": run["case_id"],
                 "run_id": run["id"],
                 "module_id": node["module_id"],
@@ -1094,7 +1092,7 @@ class WorkflowRuntime:
 
         def persist_research() -> None:
             lease_check()
-            fenced_call(self.store.update_run_fenced, research=copy.deepcopy(research))
+            fenced_call(self.runs.update_run_fenced, research=copy.deepcopy(research))
 
         def fail(code: str, message: str) -> None:
             raise AgentError(code, message)
@@ -1133,12 +1131,12 @@ class WorkflowRuntime:
             fail("AGENT_AUTHORITY_MISMATCH", "approved plan authority changed")
         if research.get("model") != self.settings.anthropic_model:
             fail("AGENT_AUTHORITY_MISMATCH", "model identity mismatch")
-        current = current_source_set(self.store, run["case_id"])
+        current = current_source_set(self.sources, run["case_id"])
         planned_source = approved_plan.get("source_set")
         if not current or not isinstance(planned_source, dict) or (current.get("id"), current.get("version")) != (source_set.get("id"), source_set.get("version")) or (source_set.get("id"), source_set.get("version")) != (planned_source.get("id"), planned_source.get("version")):
             fail("AGENT_AUTHORITY_MISMATCH", "source-set identity mismatch")
         cp0 = next((item for item in upstream_artifacts if item["module_id"] == "CP-0"), None)
-        cp0_artifact = self.store.get_artifact(cp0["artifact_id"]) if cp0 else None
+        cp0_artifact = self.runs.get_artifact(cp0["artifact_id"]) if cp0 else None
         cp0_payload = (cp0_artifact or {}).get("payload") or {}
         cp0_lineage = cp0_payload.get("lineage") or {}
         if not cp0_artifact or cp0_payload.get("status") != "COMPLETE" or cp0_lineage.get("run_id") != run["id"] or cp0_lineage.get("source_set_id") != source_set["id"]:
@@ -1255,7 +1253,7 @@ class WorkflowRuntime:
             if used["input_tokens"] > limits["input_tokens"] or used["output_tokens"] > limits["output_tokens"]:
                 fail("AGENT_BUDGET_EXCEEDED", "actual token usage exceeded the run budget")
 
-        source_manifest = _source_manifest(self.store, run, source_ids, fail)
+        source_manifest = _source_manifest(self.sources, run, source_ids, fail)
         charge_active_checkpoint()
 
         def read_evidence(source_id: str, block_ids: list[str]) -> list[dict[str, Any]]:
@@ -1263,7 +1261,7 @@ class WorkflowRuntime:
             if used["evidence_reads"] + 1 > limits["evidence_reads"]:
                 fail("AGENT_BUDGET_EXCEEDED", "evidence read budget exhausted")
             result = _read_pinned_evidence(
-                self.store,
+                self.sources,
                 run,
                 source_set,
                 source_id,
@@ -1343,15 +1341,9 @@ class WorkflowRuntime:
 
         research["phase"] = "researching"
         persist_research()
-        try:
-            gateway = AnthropicGateway(
-                self.settings.anthropic_api_key,
-                self.settings.anthropic_model,
-                self.settings.anthropic_timeout_seconds,
-            )
-        except ProviderUnavailable:
-            raise
-        payload = gateway.run(
+        if self._agent_loop is None:
+            raise ProviderUnavailable("ANTHROPIC_API_KEY is not configured")
+        payload = self._agent_loop.run(
             system=system,
             user=user,
             read_evidence=read_evidence,
@@ -1392,7 +1384,6 @@ class WorkflowRuntime:
         charge_active_checkpoint()
         research["phase"] = "complete"
         return {
-            "id": self.store._id("art"),
             "case_id": run["case_id"],
             "run_id": run["id"],
             "module_id": "CP-DR",
@@ -1407,78 +1398,38 @@ class WorkflowRuntime:
         }
 
     def approve_research_plan(self, run_id: str, actor: str, plan_hash: str) -> dict[str, Any]:
-        with self.store.lock:
-            run = self.store.runs.get(run_id)
-            if not run:
-                raise WorkflowError("RUN_NOT_FOUND")
-            research = run.get("research")
-            if not research or research.get("phase") != "awaiting_approval" or (run.get("error") or {}).get("code") != "PLAN_APPROVAL_REQUIRED":
-                raise WorkflowError("PLAN_APPROVAL_NOT_AVAILABLE")
-            pending_hash = research.get("proposed_plan_hash")
-            if pending_hash != f"sha256:{digest(research.get('proposed_plan'))}" or plan_hash != pending_hash:
-                raise WorkflowError("PLAN_HASH_MISMATCH")
-            current = self.store.source_sets.get(run["case_id"])
-            pinned = research["proposed_plan"]["source_set"]
-            if not current or (current["id"], current["version"]) != (pinned["id"], pinned["version"]):
-                raise WorkflowError("SOURCE_SET_CHANGED")
-            prior_run = copy.deepcopy(run)
-            audit_start = len(self.store.audit)
-            research.update(approved_plan_hash=plan_hash, approved_by=actor, approved_at=now_iso(), phase="approved")
-            run.update(status="queued", error=None)
-            self.store.audit_event("research.plan_approved", actor, case_id=run["case_id"], run_id=run_id, plan_hash=plan_hash)
-            try:
-                self.store.persist()
-            except Exception:
-                self.store.runs[run_id] = prior_run
-                del self.store.audit[audit_start:]
-                raise
-        self.store.emit(run_id, "research.plan_approved", {"plan_hash": plan_hash, "approved_by": actor})
+        try:
+            run = self.runs.approve_research_plan(run_id, actor, plan_hash)
+        except (KeyError, ValueError) as exc:
+            raise WorkflowError(str(exc)) from exc
         if self.settings.environment != "production":
             future = self.executor.submit(self._execute, run_id, actor)
             with self._futures_lock:
                 self._futures[run_id] = future
-        return self.store.get_run(run_id) or copy.deepcopy(run)
+        return self.runs.get_run(run_id) or copy.deepcopy(run)
 
     def accept_run(self, case_id: str, run_id: str, actor: str) -> dict[str, Any]:
-        with self.store.lock:
-            run = self.store.runs.get(run_id)
-            if not run or run["case_id"] != case_id:
-                raise WorkflowError("RUN_NOT_FOUND")
-            if run.get("accepted_snapshot_id"):
-                return copy.deepcopy(self.store.snapshots[run["accepted_snapshot_id"]])
-            if run["status"] != "succeeded":
-                raise WorkflowError("RUN_NOT_READY")
-            full_run = self.store.get_run(run_id)
-            assert full_run is not None
-            try:
-                payload = build_snapshot_payload(self.store, full_run, self.bundle)
-            except ValueError as exc:
-                raise WorkflowError(str(exc)) from exc
-            snapshot = {
-                "id": self.store._id("snap"),
-                **payload,
-                "digest": digest(payload),
-            }
-            previous_id = self.store.cases[case_id].get("accepted_snapshot_id")
-            snapshot["previous_snapshot_id"] = previous_id
-            self.store.snapshots[snapshot["id"]] = copy.deepcopy(snapshot)
-            self.store.cases[case_id]["accepted_snapshot_id"] = snapshot["id"]
-            if not self.store.cases[case_id].get("visible_snapshot_id"):
-                self.store.cases[case_id]["visible_snapshot_id"] = snapshot["id"]
-            run["accepted_snapshot_id"] = snapshot["id"]
-            self.store.audit_event("snapshot.accepted", actor, case_id=case_id, run_id=run_id, snapshot_id=snapshot["id"])
-            self.store.persist()
-        self.store.emit(run_id, "snapshot.accepted", {"snapshot_id": snapshot["id"], "digest": snapshot["digest"]})
-        return copy.deepcopy(snapshot)
+        run = self.runs.get_run(run_id)
+        if not run or run["case_id"] != case_id:
+            raise WorkflowError("RUN_NOT_FOUND")
+        if run.get("accepted_snapshot_id"):
+            snapshot = self.runs.get_snapshot(run["accepted_snapshot_id"])
+            assert snapshot is not None
+            return snapshot
+        try:
+            payload = build_snapshot_payload(self.runs, self.sources, run, self.bundle)
+            return self.runs.accept_snapshot(
+                case_id, run_id, actor, {**payload, "digest": digest(payload)}
+            )
+        except ValueError as exc:
+            raise WorkflowError(str(exc)) from exc
 
     def stream_events(self, run_id: str, cursor: int = 0) -> Iterator[str]:
         while True:
-            self.store.refresh()
-            self.store.wait_for_events(run_id, cursor, timeout=1.0)
-            self.store.refresh()
-            events = self.store.events_after(run_id, cursor)
+            self.runs.wait_for_events(run_id, cursor, timeout=1.0)
+            events = self.runs.events_after(run_id, cursor)
             if not events:
-                run = self.store.get_run(run_id)
+                run = self.runs.get_run(run_id)
                 if run and run["status"] in {"paused", "succeeded", "failed"}:
                     return
                 yield ": keepalive\n\n"
@@ -1486,6 +1437,6 @@ class WorkflowRuntime:
             for event in events:
                 cursor = event["id"]
                 yield f"id: {event['id']}\nevent: {event['event']}\ndata: {json.dumps(event['data'], sort_keys=True)}\n\n"
-            run = self.store.get_run(run_id)
+            run = self.runs.get_run(run_id)
             if run and run["status"] in {"paused", "succeeded", "failed"}:
                 return

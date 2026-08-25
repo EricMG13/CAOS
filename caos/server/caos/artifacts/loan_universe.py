@@ -4,7 +4,6 @@ import io
 import hashlib
 import math
 import zipfile
-import copy
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +14,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
 
 from ..contracts import digest
+from ..ledgers import SourceCatalog
 
 
 TEMPLATE_VERSION = "cp3-sector-rv-v1"
@@ -464,8 +464,11 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
         workbook.close()
 
 
-def source_bytes(source: dict[str, Any]) -> bytes:
-    path = Path(str(source.get("vault_path", "")))
+def source_bytes(source: dict[str, Any], storage_root: Path) -> bytes:
+    sha256 = str(source.get("sha256", ""))
+    if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+        raise FileNotFoundError("RV_SOURCE_BYTES_UNAVAILABLE")
+    path = storage_root / "sources" / sha256[:2] / sha256
     if not path.is_file():
         raise FileNotFoundError("RV_SOURCE_BYTES_UNAVAILABLE")
     expected_size = source.get("bytes")
@@ -487,30 +490,29 @@ def source_bytes(source: dict[str, Any]) -> bytes:
 
 
 def import_loan_source(
-    store: Any,
+    catalog: SourceCatalog,
+    storage_root: Path,
     case_id: str,
     source_id: str,
     actor: str,
 ) -> tuple[dict[str, Any], bool]:
     def save(record: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
         try:
-            return store.save_loan_universe_import(record, rows, actor)
+            return catalog.save_loan_universe_import(record, rows, actor)
         except ValueError as exc:
             if str(exc) == "RV_SOURCE_NOT_ACTIVE":
                 raise LoanUniverseSourceError("RV_SOURCE_WITHDRAWN", "Source was withdrawn before import completed.") from exc
             raise
 
-    with store.lock:
-        stored_source = store.sources.get(source_id)
-        if not stored_source or stored_source.get("case_id") != case_id:
-            raise LoanUniverseSourceError("RV_SOURCE_NOT_FOUND", "Source was not found in this case.")
-        source = copy.copy(stored_source)
+    source = catalog.get_source(source_id)
+    if not source or source.get("case_id") != case_id:
+        raise LoanUniverseSourceError("RV_SOURCE_NOT_FOUND", "Source was not found in this case.")
     if source.get("withdrawn"):
         raise LoanUniverseSourceError("RV_SOURCE_WITHDRAWN", "Withdrawn sources cannot become active loan universes.")
     if Path(str(source.get("filename", ""))).suffix.lower() != ".xlsx":
         raise LoanUniverseSourceError("RV_SOURCE_TYPE_INVALID", "Loan universe source must be an XLSX workbook.")
 
-    existing = store.find_loan_universe_import(
+    existing = catalog.find_loan_universe_import(
         case_id,
         source["sha256"],
         TEMPLATE_VERSION,
@@ -523,7 +525,7 @@ def import_loan_source(
 
     try:
         parsed = parse_loan_workbook(
-            source_bytes(source),
+            source_bytes(source, storage_root),
             source_id=source_id,
             source_sha256=source["sha256"],
         )
@@ -531,7 +533,6 @@ def import_loan_source(
         raise LoanUniverseSourceError("RV_SOURCE_BYTES_UNAVAILABLE", "Stored workbook bytes are unavailable.") from exc
     except LoanWorkbookValidationError as exc:
         rejected = {
-            "id": store._id("rvloan"),
             "case_id": case_id,
             "source_id": source_id,
             "source_filename": source["filename"],
@@ -548,7 +549,6 @@ def import_loan_source(
         raise LoanUniverseImportRejected(saved) from exc
 
     active = {
-        "id": store._id("rvloan"),
         "case_id": case_id,
         "source_id": source_id,
         "source_filename": source["filename"],

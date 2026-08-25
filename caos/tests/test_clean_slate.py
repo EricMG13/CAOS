@@ -1,36 +1,174 @@
 from __future__ import annotations
 
-import copy
 import os
 import re
 import stat
 import subprocess
-import threading
 import time
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 from caos.artifacts.calculations import leverage, safe_ratio
-from caos.artifacts.domain import create_assumption, create_note, mark_assumptions_stale, promote_note, save_recommendations, save_report_inputs, save_thesis
-from caos.artifacts.relative_value import save_universe, signal_for_spread
+from caos.artifacts.relative_value import signal_for_spread
 from caos.config import Settings
-from caos.contracts import Depth, RVUniverseRequest, Recommendation, RecommendationMatrixRequest, ThesisRequest
+from caos.contracts import Recommendation
 from caos.http import create_app
+from caos.memory_ledgers import MemoryLedgerSet
+from caos.migrations import apply_migrations
+from caos.postgres_ledgers import PostgresLedgerSet
+from ledger_helpers import remove_source_set
 from caos.methodology.bundle import DeployVBundle
 from caos.methodology.prompt import compile_prompt, validate_invocation_plan
-from caos.publishing.domain import freeze_report
 from caos.publishing.recipes import validate_recipe
-from caos.store import MemoryStore, PostgresStore
-from caos.workflows.domain import WorkflowRuntime
 from fastapi.testclient import TestClient
 
 DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
+MIGRATIONS = Path(__file__).parents[1] / "server" / "migrations"
 
 
 def make_client(tmp_path: Path) -> TestClient:
     settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v")
-    return TestClient(create_app(settings, MemoryStore()))
+    return TestClient(create_app(settings, MemoryLedgerSet()))
+
+
+def _accepted_http_case(client: TestClient, name: str) -> tuple[str, dict[str, object]]:
+    case_id = client.post(
+        "/api/cases", json={"name": name, "issuer": "Issuer", "sector": "Testing"}
+    ).json()["id"]
+    source = client.post(
+        f"/api/cases/{case_id}/sources",
+        files={"file": ("source.txt", b"credit evidence", "text/plain")},
+    ).json()
+    run = client.post(
+        f"/api/cases/{case_id}/runs",
+        json={"pathway": "EARNINGS_UPDATE", "depth": "screen"},
+    ).json()
+    for _ in range(60):
+        state = client.get(f"/api/runs/{run['id']}").json()
+        if state["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    assert state["status"] == "succeeded"
+    accepted = client.post(f"/api/runs/{run['id']}/accept")
+    assert accepted.status_code == 200
+    return case_id, source
+
+
+def test_postgres_legacy_state_table_is_inert(tmp_path: Path) -> None:
+    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("CAOS_TEST_DATABASE_URL is not set")
+
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    base_dsn = database_url.replace("postgresql+psycopg://", "postgresql://")
+    schema = f"caos_inert_{os.urandom(12).hex()}"
+    isolated_dsn = make_conninfo(
+        base_dsn,
+        options=f"-c search_path={schema},public",
+    )
+    schema_created = False
+    with psycopg.connect(base_dsn) as connection:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
+                )
+                schema_created = True
+                cursor.execute(
+                    sql.SQL("SET search_path TO {}, public").format(
+                        sql.Identifier(schema)
+                    )
+                )
+            apply_migrations(connection, MIGRATIONS)
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "CREATE TABLE caos_state ("
+                    "id boolean PRIMARY KEY, revision bigint NOT NULL, state jsonb NOT NULL)"
+                )
+                cursor.execute(
+                    "INSERT INTO caos_state(id, revision, state) "
+                    "VALUES (true, 41, %s::jsonb)",
+                    ('{"foreign":"opaque","payload":[0,1,255]}',),
+                )
+                cursor.execute(
+                    "SELECT id, revision, encode(jsonb_send(state), 'hex') "
+                    "FROM caos_state"
+                )
+                legacy_before = cursor.fetchone()
+                cursor.execute(
+                    "SELECT (SELECT count(*) FROM cases), "
+                    "(SELECT count(*) FROM sources), (SELECT count(*) FROM runs)"
+                )
+                normalized_before = cursor.fetchone()
+            connection.commit()
+
+            settings = Settings(
+                database_url=isolated_dsn,
+                storage_dir=tmp_path / "vault",
+                deploy_v_root=DEPLOY_V,
+            )
+            with TestClient(
+                create_app(settings, PostgresLedgerSet(isolated_dsn))
+            ) as client:
+                _accepted_http_case(client, "Legacy table inertness")
+
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, revision, encode(jsonb_send(state), 'hex') "
+                    "FROM caos_state"
+                )
+                legacy_after = cursor.fetchone()
+                cursor.execute(
+                    "SELECT (SELECT count(*) FROM cases), "
+                    "(SELECT count(*) FROM sources), (SELECT count(*) FROM runs)"
+                )
+                normalized_after = cursor.fetchone()
+            assert legacy_after == legacy_before
+            assert normalized_before == (0, 0, 0)
+            assert all(value > 0 for value in normalized_after)
+        finally:
+            connection.rollback()
+            if schema_created:
+                with connection.cursor() as cursor:
+                    cursor.execute("SET search_path TO public")
+                    cursor.execute(
+                        sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                            sql.Identifier(schema)
+                        )
+                    )
+                connection.commit()
+
+
+def _report_inputs(source_id: str | None = None) -> dict[str, object]:
+    return {
+        "thesis": {
+            "expected_version": 0,
+            "core_thesis": "Defensible",
+            "drivers": [],
+            "risks": [],
+            "catalysts": [],
+            "unresolved_questions": [],
+            "evidence_ids": [source_id] if source_id else [],
+        },
+        "recommendations": {
+            "expected_version": 0,
+            "market_snapshot_id": "market-1",
+            "rows": [
+                {
+                    "instrument_id": "bond",
+                    "instrument": "Bond",
+                    "recommendation": "N/A",
+                    "rationale": "Insufficient basis",
+                    "primary": True,
+                }
+            ],
+            "analytical_dependency_ids": [],
+        },
+    }
 
 
 def test_deploy_v_integrity_and_cp_parse_route_order() -> None:
@@ -65,7 +203,9 @@ def test_end_to_end_source_run_snapshot_and_stale_boundary(tmp_path: Path) -> No
             time.sleep(0.05)
         assert state["status"] == "succeeded"
         assert [node["module_id"] for node in state["nodes"]] == ["CP-PARSE", "CP-0", "CP-L10", "CP-5"]
-        cp0 = next(value for value in client.app.state.store.artifacts.values() if value["run_id"] == run_id and value["module_id"] == "CP-0")
+        cp0_node = next(node for node in state["nodes"] if node["module_id"] == "CP-0")
+        cp0 = client.app.state.ledger_set.runs.get_artifact(cp0_node["artifact_id"])
+        assert cp0 is not None
         other_case_id = client.post(
             "/api/cases",
             json={"name": "Other", "issuer": "Other issuer", "sector": "Other"},
@@ -119,8 +259,8 @@ def test_run_is_pinned_to_immutable_source_set_and_full_upgrade_is_linked(tmp_pa
 
 def test_acceptance_refuses_a_missing_historical_source_set(tmp_path: Path) -> None:
     settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v")
-    store = MemoryStore()
-    with TestClient(create_app(settings, store)) as client:
+    ledger_set = MemoryLedgerSet()
+    with TestClient(create_app(settings, ledger_set)) as client:
         case_id = client.post("/api/cases", json={"name": "Missing set", "issuer": "A", "sector": "A"}).json()["id"]
         client.post(f"/api/cases/{case_id}/sources", files={"file": ("source.txt", b"source", "text/plain")})
         run = client.post(f"/api/cases/{case_id}/runs", json={"pathway": "EARNINGS_UPDATE", "depth": "screen"}).json()
@@ -129,7 +269,7 @@ def test_acceptance_refuses_a_missing_historical_source_set(tmp_path: Path) -> N
             if state["status"] == "succeeded":
                 break
             time.sleep(0.05)
-        store.source_set_history.clear()
+        remove_source_set(ledger_set, run["plan"]["source_set_id"])
         accepted = client.post(f"/api/runs/{run['id']}/accept")
         assert accepted.status_code == 409
         assert accepted.json()["detail"] == "SOURCE_SET_CHANGED"
@@ -159,11 +299,13 @@ def test_read_only_member_cannot_upgrade_a_run(tmp_path: Path) -> None:
 
 def test_research_plan_approval_respects_case_writer_authorization_matrix(tmp_path: Path) -> None:
     settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
-    store = MemoryStore()
-    with TestClient(create_app(settings, store)) as client:
+    ledger_set = MemoryLedgerSet()
+    with TestClient(create_app(settings, ledger_set)) as client:
         case_id = client.post("/api/cases", json={"name": "Role matrix", "issuer": "A", "sector": "A"}).json()["id"]
         run = client.post(f"/api/cases/{case_id}/runs", json={"pathway": "EARNINGS_UPDATE", "depth": "screen"}).json()
-        assert store.add_member(case_id, "local-analyst", "privileged-reader", "READER", "ADMIN")
+        assert ledger_set.runs.add_member(
+            case_id, "local-analyst", "privileged-reader", "READER", "ADMIN"
+        )
 
         reader_actions = [
             ("upload", f"/api/cases/{case_id}/sources", {"files": {"file": ("source.txt", b"source", "text/plain")}}),
@@ -185,7 +327,9 @@ def test_research_plan_approval_respects_case_writer_authorization_matrix(tmp_pa
         for member_role in ("ANALYST", "APPROVER", "ADMIN"):
             for global_role in ("ANALYST", "APPROVER", "ADMIN"):
                 subject = f"{member_role.lower()}-{global_role.lower()}"
-                assert store.add_member(case_id, "local-analyst", subject, member_role, "ADMIN")
+                assert ledger_set.runs.add_member(
+                    case_id, "local-analyst", subject, member_role, "ADMIN"
+                )
                 response = client.post(
                     f"/api/cases/{case_id}/notes",
                     headers={"x-forwarded-user": subject, "x-caos-role": global_role},
@@ -202,6 +346,9 @@ def test_source_withdrawal_versions_active_set_and_stales_assumptions(tmp_path: 
         assert client.post(f"/api/cases/{case_id}/assumptions", json={"statement": "Watch source", "evidence_ids": [source["id"]], "affected_module_ids": ["CP-1"]}).status_code == 201
         withdrawn = client.post(f"/api/cases/{case_id}/sources/{source['id']}/withdraw")
         assert withdrawn.status_code == 200
+        repeated = client.post(f"/api/cases/{case_id}/sources/{source['id']}/withdraw")
+        assert repeated.status_code == 200
+        assert repeated.json() == withdrawn.json()
         detail = client.get(f"/api/cases/{case_id}").json()
         assert detail["source_count"] == 0
         assert detail["source_set"]["version"] == 2
@@ -210,153 +357,14 @@ def test_source_withdrawal_versions_active_set_and_stales_assumptions(tmp_path: 
         assert client.post(f"/api/cases/{case_id}/runs", json={"pathway": "EARNINGS_UPDATE", "depth": "screen"}).json()["status"] == "paused"
 
 
-def test_source_withdrawal_rolls_back_when_persistence_fails(tmp_path: Path) -> None:
-    class FailingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-
-    store = FailingStore()
-    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
-    with TestClient(create_app(settings, store)) as client:
-        case_id = client.post("/api/cases", json={"name": "Withdrawal rollback", "issuer": "A", "sector": "A"}).json()["id"]
-        source = client.post(f"/api/cases/{case_id}/sources", files={"file": ("source.txt", b"source", "text/plain")}).json()
-        client.post(f"/api/cases/{case_id}/assumptions", json={"statement": "Watch source", "evidence_ids": [source["id"]], "affected_module_ids": ["CP-1"]})
-        prior_source_set = store.source_sets[case_id].copy()
-        prior_assumption_status = store.assumptions[case_id][0]["status"]
-        prior_audit = list(store.audit)
-        store.fail_persist = True
-
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            client.post(f"/api/cases/{case_id}/sources/{source['id']}/withdraw")
-
-        assert store.sources[source["id"]]["withdrawn"] is False
-        assert store.source_sets[case_id] == prior_source_set
-        assert set(store.source_set_history) == {prior_source_set["id"]}
-        assert store.assumptions[case_id][0]["status"] == prior_assumption_status
-        assert store.audit == prior_audit
-        store.fail_persist = False
-
-        assert client.post(f"/api/cases/{case_id}/sources/{source['id']}/withdraw").status_code == 200
-        assert store.source_sets[case_id]["version"] == 2
-        assert store.assumptions[case_id][0]["status"] == "STALE"
 
 
-def test_source_withdrawal_persists_staleness_atomically(tmp_path: Path) -> None:
-    class SnapshotStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.persist_calls = 0
-            self.failure_call: int | None = None
-            self.persisted_states: list[dict[str, object]] = []
-
-        def persist(self) -> None:
-            self.persist_calls += 1
-            if self.persist_calls == self.failure_call:
-                raise RuntimeError("database unavailable")
-            self.persisted_states.append({"sources": copy.deepcopy(self.sources), "source_sets": copy.deepcopy(self.source_sets), "assumptions": copy.deepcopy(self.assumptions), "audit": copy.deepcopy(self.audit)})
-
-    store = SnapshotStore()
-    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
-    with TestClient(create_app(settings, store)) as client:
-        case_id = client.post("/api/cases", json={"name": "Atomic withdrawal", "issuer": "A", "sector": "A"}).json()["id"]
-        source = client.post(f"/api/cases/{case_id}/sources", files={"file": ("source.txt", b"source", "text/plain")}).json()
-        client.post(f"/api/cases/{case_id}/assumptions", json={"statement": "Watch source", "evidence_ids": [source["id"]], "affected_module_ids": ["CP-1"]})
-        prior_source_set = store.source_sets[case_id].copy()
-        prior_assumptions = copy.deepcopy(store.assumptions[case_id])
-        prior_states = list(store.persisted_states)
-        store.failure_call = store.persist_calls + 1
-
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            client.post(f"/api/cases/{case_id}/sources/{source['id']}/withdraw")
-
-        assert store.sources[source["id"]]["withdrawn"] is False
-        assert store.source_sets[case_id] == prior_source_set
-        assert store.assumptions[case_id] == prior_assumptions
-        assert store.persisted_states == prior_states
-        store.failure_call = None
-
-        assert client.post(f"/api/cases/{case_id}/sources/{source['id']}/withdraw").status_code == 200
-        assert store.persisted_states[-1]["sources"][source["id"]]["withdrawn"] is True
-        assert store.persisted_states[-1]["assumptions"][case_id][0]["status"] == "STALE"
-        assert store.persisted_states[-1]["audit"][-1]["action"] == "source.withdrawn"
 
 
-def test_stale_assumption_marking_rolls_back_when_persistence_fails() -> None:
-    class FailingStore(MemoryStore):
-        def persist(self) -> None:
-            raise RuntimeError("database unavailable")
-
-    store = FailingStore()
-    store.assumptions["case"] = [{"evidence_ids": ["source"], "stale": False, "status": "PROVISIONAL"}]
-
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        mark_assumptions_stale(store, "case", {"source"})
-
-    assert store.assumptions["case"] == [{"evidence_ids": ["source"], "stale": False, "status": "PROVISIONAL"}]
 
 
-def test_report_freeze_persists_and_rolls_back_when_persistence_fails() -> None:
-    class FailingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-            self.persist_calls = 0
-
-        def persist(self) -> None:
-            self.persist_calls += 1
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-
-    def freeze(store: MemoryStore, case_id: str) -> dict[str, object]:
-        return freeze_report(store, case_id, "analyst", {"id": "snapshot", "accepted_at": "2026-08-22T00:00:00+00:00"}, {"version": 1, "core_thesis": "Defensible"}, {"version": 1, "rows": [{"instrument": "Bond", "recommendation": "N/A", "primary": True, "rationale": "Insufficient basis"}], "accepted_snapshot_id": "snapshot", "stale": False}, False)
-
-    empty_store = FailingStore()
-    empty_store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        freeze(empty_store, "empty")
-    assert not empty_store.reports
-
-    store = FailingStore()
-    saved = freeze(store, "case")
-    assert store.persist_calls == 1 and store.reports["case"]["id"] == saved["id"]
-    prior_report = copy.deepcopy(store.reports["case"])
-    store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        freeze(store, "case")
-    assert store.reports["case"] == prior_report
 
 
-def test_report_freeze_persists_audit_with_report() -> None:
-    class SnapshotStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-            self.persisted_states: list[dict[str, object]] = []
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-            self.persisted_states.append({"reports": copy.deepcopy(self.reports), "audit": copy.deepcopy(self.audit)})
-
-    def freeze(store: MemoryStore) -> dict[str, object]:
-        return freeze_report(store, "case", "analyst", {"id": "snapshot", "accepted_at": "2026-08-22T00:00:00+00:00"}, {"version": 1, "core_thesis": "Defensible"}, {"version": 1, "rows": [{"instrument": "Bond", "recommendation": "N/A", "primary": True, "rationale": "Insufficient basis"}], "accepted_snapshot_id": "snapshot", "stale": False}, False)
-
-    store = SnapshotStore()
-    report = freeze(store)
-    assert store.persisted_states[-1]["reports"]["case"]["id"] == report["id"]
-    assert store.persisted_states[-1]["audit"][-1]["action"] == "report.frozen"
-    prior_audit = copy.deepcopy(store.audit)
-    store.fail_persist = True
-
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        freeze(store)
-
-    assert store.audit == prior_audit
 
 
 def test_withdrawn_sources_are_rejected_for_new_evidence_references(tmp_path: Path) -> None:
@@ -377,84 +385,163 @@ def test_withdrawn_sources_are_rejected_for_new_evidence_references(tmp_path: Pa
         assert client.get(f"/api/cases/{case_id}/assumptions").json() == []
 
 
-def test_report_inputs_rejects_withdrawn_source_evidence() -> None:
-    store = MemoryStore()
-    case_id = store.create_case("Report", "Issuer", "Sector", "analyst")["id"]
-    store.sources["src-withdrawn"] = {"id": "src-withdrawn", "case_id": case_id, "withdrawn": True}
-    thesis = ThesisRequest(expected_version=0, core_thesis="Defensible", evidence_ids=["src-withdrawn"])
-    recommendations = RecommendationMatrixRequest(expected_version=0, market_snapshot_id="market-1", rows=[{"instrument_id": "bond", "instrument": "Bond", "recommendation": "N/A", "rationale": "Insufficient basis", "primary": True}])
-
-    with pytest.raises(ValueError, match="EVIDENCE_SOURCE_WITHDRAWN"):
-        save_report_inputs(store, case_id, "analyst", thesis, recommendations)
-
-
-def test_evidence_validation_and_thesis_write_are_atomic_against_withdrawal() -> None:
-    class BlockingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.append_started = threading.Event()
-            self.allow_append = threading.Event()
-
-        def append_version(self, *args: object, **kwargs: object) -> dict[str, object]:
-            self.append_started.set()
-            assert self.allow_append.wait(timeout=1)
-            return super().append_version(*args, **kwargs)
-
-    store = BlockingStore()
-    case_id = store.create_case("Atomic evidence", "Issuer", "Sector", "analyst")["id"]
-    store.sources["src-active"] = {"id": "src-active", "case_id": case_id, "withdrawn": False}
-    request = ThesisRequest(expected_version=0, core_thesis="Defensible", evidence_ids=["src-active"])
-    errors: list[Exception] = []
-    withdrawn = threading.Event()
-
-    def save() -> None:
-        try:
-            save_thesis(store, case_id, "analyst", request)
-        except Exception as exc:
-            errors.append(exc)
-
-    def withdraw() -> None:
-        with store.lock:
-            store.sources["src-active"]["withdrawn"] = True
-        withdrawn.set()
-
-    save_thread = threading.Thread(target=save)
-    withdraw_thread = threading.Thread(target=withdraw)
-
-    save_thread.start()
-    assert store.append_started.wait(timeout=1)
-    withdraw_thread.start()
-    assert not withdrawn.wait(timeout=0.05)
-    store.allow_append.set()
-    save_thread.join(timeout=1)
-    withdraw_thread.join(timeout=1)
-
-    assert not errors
-    assert withdrawn.is_set()
-    assert store.theses[case_id][0]["evidence_ids"] == ["src-active"]
-
-
-def test_promoted_note_can_be_repromoted_after_its_source_is_withdrawn(tmp_path: Path) -> None:
+def test_report_inputs_route_rejects_withdrawn_source_evidence(
+    tmp_path: Path,
+) -> None:
     with make_client(tmp_path) as client:
-        case_id = client.post("/api/cases", json={"name": "Note restore", "issuer": "A", "sector": "A"}).json()["id"]
-        note = client.post(f"/api/cases/{case_id}/notes", json={"body": "Debt remains 100"}).json()
-        first = client.post(f"/api/cases/{case_id}/notes/{note['id']}/promote").json()
-        repeated = client.post(f"/api/cases/{case_id}/notes/{note['id']}/promote").json()
+        case_id, source = _accepted_http_case(client, "Withdrawn report input")
+        source_id = str(source["id"])
+        assert client.post(
+            f"/api/cases/{case_id}/sources/{source_id}/withdraw"
+        ).status_code == 200
 
+        rejected = client.post(
+            f"/api/cases/{case_id}/report-inputs",
+            json=_report_inputs(source_id),
+        )
+
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"] == "EVIDENCE_SOURCE_WITHDRAWN"
+        assert client.get(f"/api/cases/{case_id}/thesis").json()["current"] is None
+        assert (
+            client.get(f"/api/cases/{case_id}/recommendations").json()["current"]
+            is None
+        )
+
+
+def test_promoted_note_can_be_repromoted_after_prior_source_withdrawal(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        case_id = client.post(
+            "/api/cases",
+            json={"name": "Note restore", "issuer": "Issuer", "sector": "Testing"},
+        ).json()["id"]
+        note = client.post(
+            f"/api/cases/{case_id}/notes", json={"body": "Debt remains 100"}
+        ).json()
+        first = client.post(
+            f"/api/cases/{case_id}/notes/{note['id']}/promote"
+        ).json()
+        repeated = client.post(
+            f"/api/cases/{case_id}/notes/{note['id']}/promote"
+        ).json()
         assert repeated["promoted_source_id"] == first["promoted_source_id"]
-        client.app.state.store.sources.pop(first["promoted_source_id"])
-        recovered = client.post(f"/api/cases/{case_id}/notes/{note['id']}/promote").json()
-        assert recovered["promoted_source_id"] != first["promoted_source_id"]
-        assert client.get(f"/api/cases/{case_id}").json()["source_set"]["source_ids"] == [recovered["promoted_source_id"]]
 
-        assert client.post(f"/api/cases/{case_id}/sources/{recovered['promoted_source_id']}/withdraw").status_code == 200
-        restored = client.post(f"/api/cases/{case_id}/notes/{note['id']}/promote").json()
+        assert client.post(
+            f"/api/cases/{case_id}/sources/{first['promoted_source_id']}/withdraw"
+        ).status_code == 200
+        restored = client.post(
+            f"/api/cases/{case_id}/notes/{note['id']}/promote"
+        )
 
-        assert restored["promoted_source_id"] != recovered["promoted_source_id"]
+        assert restored.status_code == 200
+        assert restored.json()["promoted_source_id"] != first["promoted_source_id"]
         detail = client.get(f"/api/cases/{case_id}").json()
         assert detail["source_count"] == 1
-        assert detail["source_set"]["version"] == 4
-        assert detail["source_set"]["source_ids"] == [restored["promoted_source_id"]]
+        assert detail["source_set"]["source_ids"] == [
+            restored.json()["promoted_source_id"]
+        ]
+
+
+def test_report_preview_approver_governance_and_all_exports(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        case_id, _source = _accepted_http_case(client, "Publication governance")
+        inputs = client.post(
+            f"/api/cases/{case_id}/report-inputs", json=_report_inputs()
+        )
+        assert inputs.status_code == 201
+        frozen = client.post(
+            f"/api/cases/{case_id}/reports/freeze",
+            json={"thesis_version": 1, "recommendation_version": 1},
+        )
+        assert frozen.status_code == 201
+        report = frozen.json()
+        approval = {
+            "expected_status": "PENDING_APPROVAL",
+            "preview_digest": report["preview_digest"],
+            "input_fingerprint": report["input_fingerprint"],
+            "comment": "Reviewed",
+        }
+
+        wrong_preview = client.post(
+            f"/api/cases/{case_id}/reports/approve",
+            headers={"x-caos-role": "APPROVER"},
+            json={**approval, "preview_digest": "wrong"},
+        )
+        analyst_only = client.post(
+            f"/api/cases/{case_id}/reports/approve", json=approval
+        )
+        approved = client.post(
+            f"/api/cases/{case_id}/reports/approve",
+            headers={"x-caos-role": "APPROVER"},
+            json=approval,
+        )
+
+        assert wrong_preview.status_code == 409
+        assert wrong_preview.json()["detail"] == "STALE_PREVIEW"
+        assert analyst_only.status_code == 403
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "APPROVED"
+
+        markdown = client.get(f"/api/cases/{case_id}/reports/export/md")
+        pdf = client.get(f"/api/cases/{case_id}/reports/export/pdf")
+        workbook = client.get(f"/api/cases/{case_id}/reports/export/xlsx")
+        assert markdown.status_code == pdf.status_code == workbook.status_code == 200
+        assert b"Report digest" in markdown.content
+        assert pdf.content.startswith(b"%PDF")
+        assert workbook.content.startswith(b"PK")
+
+
+def test_report_approval_rejects_snapshot_after_visible_switch(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        case_id, _source = _accepted_http_case(client, "Visible authority switch")
+        assert client.post(
+            f"/api/cases/{case_id}/report-inputs", json=_report_inputs()
+        ).status_code == 201
+        frozen_response = client.post(
+            f"/api/cases/{case_id}/reports/freeze",
+            json={"thesis_version": 1, "recommendation_version": 1},
+        )
+        assert frozen_response.status_code == 201
+        frozen = frozen_response.json()
+
+        next_run = client.post(
+            f"/api/cases/{case_id}/runs",
+            json={"pathway": "EARNINGS_UPDATE", "depth": "screen"},
+        ).json()
+        for _ in range(60):
+            state = client.get(f"/api/runs/{next_run['id']}").json()
+            if state["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        assert state["status"] == "succeeded"
+        next_snapshot = client.post(f"/api/runs/{next_run['id']}/accept")
+        assert next_snapshot.status_code == 200
+        assert client.post(
+            f"/api/cases/{case_id}/snapshot/switch",
+            json={"snapshot_id": next_snapshot.json()["id"]},
+        ).status_code == 200
+
+        rejected = client.post(
+            f"/api/cases/{case_id}/reports/approve",
+            headers={"x-caos-role": "APPROVER"},
+            json={
+                "expected_status": "PENDING_APPROVAL",
+                "preview_digest": frozen["preview_digest"],
+                "input_fingerprint": frozen["input_fingerprint"],
+            },
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == "STALE_PREVIEW"
+        assert client.get(f"/api/cases/{case_id}/reports").json() == frozen
+
+
+
+
+
+
 
 
 def test_full_credit_model_dependent_node_hands_off_to_model_builder(tmp_path: Path) -> None:
@@ -468,7 +555,9 @@ def test_full_credit_model_dependent_node_hands_off_to_model_builder(tmp_path: P
                 break
             time.sleep(0.05)
         assert state["status"] == "succeeded"
-        model_artifact = next(value for value in client.app.state.store.artifacts.values() if value["run_id"] == run["id"] and value["module_id"] == "CP-2G")
+        model_node = next(node for node in state["nodes"] if node["module_id"] == "CP-2G")
+        model_artifact = client.app.state.ledger_set.runs.get_artifact(model_node["artifact_id"])
+        assert model_artifact is not None
         assert model_artifact["payload"]["status"] == "COMPLETE"
         assert "accepted-run CP-MODEL build" in model_artifact["payload"]["summary"]
         assert model_artifact["payload"]["narrative"]["exceptions"] == "Worksheet calculation runs after accepted-run handoff in Model Builder; this artifact emits no workbook values."
@@ -494,21 +583,6 @@ def test_analyst_versions_are_cas_and_recommendation_vocabulary_is_exact(tmp_pat
         assert client.post(f"/api/cases/{case_id}/recommendations", json=matrix).status_code == 422
 
 
-def test_report_inputs_version_together() -> None:
-    store = MemoryStore()
-    case_id = store.create_case("Report", "Issuer", "Sector", "analyst")["id"]
-    thesis = ThesisRequest(expected_version=0, core_thesis="Defensible")
-    recommendations = RecommendationMatrixRequest(
-        expected_version=0,
-        market_snapshot_id="market-1",
-        rows=[{"instrument_id": "bond", "instrument": "Bond", "recommendation": "N/A", "rationale": "Insufficient basis", "primary": True}],
-    )
-
-    saved = save_report_inputs(store, case_id, "analyst", thesis, recommendations)
-    assert saved["thesis"]["version"] == saved["recommendations"]["version"] == 1
-    with pytest.raises(ValueError, match="VERSION_CONFLICT"):
-        save_report_inputs(store, case_id, "analyst", thesis, recommendations)
-    assert len(store.theses[case_id]) == len(store.recommendations[case_id]) == 1
 
 
 def test_financial_and_rv_guards() -> None:
@@ -538,165 +612,16 @@ def test_rv_currency_is_normalized_before_comparability_checks(tmp_path: Path) -
         assert client.post(f"/api/cases/{case_id}/rv", json={"source_version": "closing-1", "rows": [{**rows[0], "currency": "ßßß"}]}).status_code == 422
 
 
-def test_rv_universe_is_persisted_with_its_version() -> None:
-    class PersistingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.persist_calls = 0
-
-        def persist(self) -> None:
-            self.persist_calls += 1
-
-    store = PersistingStore()
-    case_id = store.create_case("RV", "Issuer", "Sector", "analyst")["id"]
-    store.persist_calls = 0
-    request = RVUniverseRequest(source_version="close", rows=[{"instrument": "Bond", "observation_date": "2026-08-21", "source_version": "close", "currency": "USD", "spread_bps": 400, "seniority": "1L", "maturity": "2030-01-01", "duration": 3}])
-
-    saved = save_universe(store, case_id, "analyst", request)
-
-    assert store.persist_calls == 1
-    assert store.rv_universes[case_id]["id"] == saved["id"]
 
 
-def test_rv_universe_rolls_back_when_persistence_fails() -> None:
-    class FailingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-
-    store = FailingStore()
-    case_id = store.create_case("RV", "Issuer", "Sector", "analyst")["id"]
-    request = RVUniverseRequest(source_version="close", rows=[{"instrument": "Bond", "observation_date": "2026-08-21", "source_version": "close", "currency": "USD", "spread_bps": 400, "seniority": "1L", "maturity": "2030-01-01", "duration": 3}])
-    store.fail_persist = True
-
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        save_universe(store, case_id, "analyst", request)
-
-    assert case_id not in store.rv_universes
-    store.fail_persist = False
-    assert save_universe(store, case_id, "analyst", request)["version"] == 1
 
 
-def test_rv_universe_persists_audit_with_version() -> None:
-    class SnapshotStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-            self.persisted_states: list[dict[str, object]] = []
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-            self.persisted_states.append({"rv_universes": copy.deepcopy(self.rv_universes), "audit": copy.deepcopy(self.audit)})
-
-    request = RVUniverseRequest(source_version="close", rows=[{"instrument": "Bond", "observation_date": "2026-08-21", "source_version": "close", "currency": "USD", "spread_bps": 400, "seniority": "1L", "maturity": "2030-01-01", "duration": 3}])
-    store = SnapshotStore()
-    universe = save_universe(store, "case", "analyst", request)
-    assert store.persisted_states[-1]["rv_universes"]["case"]["id"] == universe["id"]
-    assert store.persisted_states[-1]["audit"][-1]["action"] == "rv.universe_versioned"
-    prior_audit = copy.deepcopy(store.audit)
-    store.fail_persist = True
-
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        save_universe(store, "case", "analyst", request)
-
-    assert store.audit == prior_audit
 
 
-def test_note_creation_rolls_back_when_persistence_fails() -> None:
-    class FailingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-
-    store = FailingStore()
-    case_id = store.create_case("Notes", "Issuer", "Sector", "analyst")["id"]
-    empty_store = FailingStore()
-    empty_case_id = empty_store.create_case("Empty notes", "Issuer", "Sector", "analyst")["id"]
-    empty_store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        create_note(empty_store, empty_case_id, "analyst", "phantom")
-    assert empty_case_id not in empty_store.notes
-
-    original = create_note(store, case_id, "analyst", "original")
-    store.fail_persist = True
-
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        create_note(store, case_id, "analyst", "phantom")
-
-    assert store.notes[case_id] == [original]
-    store.fail_persist = False
-    assert create_note(store, case_id, "analyst", "recovered")["body"] == "recovered"
 
 
-def test_assumption_creation_rolls_back_when_persistence_fails() -> None:
-    class FailingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-
-    store = FailingStore()
-    case_id = store.create_case("Assumptions", "Issuer", "Sector", "analyst")["id"]
-    empty_store = FailingStore()
-    empty_case_id = empty_store.create_case("Empty assumptions", "Issuer", "Sector", "analyst")["id"]
-    empty_store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        create_assumption(empty_store, empty_case_id, "analyst", "phantom", [], ["CP-1"])
-    assert empty_case_id not in empty_store.assumptions
-
-    original = create_assumption(store, case_id, "analyst", "original", [], ["CP-1"])
-    store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        create_assumption(store, case_id, "analyst", "phantom", [], ["CP-1"])
-    assert store.assumptions[case_id] == [original]
-    store.fail_persist = False
-    assert create_assumption(store, case_id, "analyst", "recovered", [], ["CP-1"])["statement"] == "recovered"
 
 
-def test_note_promotion_rolls_back_when_persistence_fails() -> None:
-    class FailingStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-
-    empty_store = FailingStore()
-    empty_case_id = empty_store.create_case("Empty promotion", "Issuer", "Sector", "analyst")["id"]
-    empty_note = create_note(empty_store, empty_case_id, "analyst", "body")
-    empty_store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        promote_note(empty_store, empty_case_id, empty_note["id"], "analyst")
-    assert empty_store.notes[empty_case_id][0]["promoted"] is False
-    assert not empty_store.sources and empty_case_id not in empty_store.source_sets and not empty_store.source_set_history
-
-    store = FailingStore()
-    case_id = store.create_case("Promotion", "Issuer", "Sector", "analyst")["id"]
-    store.register_source_set({"id": "set_original", "case_id": case_id, "version": 1, "source_ids": [], "created_by": "analyst", "created_at": "2026-08-22T00:00:00+00:00"})
-    note = create_note(store, case_id, "analyst", "body")
-    original_set = store.source_sets[case_id].copy()
-    store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        promote_note(store, case_id, note["id"], "analyst")
-    assert store.notes[case_id][0]["promoted"] is False
-    assert not store.sources and store.source_sets[case_id] == original_set and set(store.source_set_history) == {"set_original"}
-    store.fail_persist = False
-    assert promote_note(store, case_id, note["id"], "analyst")["promoted"] is True
-    assert store.source_sets[case_id]["version"] == 2
 
 
 def test_prompt_compiler_keeps_document_text_below_typed_authority() -> None:
@@ -715,7 +640,7 @@ def test_visual_recipe_is_declarative_and_fails_closed() -> None:
 
 def test_production_rejects_forged_forwarded_identity(tmp_path: Path) -> None:
     settings = Settings(environment="production", database_url="postgresql://db", edge_proxy_secret="real-edge", session_secret="real-session", storage_dir=tmp_path, deploy_v_root=DEPLOY_V)
-    with TestClient(create_app(settings, MemoryStore())) as client:
+    with TestClient(create_app(settings, MemoryLedgerSet())) as client:
         assert client.get("/api/me", headers={"x-forwarded-user": "attacker"}).status_code == 401
         assert client.get("/api/me", headers={"x-edge-authorization": "real-edge", "x-forwarded-user": "analyst"}).status_code == 200
         assert client.get("/api/me", headers={"x-edge-authorization": "real-edge", "x-forwarded-user": "analyst", "x-caos-role": "ADMIN"}).json()["role"] == "READER"
@@ -730,116 +655,40 @@ def test_production_rejects_forged_forwarded_identity(tmp_path: Path) -> None:
         assert draft.status_code == 201
         draft_id = draft.json()["id"]
         assert client.post(f"/api/admin/drafts/{draft_id}/validate", headers=admin_step_up).json()["status"] == "VALIDATED"
+        stale = client.app.state.ledger_set.publications.create_methodology_draft(
+            {
+                "expected_build_id": "superseded-build",
+                "module_id": "CP-0",
+                "field": "reader_question",
+                "before": "Before",
+                "after": "After",
+                "rationale": "Stale authority fixture",
+                "semantic_diff": {"before": "Before", "after": "After"},
+            },
+            "admin",
+        )
+        rejected = client.post(
+            f"/api/admin/drafts/{stale['id']}/validate", headers=admin_step_up
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"] == "draft does not validate against the current authority"
         confirmed = client.post(f"/api/admin/drafts/{draft_id}/confirm", headers=admin_step_up, json={"confirmation": "CONFIRM_DRAFT"})
         assert confirmed.json()["status"] == "CONFIRMED_PENDING_SIGNED_AUTHORITY"
 
 
-def test_methodology_draft_lifecycle_persists_audits_atomically(tmp_path: Path) -> None:
-    class SnapshotStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-            self.persisted_states: list[dict[str, object]] = []
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-            self.persisted_states.append({"drafts": copy.deepcopy(self.methodology_drafts), "audit": copy.deepcopy(self.audit)})
-
-    store = SnapshotStore()
-    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
-    headers = {"x-caos-role": "ADMIN", "x-oidc-step-up": settings.session_secret}
-    payload = {"expected_build_id": DeployVBundle(DEPLOY_V).build_id, "module_id": "CP-0", "field": "reader_question", "before": "Before", "after": "After", "rationale": "Tested change"}
-    with TestClient(create_app(settings, store)) as client:
-        store.fail_persist = True
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            client.post("/api/admin/drafts", headers=headers, json=payload)
-        assert not store.methodology_drafts and not store.audit
-
-        store.fail_persist = False
-        draft = client.post("/api/admin/drafts", headers=headers, json=payload).json()
-        assert store.persisted_states[-1]["audit"][-1]["action"] == "methodology.draft_created"
-        prior_audit = copy.deepcopy(store.audit)
-
-        store.fail_persist = True
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            client.post(f"/api/admin/drafts/{draft['id']}/validate", headers=headers)
-        assert store.methodology_drafts[draft["id"]]["status"] == "DRAFT"
-        assert store.audit == prior_audit
-
-        store.fail_persist = False
-        client.post(f"/api/admin/drafts/{draft['id']}/validate", headers=headers)
-        assert store.persisted_states[-1]["audit"][-1]["action"] == "methodology.draft_validated"
-        prior_audit = copy.deepcopy(store.audit)
-
-        store.fail_persist = True
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            client.post(f"/api/admin/drafts/{draft['id']}/confirm", headers=headers, json={"confirmation": "CONFIRM_DRAFT"})
-        assert store.methodology_drafts[draft["id"]]["status"] == "VALIDATED"
-        assert store.audit == prior_audit
-
-        store.fail_persist = False
-        client.post(f"/api/admin/drafts/{draft['id']}/confirm", headers=headers, json={"confirmation": "CONFIRM_DRAFT"})
-        assert store.persisted_states[-1]["audit"][-1]["action"] == "methodology.draft_confirmed"
 
 
-def test_analyst_content_persists_governance_audits_with_state() -> None:
-    class SnapshotStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.persisted_states: list[dict[str, object]] = []
-            self.fail_persist = False
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-            self.persisted_states.append({
-                "theses": copy.deepcopy(self.theses),
-                "recommendations": copy.deepcopy(self.recommendations),
-                "notes": copy.deepcopy(self.notes),
-                "assumptions": copy.deepcopy(self.assumptions),
-                "sources": copy.deepcopy(self.sources),
-                "source_sets": copy.deepcopy(self.source_sets),
-                "audit": copy.deepcopy(self.audit),
-            })
-
-    store = SnapshotStore()
-    case_id = store.create_case("Analyst content", "Issuer", "Sector", "analyst")["id"]
-    thesis = ThesisRequest(expected_version=0, core_thesis="Defensible", drivers=[], risks=[], catalysts=[], unresolved_questions=[], evidence_ids=[])
-    recommendations = RecommendationMatrixRequest(expected_version=0, market_snapshot_id="market-1", rows=[{"instrument_id": "bond", "instrument": "Bond", "recommendation": "N/A", "rationale": "Insufficient basis", "primary": True}])
-
-    failed_store = SnapshotStore()
-    failed_case_id = failed_store.create_case("Failed analyst content", "Issuer", "Sector", "analyst")["id"]
-    failed_store.fail_persist = True
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        save_report_inputs(failed_store, failed_case_id, "analyst", thesis, recommendations)
-    assert failed_case_id not in failed_store.theses
-    assert failed_case_id not in failed_store.recommendations
-    assert failed_store.audit[-1]["action"] == "case.created"
-
-    save_thesis(store, case_id, "analyst", thesis)
-    assert store.persisted_states[-1]["audit"][-1]["action"] == "thesis.versioned"
-    save_recommendations(store, case_id, "analyst", recommendations)
-    assert store.persisted_states[-1]["audit"][-1]["action"] == "recommendation.versioned"
-    save_report_inputs(store, case_id, "analyst", thesis.model_copy(update={"expected_version": 1}), recommendations.model_copy(update={"expected_version": 1}))
-    assert [event["action"] for event in store.persisted_states[-1]["audit"][-2:]] == ["thesis.versioned", "recommendation.versioned"]
-    note = create_note(store, case_id, "analyst", "Source-backed analyst note")
-    assert store.persisted_states[-1]["audit"][-1]["action"] == "note.created"
-    promote_note(store, case_id, note["id"], "analyst")
-    assert store.persisted_states[-1]["audit"][-1]["action"] == "note.promoted"
-    create_assumption(store, case_id, "analyst", "Refinancing remains available", [], ["CP-4"])
-    assert store.persisted_states[-1]["audit"][-1]["action"] == "assumption.created"
 
 
 def test_api_documentation_is_development_only(tmp_path: Path) -> None:
     root = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
     development = Settings(storage_dir=tmp_path / "development", deploy_v_root=root)
     production = Settings(environment="production", database_url="postgresql://db", edge_proxy_secret="real-edge", session_secret="real-session", storage_dir=tmp_path / "production", deploy_v_root=root)
-    with TestClient(create_app(development, MemoryStore())) as client:
+    with TestClient(create_app(development, MemoryLedgerSet())) as client:
         assert client.get("/api/docs").status_code == 200
         assert client.get("/openapi.json").status_code == 200
         assert client.get("/docs/oauth2-redirect").status_code == 200
-    with TestClient(create_app(production, MemoryStore())) as client:
+    with TestClient(create_app(production, MemoryLedgerSet())) as client:
         assert client.get("/api/docs").status_code == 404
         assert client.get("/openapi.json").status_code == 404
         assert client.get("/docs/oauth2-redirect").status_code == 404
@@ -1079,285 +928,39 @@ def test_worker_respects_poll_interval_while_job_is_active(monkeypatch: pytest.M
 
     class ActiveStore:
         def __init__(self) -> None:
-            self.lock = threading.Lock()
-            self.runs = {"run-1": {"id": "run-1", "created_by": "analyst", "status": "running"}}
-            self.refreshes = 0
+            self.reads = 0
 
-        def refresh(self) -> None:
-            self.refreshes += 1
-            if self.refreshes > 3:
+        def pending_runs(self) -> list[tuple[str, str]]:
+            self.reads += 1
+            if self.reads > 3:
                 raise StopIteration
+            return [("run-1", "analyst")]
+
+        def pending_jobs(self) -> list[tuple[str, str, str]]:
+            raise AssertionError("model jobs must not be read without a model runtime")
 
     class PendingFuture:
         def done(self) -> bool:
             return False
 
     class Runtime:
-        def __init__(self) -> None:
-            self.executor = SimpleNamespace(submit=lambda *_args: PendingFuture())
+        def schedule(self, *_args: object) -> PendingFuture:
+            return PendingFuture()
 
-        def _execute(self, *_args: object) -> None:
-            return None
-
-    store = ActiveStore()
+    runs = ActiveStore()
     sleeps: list[float] = []
     monkeypatch.setenv("WORKER_POLL_SECONDS", poll_value)
-    monkeypatch.setattr(worker_module, "app", SimpleNamespace(state=SimpleNamespace(runtime=Runtime(), store=store)))
+    monkeypatch.setattr(
+        worker_module,
+        "app",
+        SimpleNamespace(
+            state=SimpleNamespace(
+                runtime=Runtime(),
+                ledger_set=SimpleNamespace(runs=runs, models=runs),
+            )
+        ),
+    )
     monkeypatch.setattr(worker_module.time, "sleep", sleeps.append)
     with pytest.raises(StopIteration):
         worker_module.main()
     assert sleeps == [expected, expected, expected]
-
-
-def test_expired_start_attempt_is_not_finalized(tmp_path: Path) -> None:
-    class ExpiringStore(MemoryStore):
-        def update_run_fenced(self, run_id: str, attempt_token: str, **changes: object) -> None:
-            if changes.get("status") == "running":
-                with self.lock:
-                    self.jobs[run_id]["lease_until"] = time.monotonic() - 1
-            super().update_run_fenced(run_id, attempt_token, **changes)
-
-    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v")
-    store = ExpiringStore()
-    runtime = WorkflowRuntime(store, DeployVBundle(settings.deploy_v_root), settings)
-    case = store.create_case("Lease", "Issuer", "Sector", "analyst")
-    run = store.create_run(case["id"], "analyst", runtime.bundle.compile("EARNINGS_UPDATE", "screen", None), [])
-    runtime._execute(run["id"], "analyst")
-    runtime.close()
-    assert store.jobs[run["id"]]["status"] == "running"
-    assert store.jobs[run["id"]]["budget_reserved"] == 1
-
-
-def test_run_is_queued_only_after_its_nodes_are_durable(tmp_path: Path) -> None:
-    class SnapshotStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.persisted_states: list[dict[str, object]] = []
-
-        def persist(self) -> None:
-            self.persisted_states.append({"runs": copy.deepcopy(self.runs), "nodes": copy.deepcopy(self.nodes)})
-
-    store = SnapshotStore()
-    settings = Settings(environment="production", database_url="postgresql://local/qa", edge_proxy_secret="local-edge", session_secret="local-session", clamav_host="local-clamav", storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
-    runtime = WorkflowRuntime(store, DeployVBundle(settings.deploy_v_root), settings)
-    case = store.create_case("Queue boundary", "Synthetic Issuer", "Testing", "analyst")
-    store.sources["src_qa"] = {"id": "src_qa", "case_id": case["id"], "withdrawn": False}
-    store.register_source_set({"id": "set_qa", "case_id": case["id"], "version": 1, "source_ids": ["src_qa"], "created_by": "analyst", "created_at": "2026-08-22T00:00:00+00:00"})
-
-    run = runtime.start_run(case["id"], "analyst", "EARNINGS_UPDATE", Depth.SCREEN, [])
-    runtime.close()
-    queued = [state for state in store.persisted_states if state["runs"].get(run["id"], {}).get("status") == "queued"]
-
-    assert queued
-    assert all(state["runs"][run["id"]]["node_ids"] for state in queued)
-    assert all(set(state["runs"][run["id"]]["node_ids"]) <= set(state["nodes"]) for state in queued)
-
-
-def test_postgres_refresh_skips_unchanged_state() -> None:
-    class Cursor:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-
-        def __enter__(self) -> "Cursor":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def execute(self, *_: object) -> None:
-            return None
-
-        def fetchone(self) -> tuple[int, dict[str, object]]:
-            return self.database.row
-
-    class Connection:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-
-        def __enter__(self) -> "Connection":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def cursor(self) -> Cursor:
-            return Cursor(self.database)
-
-    class Database:
-        def __init__(self) -> None:
-            self.row = (7, {"cases": {"stale": {"id": "stale"}}})
-
-        def connect(self, _: str) -> Connection:
-            return Connection(self)
-
-    database = Database()
-    store = PostgresStore.__new__(PostgresStore)
-    MemoryStore.__init__(store)
-    store.cases["local"] = {"id": "local"}
-    store._dsn = "postgresql://local/qa"
-    store._psycopg = database
-    store._state_revision = 7
-    store._base_state = store._snapshot()
-
-    store.refresh()
-    assert set(store.cases) == {"local"}
-
-    database.row = (8, {"cases": {"current": {"id": "current"}}})
-    store.refresh()
-    assert set(store.cases) == {"current"}
-
-
-def test_postgres_adopts_state_only_after_commit() -> None:
-    class Cursor:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-            self.result: object = None
-
-        def __enter__(self) -> "Cursor":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
-            if query.startswith("SELECT 1 FROM jobs"):
-                self.result = (1,)
-            elif query.startswith("SELECT revision"):
-                self.result = copy.deepcopy(self.database.row)
-            elif query.startswith("UPDATE caos_state"):
-                self.database.pending = (params[0], copy.deepcopy(params[1]))
-
-        def fetchone(self) -> object:
-            return self.result
-
-    class Connection:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-
-        def __enter__(self) -> "Connection":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            self.database.pending = None
-            return None
-
-        def cursor(self) -> Cursor:
-            return Cursor(self.database)
-
-        def commit(self) -> None:
-            if self.database.fail_commit:
-                raise RuntimeError("commit failed")
-            assert self.database.pending is not None
-            self.database.row = self.database.pending
-            self.database.pending = None
-
-    class Database:
-        def __init__(self) -> None:
-            self.row: tuple[int, dict[str, object]]
-            self.pending: tuple[int, dict[str, object]] | None = None
-            self.fail_commit = False
-
-        def connect(self, _: str) -> Connection:
-            return Connection(self)
-
-    database = Database()
-    store = PostgresStore.__new__(PostgresStore)
-    MemoryStore.__init__(store)
-    store._dsn = "postgresql://local/qa"
-    store._psycopg = database
-    store._jsonb = lambda value: value
-    store._state_revision = 1
-    store._base_state = store._snapshot()
-    current = copy.deepcopy(store._base_state)
-    current["cases"]["external"] = {
-        "id": "external",
-        "name": "External",
-        "issuer": "External issuer",
-        "sector": "Testing",
-        "created_by": "analyst",
-        "created_at": "2026-08-23T00:00:00+00:00",
-    }
-    database.row = (2, current)
-
-    store.cases["local"] = {"id": "local"}
-    database.fail_commit = True
-    with pytest.raises(RuntimeError, match="commit failed"):
-        store.persist()
-    assert set(store.cases) == {"external"}
-    assert store._state_revision == 2
-
-    database.fail_commit = False
-    store.runs["run"] = {
-        "id": "run",
-        "case_id": "external",
-        "status": "queued",
-        "plan": {},
-        "accepted_snapshot_id": None,
-        "created_by": "analyst",
-        "created_at": "2026-08-23T00:00:00+00:00",
-        "error": None,
-    }
-    store.persist()
-    database.fail_commit = True
-    with pytest.raises(RuntimeError, match="commit failed"):
-        store.update_run_fenced("run", "attempt", status="running")
-    assert store.runs["run"]["status"] == "queued"
-    assert database.row[1]["runs"]["run"]["status"] == "queued"
-
-
-def test_job_claim_is_single_and_budget_capped() -> None:
-    store = MemoryStore()
-    tokens = [store.claim_job(f"run-{index}", "worker") for index in range(21)]
-    assert sum(token is not None for token in tokens) == 20
-    assert store.claim_job("run-0", "second-worker") is None
-    for index, token in enumerate(tokens):
-        if token:
-            store.finish_job(f"run-{index}", token)
-
-
-def test_frozen_report_requires_exact_preview_and_approver(tmp_path: Path) -> None:
-    class SnapshotStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_persist = False
-            self.persisted_states: list[dict[str, object]] = []
-
-        def persist(self) -> None:
-            if self.fail_persist:
-                raise RuntimeError("database unavailable")
-            self.persisted_states.append({"reports": copy.deepcopy(self.reports), "audit": copy.deepcopy(self.audit)})
-
-    store = SnapshotStore()
-    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=DEPLOY_V)
-    with TestClient(create_app(settings, store)) as client:
-        case_id = client.post("/api/cases", json={"name": "Publish", "issuer": "A", "sector": "A"}).json()["id"]
-        client.post(f"/api/cases/{case_id}/sources", files={"file": ("source.txt", b"credit evidence", "text/plain")})
-        run = client.post(f"/api/cases/{case_id}/runs", json={"pathway": "EARNINGS_UPDATE", "depth": "screen"}).json()
-        for _ in range(30):
-            state = client.get(f"/api/runs/{run['id']}").json()
-            if state["status"] == "succeeded":
-                break
-            time.sleep(0.05)
-        client.post(f"/api/runs/{run['id']}/accept")
-        client.post(f"/api/cases/{case_id}/thesis", json={"expected_version": 0, "core_thesis": "Defensible", "drivers": [], "risks": [], "catalysts": [], "unresolved_questions": [], "evidence_ids": []})
-        client.post(f"/api/cases/{case_id}/recommendations", json={"expected_version": 0, "market_snapshot_id": "m1", "rows": [{"instrument_id": "bond", "instrument": "Bond", "recommendation": "N/A", "rationale": "Basis insufficient", "primary": True}], "analytical_dependency_ids": []})
-        report = client.post(f"/api/cases/{case_id}/reports/freeze", json={"thesis_version": 1, "recommendation_version": 1, "include_model": False})
-        assert report.status_code == 201
-        body = report.json()
-        wrong = client.post(f"/api/cases/{case_id}/reports/approve", headers={"x-caos-role": "APPROVER"}, json={"preview_digest": "wrong", "input_fingerprint": body["input_fingerprint"]})
-        assert wrong.status_code == 409
-        prior_audit = copy.deepcopy(store.audit)
-        store.fail_persist = True
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            client.post(f"/api/cases/{case_id}/reports/approve", headers={"x-caos-role": "APPROVER"}, json={"preview_digest": body["preview_digest"], "input_fingerprint": body["input_fingerprint"]})
-        assert store.reports[case_id]["status"] == "PENDING_APPROVAL"
-        assert store.audit == prior_audit
-        store.fail_persist = False
-        approved = client.post(f"/api/cases/{case_id}/reports/approve", headers={"x-caos-role": "APPROVER"}, json={"preview_digest": body["preview_digest"], "input_fingerprint": body["input_fingerprint"]})
-        assert approved.status_code == 200
-        assert store.persisted_states[-1]["reports"][case_id]["status"] == "APPROVED"
-        assert store.persisted_states[-1]["audit"][-1]["action"] == "report.approved"
-        assert client.get(f"/api/cases/{case_id}/reports/export/md").status_code == 200
-        assert b"Report digest" in client.get(f"/api/cases/{case_id}/reports/export/md").content
-        assert client.get(f"/api/cases/{case_id}/reports/export/pdf").content.startswith(b"%PDF")
-        assert client.get(f"/api/cases/{case_id}/reports/export/xlsx").content[:2] == b"PK"

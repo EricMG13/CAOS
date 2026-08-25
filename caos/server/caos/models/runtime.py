@@ -18,7 +18,8 @@ from openpyxl.utils import get_column_letter
 from ..artifacts.domain import accepted_snapshot, build_snapshot_payload
 from ..contracts import canonical_json, digest
 from ..methodology.canonical import CANONICAL_MODULES, is_canonical_full_credit
-from ..store import JobFencedError, MemoryStore
+from ..ledgers import ModelLedger, RunLedger, SourceCatalog
+from ..store import JobFencedError
 from ..workflows.domain import HEARTBEAT_INTERVAL_SECONDS, _LeaseFence
 from .domain import CpModelBundle, ModelInputError
 
@@ -58,14 +59,21 @@ def public_model_build(build: dict[str, Any]) -> dict[str, Any]:
 
 class ModelReadinessService:
     def __init__(
-        self, store: MemoryStore, methodology: Any, model: CpModelBundle
+        self,
+        runs: RunLedger,
+        models: ModelLedger,
+        sources: SourceCatalog,
+        methodology: Any,
+        model: CpModelBundle,
     ) -> None:
-        self.store = store
+        self.runs = runs
+        self.models = models
+        self.sources = sources
         self.methodology = methodology
         self.model = model
 
     def readiness(self, case_id: str) -> dict[str, Any]:
-        snapshot = accepted_snapshot(self.store, case_id)
+        snapshot = accepted_snapshot(self.runs, case_id)
         if snapshot is None:
             return self._not_ready(
                 "ACCEPTED_FULL_CREDIT_REQUIRED",
@@ -81,7 +89,7 @@ class ModelReadinessService:
         build = next(
             (
                 item
-                for item in self.store.list_model_builds(case_id)
+                for item in self.models.list_builds(case_id)
                 if item.get("input_fingerprint") == resolved["input_fingerprint"]
             ),
             None,
@@ -99,7 +107,7 @@ class ModelReadinessService:
         }
 
     def queue(self, case_id: str, actor: str) -> tuple[dict[str, Any], bool]:
-        snapshot = accepted_snapshot(self.store, case_id)
+        snapshot = accepted_snapshot(self.runs, case_id)
         if snapshot is None:
             raise ValueError("MODEL_NOT_READY")
         try:
@@ -107,7 +115,6 @@ class ModelReadinessService:
         except (KeyError, TypeError, ValueError, ModelInputError) as exc:
             raise ValueError("MODEL_NOT_READY") from exc
         build = {
-            "id": self.store._id("model"),
             "case_id": case_id,
             "accepted_run_id": snapshot["run_id"],
             "accepted_snapshot_id": snapshot["id"],
@@ -119,13 +126,13 @@ class ModelReadinessService:
             "calculation_runtime": self.model.calculation_runtime,
             "artifact_inventory": resolved["artifact_inventory"],
         }
-        record, created = self.store.queue_model_build(build, actor)
+        record, created = self.models.queue_build(build, actor)
         if not created and record.get("status") == "FAILED":
-            return self.store.retry_model_build(record["id"], actor), True
+            return self.models.retry_build(record["id"], actor), True
         return record, created
 
     def inputs_for_build(self, build: dict[str, Any]) -> dict[str, Any]:
-        snapshot = self.store.get_snapshot(build.get("accepted_snapshot_id"))
+        snapshot = self.runs.get_snapshot(build.get("accepted_snapshot_id"))
         if snapshot is None or snapshot.get("case_id") != build.get("case_id"):
             raise ModelInputError("model snapshot is unavailable")
         resolved = self._resolve(snapshot)
@@ -138,14 +145,14 @@ class ModelReadinessService:
         return resolved
 
     def _resolve(self, snapshot: dict[str, Any]) -> dict[str, Any]:
-        run = self.store.get_run(snapshot["run_id"])
+        run = self.runs.get_run(snapshot["run_id"])
         if (
             run is None
             or not is_canonical_full_credit(run.get("plan") or {})
             or run.get("accepted_snapshot_id") != snapshot.get("id")
         ):
             raise ModelInputError("accepted canonical Full Credit run required")
-        expected = build_snapshot_payload(self.store, run, self.methodology)
+        expected = build_snapshot_payload(self.runs, self.sources, run, self.methodology)
         for key in (
             "case_id",
             "run_id",
@@ -159,7 +166,7 @@ class ModelReadinessService:
         for reference in snapshot["artifacts"]:
             if reference["module_id"] not in CANONICAL_MODULES:
                 continue
-            artifact = self.store.get_artifact(reference["id"])
+            artifact = self.runs.get_artifact(reference["id"])
             if artifact is None or artifact.get("digest") != reference.get("digest"):
                 raise ModelInputError("canonical artifact is unavailable")
             by_module[reference["module_id"]] = artifact
@@ -180,7 +187,7 @@ class ModelReadinessService:
         )
         if validation.errors:
             raise ModelInputError("CP-MODEL bundle validation failed")
-        source_set = self.store.source_set_by_id(snapshot["source_set_id"])
+        source_set = self.sources.source_set(snapshot["source_set_id"])
         if source_set is None or source_set.get("case_id") != snapshot.get("case_id"):
             raise ModelInputError("accepted source set is unavailable")
         inventory = [
@@ -258,13 +265,13 @@ class ModelReadinessService:
 class ModelBuildRuntime:
     def __init__(
         self,
-        store: MemoryStore,
+        models: ModelLedger,
         readiness: ModelReadinessService,
         model: CpModelBundle,
         executor: Any,
         storage_dir: Path,
     ) -> None:
-        self.store = store
+        self.models = models
         self.readiness = readiness
         self.model = model
         self.executor = executor
@@ -277,7 +284,7 @@ class ModelBuildRuntime:
         return self.executor.submit(self._execute_export, build_id, actor)
 
     def _execute(self, build_id: str, actor: str) -> None:
-        token = self.store.claim_model_job(build_id, threading.current_thread().name)
+        token = self.models.claim(build_id, threading.current_thread().name)
         if token is None:
             return
         heartbeat_stop = threading.Event()
@@ -286,7 +293,7 @@ class ModelBuildRuntime:
         def heartbeat() -> None:
             while not heartbeat_stop.wait(HEARTBEAT_INTERVAL_SECONDS):
                 try:
-                    if self.store.renew_model_job(build_id, token):
+                    if self.models.renew(build_id, token):
                         continue
                 except Exception:
                     pass
@@ -298,7 +305,7 @@ class ModelBuildRuntime:
         )
         thread.start()
         try:
-            build = self.store.get_model_build(build_id)
+            build = self.models.get_build(build_id)
             if build is None:
                 raise ModelInputError("model build is unavailable")
             resolved = self.readiness.inputs_for_build(build)
@@ -309,12 +316,12 @@ class ModelBuildRuntime:
                 draft = directory / "model.xlsx"
                 rendered = self.model.render_workbook(model, calculations, draft)
                 payload, qa = _serialize_worksheet(draft, rendered, model, calculations)
-            if fence.lost.is_set() or not self.store.model_job_is_current(
+            if fence.lost.is_set() or not self.models.is_current(
                 build_id, token
             ):
                 raise JobFencedError("lost model lease")
             fence.call(
-                self.store.complete_model_job,
+                self.models.complete,
                 build_id,
                 token,
                 {
@@ -336,7 +343,7 @@ class ModelBuildRuntime:
                 else "The model calculation did not complete.",
             }
             try:
-                fence.call(self.store.fail_model_job, build_id, token, error, actor)
+                fence.call(self.models.fail, build_id, token, error, actor)
             except JobFencedError:
                 pass
         finally:
@@ -344,7 +351,7 @@ class ModelBuildRuntime:
             thread.join(timeout=1)
 
     def _execute_export(self, build_id: str, actor: str) -> None:
-        token = self.store.claim_model_job(
+        token = self.models.claim(
             build_id, threading.current_thread().name, "export"
         )
         if token is None:
@@ -355,7 +362,7 @@ class ModelBuildRuntime:
         def heartbeat() -> None:
             while not heartbeat_stop.wait(HEARTBEAT_INTERVAL_SECONDS):
                 try:
-                    if self.store.renew_model_job(build_id, token, "export"):
+                    if self.models.renew(build_id, token, "export"):
                         continue
                 except Exception:
                     pass
@@ -368,7 +375,7 @@ class ModelBuildRuntime:
         thread.start()
         published: Path | None = None
         try:
-            build = self.store.get_model_build(build_id)
+            build = self.models.get_build(build_id)
             if build is None or build.get("status") != "READY":
                 raise ModelInputError("ready model build is unavailable")
             resolved = self.readiness.inputs_for_build(build)
@@ -379,12 +386,12 @@ class ModelBuildRuntime:
                 published, vault_key, size = _publish_export(
                     self.storage_dir, build, result.output, result.sha256
                 )
-            if fence.lost.is_set() or not self.store.model_job_is_current(
+            if fence.lost.is_set() or not self.models.is_current(
                 build_id, token, "export"
             ):
                 raise JobFencedError("lost model export lease")
             fence.call(
-                self.store.complete_model_job,
+                self.models.complete,
                 build_id,
                 token,
                 {
@@ -406,7 +413,7 @@ class ModelBuildRuntime:
         except Exception:
             try:
                 fence.call(
-                    self.store.fail_model_job,
+                    self.models.fail,
                     build_id,
                     token,
                     {

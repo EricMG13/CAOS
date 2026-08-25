@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import copy
 import math
 from datetime import date
 from typing import Any
 
 from ..contracts import RVUniverseRequest, SystemSignal, digest
-from ..store import MemoryStore, now_iso
+from ..ledgers import PublicationLedger
+from ..store import now_iso
 
 
 def _finite(value: float | None) -> bool:
@@ -31,7 +31,7 @@ def _basis(row: dict[str, Any]) -> str:
     return "none"
 
 
-def save_universe(store: MemoryStore, case_id: str, actor: str, request: RVUniverseRequest) -> dict[str, Any]:
+def save_universe(publications: PublicationLedger, case_id: str, actor: str, request: RVUniverseRequest) -> dict[str, Any]:
     for row in request.rows:
         if not all(_finite(value) for value in (row.price, row.yield_bps, row.spread_bps, row.duration)):
             raise ValueError("non-finite market value")
@@ -42,36 +42,17 @@ def save_universe(store: MemoryStore, case_id: str, actor: str, request: RVUnive
             raise ValueError("invalid market date") from exc
         if row.duration is None and row.spread_bps is not None:
             raise ValueError("duration is required when spread is supplied")
-    with store.lock:
-        previous_universe = store.rv_universes.get(case_id)
-        audit_start = len(store.audit)
-        version = (store.rv_universes.get(case_id, {}).get("version", 0) + 1)
-        universe = {
-            "id": store._id("rv"),
-            "case_id": case_id,
-            "version": version,
-            "source_version": request.source_version,
-            "rows": [row.model_dump(mode="json") for row in request.rows],
-            "created_by": actor,
-            "created_at": now_iso(),
-            "digest": digest(request.model_dump(mode="json")),
-        }
-        store.rv_universes[case_id] = universe
-        store.audit_event("rv.universe_versioned", actor, case_id=case_id, version=version)
-        try:
-            store.persist()
-        except Exception:
-            if previous_universe is None:
-                store.rv_universes.pop(case_id, None)
-            else:
-                store.rv_universes[case_id] = previous_universe
-            del store.audit[audit_start:]
-            raise
-    return copy.deepcopy(universe)
+    universe = {
+        "source_version": request.source_version,
+        "rows": [row.model_dump(mode="json") for row in request.rows],
+        "created_at": now_iso(),
+        "digest": digest(request.model_dump(mode="json")),
+    }
+    return publications.save_rv_universe(case_id, actor, universe)
 
 
-def compare_universe(store: MemoryStore, case_id: str, accepted_snapshot: dict[str, Any] | None) -> dict[str, Any]:
-    universe = copy.deepcopy(store.rv_universes.get(case_id))
+def compare_universe(publications: PublicationLedger, case_id: str, accepted_snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    universe = publications.get_rv_universe(case_id)
     if not universe:
         return {"status": "NO_UNIVERSE", "rows": [], "excluded": []}
     eligible: list[dict[str, Any]] = []

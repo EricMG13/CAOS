@@ -15,7 +15,8 @@ from typing import Any
 from fastapi import HTTPException, UploadFile
 
 from ..config import Settings
-from ..store import MemoryStore, now_iso
+from ..ledgers import SourceCatalog
+from ..store import now_iso
 
 
 ALLOWED_SUFFIXES = {".pdf", ".xlsx", ".json", ".txt", ".md", ".csv"}
@@ -210,7 +211,7 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
     return blocks or [{"block_id": "b00001", "locator": {"line": 1}, "text": "", "extractor_version": "builtin-v1", "confidence": "LOW", "untrusted_data": True}]
 
 
-async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: str, upload: UploadFile, max_bytes: int) -> dict[str, Any]:
+async def ingest_upload(catalog: SourceCatalog, vault: Vault, case_id: str, actor: str, upload: UploadFile, max_bytes: int) -> dict[str, Any]:
     filename = Path(upload.filename or "source.bin").name
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
@@ -225,9 +226,7 @@ async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: s
     sha256 = hashlib.sha256(content).hexdigest()
     blocks = extract_blocks(filename, content)
     vault_path = vault.put(content, sha256)
-    source_id = store._id("src")
     source = {
-        "id": source_id,
         "case_id": case_id,
         "filename": filename,
         "media_type": upload.content_type or "application/octet-stream",
@@ -239,52 +238,24 @@ async def ingest_upload(store: MemoryStore, vault: Vault, case_id: str, actor: s
         "created_at": now_iso(),
         "withdrawn": False,
     }
-    with store.lock:
-        if any(existing["case_id"] == case_id and existing["sha256"] == sha256 and not existing.get("withdrawn") for existing in store.sources.values()):
-            raise HTTPException(status_code=409, detail="source content already active")
-        prior_source_set = store.source_sets.get(case_id)
-        audit_start = len(store.audit)
-        store.sources[source_id] = source
-        source_set = store.source_sets.get(case_id)
-        version = (source_set["version"] + 1) if source_set else 1
-        active_source_ids = [existing_id for existing_id in (source_set["source_ids"] if source_set else []) if not store.sources.get(existing_id, {}).get("withdrawn")]
-        new_source_set = {
-            "id": store._id("set"),
-            "case_id": case_id,
-            "version": version,
-            "source_ids": [*active_source_ids, source_id],
-            "created_by": actor,
-            "created_at": now_iso(),
-        }
-        store.register_source_set(new_source_set)
-        store.audit_event("source.ingested", actor, case_id=case_id, source_id=source_id, sha256=sha256)
-        try:
-            store.persist()
-        except Exception:
-            store.sources.pop(source_id, None)
-            if prior_source_set is None:
-                store.source_sets.pop(case_id, None)
-            else:
-                store.source_sets[case_id] = prior_source_set
-            store.source_set_history.pop(new_source_set["id"], None)
-            del store.audit[audit_start:]
-            raise
-    return {key: value for key, value in {**source, "source_set": store.source_sets[case_id].copy()}.items() if key != "vault_path"}
+    try:
+        return catalog.ingest(source, actor)
+    except ValueError as exc:
+        if str(exc) == "source content already active":
+            raise HTTPException(status_code=409, detail="source content already active") from exc
+        raise
 
 
-def list_sources(store: MemoryStore, case_id: str) -> list[dict[str, Any]]:
-    with store.lock:
-        return [{key: value for key, value in source.items() if key != "vault_path"} for source in store.sources.values() if source["case_id"] == case_id and not source.get("withdrawn")]
+def list_sources(catalog: SourceCatalog, case_id: str) -> list[dict[str, Any]]:
+    return catalog.list_sources(case_id)
 
 
-def current_source_set(store: MemoryStore, case_id: str) -> dict[str, Any] | None:
-    with store.lock:
-        source_set = store.source_sets.get(case_id)
-        return dict(source_set) if source_set else None
+def current_source_set(catalog: SourceCatalog, case_id: str) -> dict[str, Any] | None:
+    return catalog.current_source_set(case_id)
 
 
-def pathway_fit(store: MemoryStore, case_id: str) -> dict[str, Any]:
-    sources = list_sources(store, case_id)
+def pathway_fit(catalog: SourceCatalog, case_id: str) -> dict[str, Any]:
+    sources = list_sources(catalog, case_id)
     types = sorted({Path(source["filename"]).suffix.lower().lstrip(".") for source in sources})
     return {
         "source_count": len(sources),
