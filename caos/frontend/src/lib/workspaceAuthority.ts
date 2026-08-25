@@ -94,9 +94,14 @@ export function workspaceAuthorityReducer(state: AuthorityState, event: Authorit
     case "requestSucceeded":
       if (!matchesAuthority(state, event.context) || state.pending?.scope !== event.scope) return state;
       return { ...state, status: "ready", pending: null };
-    case "requestFailed":
-      if (!matchesAuthority(state, event.context) || state.pending?.scope !== event.scope) return state;
+    case "requestFailed": {
+      const pendingScope = state.pending?.scope;
+      const parentFailure =
+        (event.scope === "cases" && (pendingScope === "case" || pendingScope === "run"))
+        || (event.scope === "case" && pendingScope === "run");
+      if (!matchesAuthority(state, event.context) || (pendingScope !== event.scope && !parentFailure)) return state;
       return { ...state, status: "error", pending: null };
+    }
     case "snapshotAccepted":
       if (!matchesAuthority(state, event.context)) return state;
       return { ...state, status: "ready", pending: null, acceptedSnapshotId: event.snapshotId };

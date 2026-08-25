@@ -100,6 +100,44 @@ test("does not let a run refresh resolve pending case authority", () => {
   );
 });
 
+test("initial registry failure fails closed over pending case authority", () => {
+  const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const failed = workspaceAuthorityReducer(hydrated, {
+    type: "requestFailed",
+    context: requestContext(hydrated),
+    scope: "cases",
+  });
+
+  assert.equal(failed.status, "error");
+  assert.equal(failed.pending, null);
+});
+
+test("case success cannot resolve a pending run before run success", () => {
+  const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const pendingRun = workspaceAuthorityReducer(hydrated, { type: "requestStarted", scope: "run" });
+  const context = requestContext(pendingRun);
+
+  assert.strictEqual(
+    workspaceAuthorityReducer(pendingRun, { type: "requestSucceeded", context, scope: "case" }),
+    pendingRun,
+  );
+  const succeeded = workspaceAuthorityReducer(pendingRun, { type: "requestSucceeded", context, scope: "run" });
+  assert.equal(succeeded.status, "ready");
+  assert.equal(succeeded.pending, null);
+});
+
+test("parent failure from a stale generation cannot resolve current authority", () => {
+  const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const firstRun = workspaceAuthorityReducer(hydrated, { type: "requestStarted", scope: "run" });
+  const staleContext = requestContext(firstRun);
+  const currentRun = workspaceAuthorityReducer(firstRun, { type: "requestStarted", scope: "run" });
+
+  assert.strictEqual(
+    workspaceAuthorityReducer(currentRun, { type: "requestFailed", context: staleContext, scope: "cases" }),
+    currentRun,
+  );
+});
+
 test("selected case authority failure resolves its pending generation", () => {
   const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
   const selected = workspaceAuthorityReducer(hydrated, { type: "selectCase", caseId: "case_b" });

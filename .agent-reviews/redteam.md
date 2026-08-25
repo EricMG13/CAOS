@@ -4301,3 +4301,21 @@ whole-state deletion branch after repository-wide production gates.
 Decision: accept the confirmed reducer correction and final repository gates.
 The only open items require external PostgreSQL/dense-fixture or Turbopack
 worktree support; preserve the normalized-only and fresh-database boundaries.
+
+## 2026-08-25 — Final authority reducer independent-review correction gate
+
+Decision under review: preserve exact-scope success ordering while allowing a
+failed upstream registry or case dependency to fail closed over pending child
+authority in the same generation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-224 | Initial-load saboteur | Hydration records pending `case` authority, but an initial `/api/cases` failure reports scope `cases`; exact-scope failure matching ignores it and leaves global authority loading forever. | Critical | Resolved and red/green covered | Failure matching now recognizes only the explicit dependency relation `cases → case/run` and `case → run`, after the existing generation/case/run guard. The initial hydrated-case plus registry-failure regression failed before the patch (`loading`, expected `error`) and now clears pending state with `error`. A production-static browser intercept surfaces `registry unavailable` with no visible “Sources loading” state. |
+| RT-2026-08-25-225 | Reverse-ordering reviewer | Treating dependency scopes symmetrically could let a successful case request resolve pending run authority, recreating the same premature-ready race in reverse. | Critical | Resolved by asymmetric rule | Success remains exact-scope only. A deterministic pending-run regression proves case success is identity-preserving and only run success clears pending state; the existing run-success-while-case-pending regression remains green. |
+| RT-2026-08-25-226 | Stale-failure reviewer | A broad parent-failure rule could let a previous registry generation poison a newer case/run selection. | High | Resolved by existing authority fence | `matchesAuthority` remains mandatory before the dependency relation is considered. A stale-generation `cases` failure against current pending run authority is a strict no-op. Unknown/action scopes retain exact-only failure matching. |
+
+Decision: accept the narrow reducer-only correction after 28 frontend unit
+tests, lint, typecheck, webpack production build, registry-failure browser
+boundary, full workbench smoke, seeded 29-combination axe scan, rewrite
+tournament, confidence review, and staged graph detection pass. No API or
+component interface changed.
