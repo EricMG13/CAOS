@@ -4416,3 +4416,36 @@ which occurred before the first mutation.
 Decision: accept the correction. RT-202 is superseded only for this specific
 node-completion failure mode; the append-only historical statement remains as
 the review record.
+
+## 2026-08-25 — Normalized PostgreSQL ledger implementation gate
+
+Decision under review: add the four normalized PostgreSQL ledger adapters and
+their fresh-database schema while legacy `PostgresStore` remains live until the
+planned caller cutover.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-208 | Concurrency reviewer | Normalized rows alone do not prevent two connections from accepting duplicate source content, the same optimistic publication version, or the same queued job. | Critical | Resolved and verified | Active-source uniqueness is a partial index; optimistic publication inserts carry the expected-version predicate; run and model claims lock eligible rows with `FOR UPDATE SKIP LOCKED`. Real two-connection races prove exactly one success in each case. |
+| RT-2026-08-25-209 | Transaction reviewer | Note promotion can delegate correctly yet commit its source/source-set writes before a downstream injected catalog failure, leaving the note and authority split. | Critical | Resolved and verified | `PublicationLedger.promote_note` locks the note and binds the injected catalog call to the same connection and transaction. A portable replay contract plus a real PostgreSQL forced-failure probe proves note, source, source set, case pointer, and audit all roll back together. |
+| RT-2026-08-25-210 | Fencing reviewer | An expired attempt could still append an event, store an artifact, advance a node/run, accept a snapshot, or replace a model build after another worker takes over. | Critical | Resolved and verified | Every fenced transition performs a conditional current-token/lease check in its write transaction. The real-database stale-token contract proves unchanged runs, nodes, events, artifacts, snapshot pointers, and model builds after replacement claims. |
+| RT-2026-08-25-211 | Cutover reviewer | Foreign keys from normalized runs/model builds to source sets and snapshots can reject valid writes made by the still-live legacy `PostgresStore`, which does not populate those new authority tables. | Critical | Resolved by task boundary | The first real compatibility run reproduced the failure. Task 3 retains only constraints satisfiable before cutover; the three cross-authority foreign keys are deferred until Tasks 4–5 migrate their writers. The focused suite passes 63/63 and the full server suite passes 429/429 against the revised schema. |
+| RT-2026-08-25-212 | Scheduler reviewer | A unique coordinator row per run can block a later legacy execution even after its prior job finished. | Critical | Resolved and verified | The unconditional index was reproduced as four full-suite failures and replaced with active-only uniqueness for coordinator rows in `queued` or `claimed` state. The four failing runtime tests now pass, migration shape asserts the predicate, and normalized concurrent claim still has exactly one winner. |
+| RT-2026-08-25-213 | Rollout reviewer | A normalized adapter could quietly read or backfill `caos_state`, creating a dual authority or a destructive migration path. | Critical | Resolved and verified | Migration 006 and `postgres_ledgers.py` contain no `caos_state` reference, legacy import, backfill, delete, or table drop. Fresh migration application and repeat application both pass; the old envelope remains inert for pre-cutover code only. |
+
+Decision: accept Task 3 for review. Production caller cutover remains owned by
+Tasks 4–5; those tasks must add the deferred cross-authority constraints only
+after every writer persists the corresponding normalized identities.
+
+## 2026-08-25 — Normalized PostgreSQL ledger review correction
+
+Correction under review: close the scheduler and cross-adapter parity defects
+found by independent Task 3 review.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-214 | Scheduler reviewer | Once completed coordinator history is retained, an unordered claim query can read the historical row first and leave the queued successor permanently unclaimable while `pending_runs()` continues to advertise it. | Critical | Resolved and verified | The claim query now filters before locking to queued or expired-claimed coordinator rows, orders queued then claimed and by row identity, limits to one, and uses `FOR UPDATE SKIP LOCKED`. A real PostgreSQL regression seeds succeeded history plus a queued successor and proves two concurrent workers yield exactly one token and final states `succeeded`, `claimed`. |
+| RT-2026-08-25-215 | Public-shape reviewer | PostgreSQL create/get/list/latest run records can omit `events` and reorder equal-stage nodes relative to memory, breaking the portable run record despite correct event-table writes. | High | Resolved and verified | Creation now returns an empty event list; reads reconstruct nodes from the authoritative `node_ids` sequence and events from workflow sequence. A shared memory/PostgreSQL contract proves equal-stage node order, empty creation events, emitted event history, list shape, and latest shape. |
+| RT-2026-08-25-216 | Source-authority reviewer | Promoting two different notes with identical active content succeeds twice in memory but exposes a raw partial-index `UniqueViolation` in PostgreSQL. | High | Resolved and verified | Both source adapters now preserve exact same-note replay while rejecting a distinct active duplicate with `ValueError("source content already active")`. PostgreSQL maps the constraint race at the source boundary so the outer note transaction rolls back; the shared contract proves unchanged second note, source set, source inventory, and replay identity. |
+
+Decision: accept the Task 3 corrections for re-review. The corrected focused
+gate passes 68/68 and the full real-PostgreSQL server suite passes 434/434.

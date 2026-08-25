@@ -106,13 +106,22 @@ class _MemorySourceCatalog(_Adapter):
             return copy.deepcopy(note)
         source_id = state.new_id("src-note")
         body = note["body"]
+        body_bytes = body.encode()
+        sha256 = hashlib.sha256(body_bytes).hexdigest()
+        if any(
+            source.get("case_id") == note["case_id"]
+            and source.get("sha256") == sha256
+            and not source.get("withdrawn")
+            for source in state.sources.values()
+        ):
+            raise ValueError("source content already active")
         source = {
             "id": source_id,
             "case_id": note["case_id"],
             "filename": f"analyst-note-{note['id']}.md",
             "media_type": "text/markdown",
-            "bytes": len(body.encode()),
-            "sha256": hashlib.sha256(body.encode()).hexdigest(),
+            "bytes": len(body_bytes),
+            "sha256": sha256,
             "vault_path": None,
             "blocks": [
                 {

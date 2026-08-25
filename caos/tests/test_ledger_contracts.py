@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 from caos import ledgers
 from caos.contracts import clean_json, digest
 from caos.memory_ledgers import MemoryLedgerSet
+from caos.postgres_ledgers import PostgresLedgerSet
 from caos.store import JobFencedError
 
 
@@ -17,9 +19,49 @@ ACTOR = "analyst"
 LEASE_SECONDS = 0.2
 
 
-@pytest.fixture(params=[MemoryLedgerSet], ids=["memory"])
+def _clear_postgres(database_url: str) -> None:
+    import psycopg
+
+    with psycopg.connect(
+        database_url.replace("postgresql+psycopg://", "postgresql://")
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "TRUNCATE methodology_drafts, rv_universes, audit_events, reports, "
+                "assumptions, notes, workflow_events, model_build_jobs, model_builds, "
+                "rv_loan_rows, rv_loan_universes, recommendation_versions, "
+                "thesis_versions, accepted_snapshots, artifacts, jobs, workflow_nodes, "
+                "runs, source_sets, sources, case_members, cases RESTART IDENTITY CASCADE"
+            )
+
+
+@pytest.fixture(params=["memory", "postgres"])
 def ledger_set(request: pytest.FixtureRequest) -> Any:
-    return request.param(lease_seconds=LEASE_SECONDS)
+    if request.param == "memory":
+        yield MemoryLedgerSet(lease_seconds=LEASE_SECONDS)
+        return
+    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("CAOS_TEST_DATABASE_URL is required for PostgreSQL ledger proof")
+    durable = PostgresLedgerSet(database_url, lease_seconds=LEASE_SECONDS)
+    _clear_postgres(database_url)
+    try:
+        yield durable
+    finally:
+        _clear_postgres(database_url)
+
+
+@pytest.fixture
+def postgres_ledger_set() -> PostgresLedgerSet:
+    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("CAOS_TEST_DATABASE_URL is required for PostgreSQL ledger proof")
+    durable = PostgresLedgerSet(database_url, lease_seconds=LEASE_SECONDS)
+    _clear_postgres(database_url)
+    try:
+        yield durable
+    finally:
+        _clear_postgres(database_url)
 
 
 def _case(ledger_set: Any) -> dict[str, Any]:
@@ -198,7 +240,8 @@ def test_protocol_inventory_is_exact() -> None:
     } == {"SourceCatalog", "RunLedger", "PublicationLedger", "ModelLedger"}
 
 
-def test_memory_ledger_set_keeps_one_private_state(ledger_set: Any) -> None:
+def test_memory_ledger_set_keeps_one_private_state() -> None:
+    ledger_set = MemoryLedgerSet(lease_seconds=LEASE_SECONDS)
     adapters = (
         ledger_set.sources,
         ledger_set.runs,
@@ -1071,3 +1114,327 @@ def test_pending_job_reads_are_authoritative(ledger_set: Any) -> None:
 
     assert ledger_set.runs.pending_runs() == [(run["id"], ACTOR)]
     assert ledger_set.models.pending_jobs() == [(queued["id"], ACTOR, "calculate")]
+
+
+def test_postgres_two_connection_uniqueness_and_claim_races(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    case = _case(postgres_ledger_set)
+    source = _source(case["id"])
+
+    def ingest() -> str:
+        try:
+            postgres_ledger_set.sources.ingest(source, ACTOR)
+            return "created"
+        except ValueError as exc:
+            assert str(exc) == "source content already active"
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: ingest(), range(2))) == [
+            "conflict",
+            "created",
+        ]
+    assert "current_source_set_id" not in postgres_ledger_set.runs.get_case(case["id"])
+
+    thesis = {"core_thesis": "Defensible", "evidence_ids": []}
+
+    def append() -> str:
+        try:
+            postgres_ledger_set.publications.append_thesis(case["id"], ACTOR, 0, thesis)
+            return "created"
+        except ValueError as exc:
+            assert str(exc) == "VERSION_CONFLICT"
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: append(), range(2))) == [
+            "conflict",
+            "created",
+        ]
+    with pytest.raises(ValueError, match="VERSION_CONFLICT"):
+        postgres_ledger_set.publications.append_thesis(
+            case["id"],
+            ACTOR,
+            None,
+            thesis,  # type: ignore[arg-type]
+        )
+
+    run = postgres_ledger_set.runs.create_run_with_nodes(
+        case["id"], ACTOR, {"pathway": "EARNINGS_UPDATE"}, []
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tokens = list(
+            executor.map(
+                lambda worker: postgres_ledger_set.runs.claim(run["id"], worker),
+                ("worker-a", "worker-b"),
+            )
+        )
+    assert sum(token is not None for token in tokens) == 1
+
+
+def test_postgres_stale_attempt_cannot_change_fenced_authority(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    case, run = _queued_run(postgres_ledger_set)
+    node = run["nodes"][0]
+    stale = postgres_ledger_set.runs.claim(run["id"], "stale-worker")
+    assert stale is not None
+    postgres_ledger_set.runs.update_node_fenced(
+        run["id"], stale, node["id"], status="running"
+    )
+    time.sleep(LEASE_SECONDS + 0.1)
+    replacement = postgres_ledger_set.runs.claim(run["id"], "replacement-worker")
+    assert replacement is not None
+    before_run = postgres_ledger_set.runs.get_run(run["id"])
+    before_events = postgres_ledger_set.runs.events_after(run["id"])
+    proposal = {
+        "case_id": case["id"],
+        "run_id": run["id"],
+        "module_id": node["module_id"],
+        "created_by": ACTOR,
+        "payload": {"debt": 100},
+        "markdown": "# CP-1\n",
+        "digest": digest({"debt": 100}),
+        "input_fingerprint": "stale-proof",
+        "created_at": "2026-08-24T00:00:00+00:00",
+    }
+    stale_writes = (
+        lambda: postgres_ledger_set.runs.update_run_fenced(
+            run["id"], stale, status="failed"
+        ),
+        lambda: postgres_ledger_set.runs.update_node_fenced(
+            run["id"], stale, node["id"], status="succeeded"
+        ),
+        lambda: postgres_ledger_set.runs.emit_fenced(
+            run["id"], stale, "stale.event", {}
+        ),
+        lambda: postgres_ledger_set.runs.complete_node(
+            run["id"], stale, node["id"], proposal, None, {}
+        ),
+        lambda: postgres_ledger_set.runs.finalize_success(run["id"], stale, None, {}),
+    )
+    for stale_write in stale_writes:
+        with pytest.raises(JobFencedError, match="stale workflow attempt"):
+            stale_write()
+    assert postgres_ledger_set.runs.get_run(run["id"]) == before_run
+    assert postgres_ledger_set.runs.events_after(run["id"]) == before_events
+    assert (
+        postgres_ledger_set.runs.artifact_for_fingerprint(
+            run["id"], node["module_id"], proposal["input_fingerprint"]
+        )
+        is None
+    )
+    with pytest.raises(ValueError, match="RUN_NOT_READY"):
+        postgres_ledger_set.runs.accept_snapshot(
+            case["id"],
+            run["id"],
+            ACTOR,
+            {
+                "case_id": case["id"],
+                "run_id": run["id"],
+                "source_set_id": run["plan"]["source_set_id"],
+                "source_set_version": 1,
+                "artifacts": [],
+                "accepted_at": "2026-08-24T00:00:00+00:00",
+                "digest": "0" * 64,
+            },
+        )
+    assert postgres_ledger_set.runs.get_case(case["id"])["accepted_snapshot_id"] is None
+
+    model_input = _accepted_model_input(postgres_ledger_set)
+    build, _ = postgres_ledger_set.models.queue_build(model_input, ACTOR)
+    stale_model = postgres_ledger_set.models.claim(build["id"], "stale-model")
+    assert stale_model is not None
+    time.sleep(LEASE_SECONDS + 0.1)
+    assert postgres_ledger_set.models.claim(build["id"], "replacement-model")
+    before_build = postgres_ledger_set.models.get_build(build["id"])
+    with pytest.raises(JobFencedError, match="stale model attempt"):
+        postgres_ledger_set.models.complete(
+            build["id"], stale_model, _model_result(), "stale-model"
+        )
+    assert postgres_ledger_set.models.get_build(build["id"]) == before_build
+
+
+def test_postgres_remaining_protocol_surface(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    case = _case(postgres_ledger_set)
+    assert postgres_ledger_set.runs.add_member(
+        case["id"], ACTOR, "reviewer", "APPROVER", actor_role="ADMIN"
+    )
+    assert postgres_ledger_set.runs.is_member(case["id"], "reviewer", {"APPROVER"})
+    assert postgres_ledger_set.runs.list_cases("reviewer")[0]["id"] == case["id"]
+    source = postgres_ledger_set.sources.ingest(_source(case["id"]), ACTOR)
+    run = postgres_ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "EARNINGS_UPDATE", "source_set_id": source["source_set"]["id"]},
+        [],
+    )
+    postgres_ledger_set.runs.emit(run["id"], "manual.check", {"ok": True})
+    assert postgres_ledger_set.runs.wait_for_events(run["id"], 0)[0]["event"] == (
+        "manual.check"
+    )
+    thesis = postgres_ledger_set.publications.append_thesis(
+        case["id"],
+        ACTOR,
+        0,
+        {"core_thesis": "Defensible", "evidence_ids": [source["id"]]},
+    )
+    recommendation = postgres_ledger_set.publications.append_recommendations(
+        case["id"],
+        ACTOR,
+        0,
+        {"rows": [], "analytical_dependency_ids": []},
+    )
+    assert thesis["version"] == recommendation["version"] == 1
+    rv = postgres_ledger_set.publications.save_rv_universe(
+        case["id"], ACTOR, {"instruments": []}
+    )
+    assert postgres_ledger_set.publications.get_rv_universe(case["id"]) == rv
+    draft = postgres_ledger_set.publications.create_methodology_draft(
+        {"module_id": "CP-1", "before": 1, "after": 2}, ACTOR
+    )
+    validated = postgres_ledger_set.publications.validate_methodology_draft(
+        draft["id"], "reviewer"
+    )
+    confirmed = postgres_ledger_set.publications.confirm_methodology_draft(
+        draft["id"], "reviewer", "signed"
+    )
+    assert validated["status"] == "VALIDATED"
+    assert confirmed["status"] == "CONFIRMED_PENDING_SIGNED_AUTHORITY"
+
+    model_input = _accepted_model_input(postgres_ledger_set)
+    build, _ = postgres_ledger_set.models.queue_build(model_input, ACTOR)
+    calculate_token = postgres_ledger_set.models.claim(build["id"], "model-worker")
+    assert calculate_token
+    postgres_ledger_set.models.complete(
+        build["id"], calculate_token, _model_result(), "model-worker"
+    )
+    _, queued = postgres_ledger_set.models.queue_export(build["id"], ACTOR)
+    assert queued
+    export_token = postgres_ledger_set.models.claim(
+        build["id"], "export-worker", kind="export"
+    )
+    assert export_token
+    sha256 = "e" * 64
+    exported = postgres_ledger_set.models.complete(
+        build["id"],
+        export_token,
+        {
+            "vault_key": f"models/case/build/{sha256}.xlsx",
+            "filename": "model.xlsx",
+            "sha256": sha256,
+            "size": 1,
+            "formulas_validated": 0,
+            "semantic_checks": 0,
+            "renderer_version": "contract-v1",
+            "renderer_sha256": "f" * 64,
+            "calculation_engine": "contract-v1",
+        },
+        "export-worker",
+        kind="export",
+    )
+    assert exported["export"]["status"] == "READY"
+    postgres_ledger_set.models.record_export_download(
+        build["id"], model_input["case_id"], ACTOR
+    )
+
+
+def test_run_public_shape_includes_ordered_nodes_and_events(ledger_set: Any) -> None:
+    case = _case(ledger_set)
+    source_set = ledger_set.sources.ingest(_source(case["id"]), ACTOR)["source_set"]
+    created = ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "EARNINGS_UPDATE", "source_set_id": source_set["id"]},
+        [
+            {"module_id": "CP-B", "dependencies": [], "stage": 1},
+            {"module_id": "CP-A", "dependencies": [], "stage": 1},
+        ],
+    )
+
+    assert [node["module_id"] for node in created["nodes"]] == ["CP-B", "CP-A"]
+    assert created["events"] == []
+    ledger_set.runs.emit(created["id"], "manual.check", {"ok": True})
+    events = ledger_set.runs.events_after(created["id"])
+    fetched = ledger_set.runs.get_run(created["id"])
+
+    assert fetched is not None
+    assert fetched["nodes"] == created["nodes"]
+    assert fetched["events"] == events
+    assert ledger_set.runs.list_runs(case["id"]) == [fetched]
+    assert ledger_set.runs.latest_run(case["id"]) == fetched
+
+
+def test_distinct_same_body_note_promotion_rejects_active_duplicate(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    first_note = ledger_set.publications.create_note(
+        case["id"], ACTOR, "Debt remains 100"
+    )
+    second_note = ledger_set.publications.create_note(
+        case["id"], ACTOR, "Debt remains 100"
+    )
+    first = ledger_set.publications.promote_note(case["id"], first_note["id"], ACTOR)
+    source_set = ledger_set.sources.current_source_set(case["id"])
+
+    with pytest.raises(ValueError) as exc_info:
+        ledger_set.publications.promote_note(case["id"], second_note["id"], ACTOR)
+
+    assert str(exc_info.value) == "source content already active"
+    notes = {
+        note["id"]: note for note in ledger_set.publications.list_notes(case["id"])
+    }
+    assert notes == {first["id"]: first, second_note["id"]: second_note}
+    assert ledger_set.sources.current_source_set(case["id"]) == source_set
+    assert [source["id"] for source in ledger_set.sources.list_sources(case["id"])] == [
+        first["promoted_source_id"]
+    ]
+    replay = ledger_set.publications.promote_note(case["id"], first_note["id"], ACTOR)
+    assert replay["promoted_source_id"] == first["promoted_source_id"]
+    assert ledger_set.sources.current_source_set(case["id"]) == source_set
+
+
+def test_postgres_claim_ignores_completed_coordinator_history(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    import psycopg
+
+    case, run = _queued_run(postgres_ledger_set)
+    database_url = os.environ["CAOS_TEST_DATABASE_URL"].replace(
+        "postgresql+psycopg://", "postgresql://"
+    )
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE jobs SET state='succeeded' WHERE run_id=%s AND node_id IS NULL",
+                (run["id"],),
+            )
+            cursor.execute(
+                "INSERT INTO jobs(run_id, node_id, state, actor, budget_reserved) "
+                "VALUES (%s, NULL, 'queued', %s, 0)",
+                (run["id"], ACTOR),
+            )
+
+    assert (run["id"], ACTOR) in postgres_ledger_set.runs.pending_runs()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tokens = list(
+            executor.map(
+                lambda worker: postgres_ledger_set.runs.claim(run["id"], worker),
+                ("history-worker-a", "history-worker-b"),
+            )
+        )
+
+    assert sum(token is not None for token in tokens) == 1
+    with psycopg.connect(database_url) as connection:
+        states = [
+            row[0]
+            for row in connection.execute(
+                "SELECT state FROM jobs WHERE run_id=%s AND node_id IS NULL ORDER BY id",
+                (run["id"],),
+            ).fetchall()
+        ]
+    assert states == ["succeeded", "claimed"]
