@@ -6,7 +6,8 @@ import hashlib
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ALL_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ ACTOR = "analyst"
 LEASE_SECONDS = 0.2
 POSTGRES_URL = os.getenv("CAOS_TEST_DATABASE_URL")
 PROTOCOL_METHOD_COUNT = 72
+RACE_HARNESS_TIMEOUT_SECONDS = 12
 
 
 class CopyFailure(RuntimeError):
@@ -56,12 +58,24 @@ def _shared_behavior_calls() -> dict[str, set[str]]:
     return calls
 
 
+def _postgres_test_dsn() -> str:
+    assert POSTGRES_URL is not None
+    from psycopg.conninfo import make_conninfo
+
+    dsn = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+    return make_conninfo(
+        dsn,
+        connect_timeout=3,
+        options="-c lock_timeout=2s -c statement_timeout=5s",
+    )
+
+
 def _reset_postgres() -> None:
     if not POSTGRES_URL:
         return
     import psycopg
 
-    dsn = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+    dsn = _postgres_test_dsn()
     with psycopg.connect(dsn) as connection, connection.cursor() as cursor:
         cursor.execute(
             "TRUNCATE TABLE cases, methodology_drafts, rv_universes, "
@@ -76,7 +90,7 @@ def ledger_set(request: pytest.FixtureRequest) -> Any:
     if not POSTGRES_URL:
         pytest.skip("CAOS_TEST_DATABASE_URL is not set")
     _reset_postgres()
-    return PostgresLedgerSet(POSTGRES_URL, lease_seconds=LEASE_SECONDS)
+    return PostgresLedgerSet(_postgres_test_dsn(), lease_seconds=LEASE_SECONDS)
 
 
 @pytest.fixture
@@ -84,10 +98,31 @@ def postgres_pair() -> tuple[Any, Any]:
     if not POSTGRES_URL:
         pytest.skip("CAOS_TEST_DATABASE_URL is not set")
     _reset_postgres()
+    dsn = _postgres_test_dsn()
     return (
-        PostgresLedgerSet(POSTGRES_URL, lease_seconds=LEASE_SECONDS),
-        PostgresLedgerSet(POSTGRES_URL, lease_seconds=LEASE_SECONDS),
+        PostgresLedgerSet(dsn, lease_seconds=LEASE_SECONDS),
+        PostgresLedgerSet(dsn, lease_seconds=LEASE_SECONDS),
     )
+
+
+def _bounded_parallel(*operations: Callable[[], Any]) -> list[Any]:
+    executor = ThreadPoolExecutor(max_workers=len(operations))
+    futures: list[Future[Any]] = []
+    pending: set[Future[Any]] = set()
+    try:
+        futures = [executor.submit(operation) for operation in operations]
+        _, pending = wait(
+            futures,
+            timeout=RACE_HARNESS_TIMEOUT_SECONDS,
+            return_when=ALL_COMPLETED,
+        )
+    finally:
+        # Worker SQL is independently bounded by connect/lock/statement timeouts,
+        # so joining here cannot strand live connections in later tests.
+        executor.shutdown(wait=True, cancel_futures=True)
+    if pending:
+        pytest.fail("PostgreSQL race exceeded its database and harness timeouts")
+    return [future.result() for future in futures]
 
 
 def _case(ledger_set: Any) -> dict[str, Any]:
@@ -811,6 +846,44 @@ def test_success_finalization_retires_claim_before_finish_and_fences_snapshot(
     ]
 
 
+def test_generic_success_update_cannot_establish_snapshot_authority(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    source_set = ledger_set.sources.ingest(_source(case["id"]), ACTOR)["source_set"]
+    run = ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "EARNINGS_UPDATE", "source_set_id": source_set["id"]},
+        [],
+    )
+    token = ledger_set.runs.claim(run["id"], "generic-worker")
+    assert token is not None
+    ledger_set.runs.update_run_fenced(run["id"], token, status="succeeded")
+    ledger_set.runs.finish(run["id"], token)
+    events_before = ledger_set.runs.events_after(run["id"])
+    snapshot_payload = {
+        "case_id": case["id"],
+        "run_id": run["id"],
+        "source_set_id": source_set["id"],
+        "source_set_version": source_set["version"],
+        "artifacts": [],
+        "accepted_at": "2026-08-24T00:00:00+00:00",
+    }
+
+    with pytest.raises(ValueError, match="RUN_NOT_READY"):
+        ledger_set.runs.accept_snapshot(
+            case["id"],
+            run["id"],
+            ACTOR,
+            {**snapshot_payload, "digest": digest(snapshot_payload)},
+        )
+
+    assert ledger_set.runs.get_case(case["id"])["accepted_snapshot_id"] is None
+    assert ledger_set.runs.get_run(run["id"])["accepted_snapshot_id"] is None
+    assert ledger_set.runs.events_after(run["id"]) == events_before == []
+
+
 def test_case_run_membership_research_events_and_visible_snapshot_contracts(
     ledger_set: Any,
 ) -> None:
@@ -1496,9 +1569,7 @@ def test_postgres_model_export_queue_and_claim_do_not_deadlock(
         barrier.wait(timeout=5)
         return "claim", second.models.claim(ready["id"], "racing-export", "export")
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(requeue), executor.submit(claim)]
-        outcomes = [future.result(timeout=10) for future in futures]
+    outcomes = _bounded_parallel(requeue, claim)
 
     assert outcomes[0] == ("queue", True)
     assert outcomes[1][0] == "claim"
@@ -1537,9 +1608,7 @@ def test_postgres_model_retry_and_fail_do_not_deadlock(
         )
         return "fail", failed["status"]
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(retry), executor.submit(fail)]
-        outcomes = [future.result(timeout=10) for future in futures]
+    outcomes = _bounded_parallel(retry, fail)
 
     assert outcomes[0] in {("retry", "MODEL_RETRY_INVALID"), ("retry", "QUEUED")}
     assert outcomes[1] == ("fail", "FAILED")

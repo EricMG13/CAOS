@@ -1021,11 +1021,6 @@ class _PostgresRunLedger(_Adapter):
                     f"UPDATE runs SET {columns[key]}=%s WHERE id=%s",
                     (value, run_id),
                 )
-            if changes.get("status") == "succeeded":
-                cursor.execute(
-                    "UPDATE runs SET final_attempt_token=%s WHERE id=%s",
-                    (attempt_token, run_id),
-                )
 
     def update_node_fenced(
         self,
