@@ -4094,3 +4094,20 @@ Anthropic gateway inside each module execution.
 Decision: proceed with the narrow constructor and composition-root change. Do
 not widen the `Provider` port, add a provider factory, or construct a transport
 inside workflow execution.
+
+## 2026-08-25 — Public worker-scheduling seam gate
+
+Decision under review: discover pending work through store APIs and submit it
+through public runtime scheduling methods without moving claim or fencing
+authority into the worker loop.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-173 | Runtime-boundary saboteur | A nominal dispatch helper could keep reading in-process store mirrors or submitting private executors, leaving production discovery coupled to stale process state. | Critical | Resolved and verified | The worker calls only `pending_runs`, `pending_model_jobs`, `schedule`, and `schedule_export`. Interface-only fakes omit dictionaries, locks, executors, refresh hooks, and private methods; focused tests and a forbidden-access scan pass. |
+| RT-2026-08-25-174 | Concurrency reviewer | Multiple pollers can discover the same queued or claimed identity and submit duplicate futures, potentially executing one job more than once. | Critical | Resolved by existing authority | A process-local future key suppresses repeat submission within one worker. Cross-worker discovery remains intentionally duplicate-tolerant because workflow and model runtimes claim leases before work and fence every authoritative write; the existing takeover/fencing suites pass. |
+| RT-2026-08-25-175 | Audit-attribution reviewer | PostgreSQL discovery from `model_build_jobs` alone cannot recover the retry/export requester because that normalized table has no actor column, silently reverting audits to the model creator. | High | Resolved and verified | Discovery remains bound to normalized model job/build rows, while the query resolves the persisted job actor from authoritative state and falls back to normalized `model_builds.created_by` only for legacy/blank actor records. Memory and PostgreSQL query-contract tests cover both paths. |
+| RT-2026-08-25-176 | Operations reviewer | A transient PostgreSQL read failure terminates the polling process rather than backing off inside the loop. | High | Accepted existing deployment contract | The prior `refresh()` path had the same fail-fast behavior, and Compose supervises the worker with `restart: unless-stopped`. This seam does not add retry policy; add bounded in-process backoff only if restart churn becomes observable. |
+
+Decision: accept the narrow public scheduling seam. Do not add a queue, worker
+protocol hierarchy, or duplicate claim policy; stores own discovery and runtimes
+remain authoritative for claims, leases, heartbeats, and fenced writes.
