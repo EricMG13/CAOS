@@ -4122,3 +4122,34 @@ preserving all user-visible behavior.
 Decision: accept the incremental deepening architecture for implementation.
 Preserve HTTP compatibility, use a fresh PostgreSQL database, and do not add a
 queue, ORM, state library, generated client dependency, or legacy state migration.
+
+## 2026-08-25 — Adversarial review remediation gate
+
+Decision under review: close the three findings from the post-session code
+review without expanding the loan-only product boundary.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-184 | Evidence-integrity reviewer | Generic source extraction can accept a workbook or text source after silently discarding sheets, rows, columns, aggregate text, or the tail of a long line. | Critical | Resolved and verified | The shared extraction boundary now rejects every exceeded limit with HTTP 422 and persists no source. Endpoint and direct regressions cover worksheet, aggregate-row, column, aggregate-text, and line ceilings; the focused source-ingestion suite passes 16/16. |
+| RT-2026-08-25-185 | Migration reviewer | Looking up the source foreign key by name alone can match an identically named constraint on another table and skip the required RV constraint. | Critical | Resolved and verified | Migration 004 now binds its existence check to the target relation, foreign-key type, and referenced relation. A real PostgreSQL regression creates a same-named decoy constraint and proves the target FK is still installed. |
+| RT-2026-08-25-186 | Browser-evidence reviewer | A two-row production fixture cannot exercise the 250-row pagination boundary even if the release report claims paging coverage. | High | Resolved and verified | The deterministic CP-3 fixture now imports 251 valid loans. The combined production-image journey proves 250 rows on page 1, the final row on page 2, disabled terminal navigation, and filter-driven return to the first page. |
+
+Decision: accept the three bounded remediations. Keep the existing hard limits,
+single shared extractor, PostgreSQL migration runner, and client-side paging;
+server paging remains a separate scale gate beyond the documented active-row
+ceiling.
+
+## 2026-08-25 — Remediation confidence follow-up
+
+Decision under review: accept the remediation after probing malformed metadata,
+constraint identity, and frozen-evidence consistency.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-187 | Malformed-workbook reviewer | Read-only XLSX iteration can trust a false worksheet dimension and still hide a real row or column under otherwise correct extraction caps. | Critical | Resolved and verified | Extraction resets each worksheet dimension, streams the actual cell coordinates, rejects actual width/row excess, and preserves the established 64-column block shape for valid workbooks. Regressions corrupt the worksheet XML in both directions and pass. |
+| RT-2026-08-25-188 | Constraint-identity reviewer | A same-named FK on the target and referenced tables can still protect the wrong columns or use the wrong delete action. | Critical | Resolved and verified | Migration 004 now verifies exact source/destination attribute numbers and `ON DELETE RESTRICT`; a malformed same-target FK aborts instead of being accepted. Four real-PostgreSQL migration regressions and the 357-test server suite pass. |
+| RT-2026-08-25-189 | Evidence-freeze reviewer | Fixes are not release evidence if the final images, inventory JSON, dump, vault, and manifest come from different database revisions. | High | Resolved and verified | Final app/worker images were rebuilt, the complete inventory reran, and revision 2846 was then dumped and restored. All 170 file-backed source references hash to the 126-file vault and Gitleaks reports zero findings. |
+
+Decision: accept the corrected local release evidence. The remaining exclusions
+are unchanged: real identity-provider exchange, external providers/licensing,
+and horizontal multi-writer traffic require their own environments.

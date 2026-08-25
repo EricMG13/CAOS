@@ -27,7 +27,23 @@ BEGIN
     END IF;
 
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'rv_loan_universes_source_id_fkey'
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'rv_loan_universes'::regclass
+          AND conname = 'rv_loan_universes_source_id_fkey'
+          AND contype = 'f'
+          AND confrelid = 'sources'::regclass
+          AND conkey = ARRAY[(
+              SELECT attnum::smallint
+              FROM pg_attribute
+              WHERE attrelid = 'rv_loan_universes'::regclass AND attname = 'source_id'
+          )]
+          AND confkey = ARRAY[(
+              SELECT attnum::smallint
+              FROM pg_attribute
+              WHERE attrelid = 'sources'::regclass AND attname = 'id'
+          )]
+          AND confdeltype = 'r'
     ) THEN
         ALTER TABLE rv_loan_universes
             ADD CONSTRAINT rv_loan_universes_source_id_fkey

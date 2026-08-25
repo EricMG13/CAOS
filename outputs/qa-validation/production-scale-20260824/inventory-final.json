@@ -2,7 +2,12 @@
   "dataset": {
     "dense_case_id": "case_d5e3151a64554296",
     "dense_sources": 130,
-    "roles": ["ADMIN", "ANALYST", "APPROVER", "READER"],
+    "roles": [
+      "ADMIN",
+      "ANALYST",
+      "APPROVER",
+      "READER"
+    ],
     "pathways": [
       "COVENANT_REFINANCING",
       "DEEP_RESEARCH",
@@ -11,49 +16,280 @@
       "FULL_CREDIT",
       "RELATIVE_VALUE"
     ],
-    "rv": { "eligible": 250, "excluded": 50 }
+    "rv": {
+      "eligible": 250,
+      "excluded": 50
+    }
   },
   "journey": {
-    "case_id": "case_e25fcfe0b46e4819",
-    "empty_case_id": "case_6db2b8ec71614edd",
-    "run_id": "run_d009151c6dc44a61",
+    "case_id": "case_1f7bc51464d84d89",
+    "empty_case_id": "case_4d1702592e07445b",
+    "run_id": "run_6f0f8d15373f4e78",
     "exports": {
-      "md": { "bytes": 681, "content_type": "text/markdown; charset=utf-8" },
-      "pdf": { "bytes": 742, "content_type": "application/pdf" },
-      "xlsx": { "bytes": 5017, "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }
+      "md": {
+        "bytes": 681,
+        "content_type": "text/markdown; charset=utf-8"
+      },
+      "pdf": {
+        "bytes": 742,
+        "content_type": "application/pdf"
+      },
+      "xlsx": {
+        "bytes": 5017,
+        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      }
     }
   },
   "loaded_inventory": {
     "combinations": 16,
     "failures": 0,
     "rows": [
-      { "role": "analyst", "route": "cases", "controls": 245, "kinds": { "input": 5, "select": 3, "button": 236, "a": 1 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "analyst", "route": "sources", "controls": 132, "kinds": { "summary": 130, "input": 1, "button": 1 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "analyst", "route": "run-console", "controls": 4, "kinds": { "select": 2, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "analyst", "route": "deep-dive", "controls": 11, "kinds": { "a": 7, "select": 2, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "analyst", "route": "rv-screener", "controls": 13, "kinds": { "input": 8, "button": 1, "select": 4 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "analyst", "route": "command-center", "controls": 0, "kinds": {}, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "analyst", "route": "model-builder", "controls": 2, "kinds": { "a": 1, "button": 1 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "analyst", "route": "report-studio", "controls": 23, "kinds": { "textarea": 1, "input": 17, "select": 1, "button": 1, "a": 3 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "cases", "controls": 247, "kinds": { "input": 5, "select": 3, "button": 238, "a": 1 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "sources", "controls": 132, "kinds": { "summary": 130, "input": 1, "button": 1 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "run-console", "controls": 4, "kinds": { "select": 2, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "deep-dive", "controls": 11, "kinds": { "a": 7, "select": 2, "button": 2 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "rv-screener", "controls": 13, "kinds": { "input": 8, "button": 1, "select": 4 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "command-center", "controls": 0, "kinds": {}, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "model-builder", "controls": 2, "kinds": { "a": 1, "button": 1 }, "alerts": 0, "loading": 0, "overflow": false },
-      { "role": "pm_qa", "route": "report-studio", "controls": 23, "kinds": { "textarea": 1, "input": 17, "select": 1, "button": 1, "a": 3 }, "alerts": 0, "loading": 0, "overflow": false }
+      {
+        "role": "analyst",
+        "route": "cases",
+        "controls": 251,
+        "kinds": {
+          "input": 5,
+          "select": 3,
+          "button": 242,
+          "a": 1
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "analyst",
+        "route": "sources",
+        "controls": 132,
+        "kinds": {
+          "summary": 130,
+          "input": 1,
+          "button": 1
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "analyst",
+        "route": "run-console",
+        "controls": 4,
+        "kinds": {
+          "select": 2,
+          "button": 2
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "analyst",
+        "route": "deep-dive",
+        "controls": 11,
+        "kinds": {
+          "a": 7,
+          "select": 2,
+          "button": 2
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "analyst",
+        "route": "rv-screener",
+        "controls": 13,
+        "kinds": {
+          "input": 8,
+          "button": 1,
+          "select": 4
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "analyst",
+        "route": "command-center",
+        "controls": 0,
+        "kinds": {},
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "analyst",
+        "route": "model-builder",
+        "controls": 2,
+        "kinds": {
+          "a": 1,
+          "button": 1
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "analyst",
+        "route": "report-studio",
+        "controls": 23,
+        "kinds": {
+          "textarea": 1,
+          "input": 17,
+          "select": 1,
+          "button": 1,
+          "a": 3
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "cases",
+        "controls": 253,
+        "kinds": {
+          "input": 5,
+          "select": 3,
+          "button": 244,
+          "a": 1
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "sources",
+        "controls": 132,
+        "kinds": {
+          "summary": 130,
+          "input": 1,
+          "button": 1
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "run-console",
+        "controls": 4,
+        "kinds": {
+          "select": 2,
+          "button": 2
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "deep-dive",
+        "controls": 11,
+        "kinds": {
+          "a": 7,
+          "select": 2,
+          "button": 2
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "rv-screener",
+        "controls": 13,
+        "kinds": {
+          "input": 8,
+          "button": 1,
+          "select": 4
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "command-center",
+        "controls": 0,
+        "kinds": {},
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "model-builder",
+        "controls": 2,
+        "kinds": {
+          "a": 1,
+          "button": 1
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      },
+      {
+        "role": "pm_qa",
+        "route": "report-studio",
+        "controls": 23,
+        "kinds": {
+          "textarea": 1,
+          "input": 17,
+          "select": 1,
+          "button": 1,
+          "a": 3
+        },
+        "alerts": 0,
+        "loading": 0,
+        "overflow": false
+      }
     ]
   },
-  "state_inventory": { "loading": 16, "error": 16, "empty": 16, "failures": 0 },
+  "state_inventory": {
+    "loading": 16,
+    "error": 16,
+    "empty": 16,
+    "failures": 0
+  },
   "load": {
     "stages": [
-      { "workers": 1, "requests": 30, "failures": 0, "p50_ms": 31.9, "p95_ms": 36.5, "max_ms": 41.9 },
-      { "workers": 4, "requests": 30, "failures": 0, "p50_ms": 121.1, "p95_ms": 123.9, "max_ms": 125.1 },
-      { "workers": 12, "requests": 30, "failures": 0, "p50_ms": 313.4, "p95_ms": 626.0, "max_ms": 628.4 },
-      { "workers": 24, "requests": 30, "failures": 0, "p50_ms": 796.6, "p95_ms": 901.8, "max_ms": 901.9 }
+      {
+        "workers": 1,
+        "requests": 30,
+        "failures": 0,
+        "p50_ms": 49.3,
+        "p95_ms": 58.1,
+        "max_ms": 61.1
+      },
+      {
+        "workers": 4,
+        "requests": 30,
+        "failures": 0,
+        "p50_ms": 191.1,
+        "p95_ms": 241.7,
+        "max_ms": 242
+      },
+      {
+        "workers": 12,
+        "requests": 30,
+        "failures": 0,
+        "p50_ms": 571.5,
+        "p95_ms": 834.7,
+        "max_ms": 1016.1
+      },
+      {
+        "workers": 24,
+        "requests": 30,
+        "failures": 0,
+        "p50_ms": 1258.6,
+        "p95_ms": 1362.2,
+        "max_ms": 1362.5
+      }
     ],
-    "post_load_ms": 30.5,
+    "post_load_ms": 46,
     "failures": 0
   }
 }
