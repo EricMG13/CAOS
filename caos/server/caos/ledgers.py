@@ -24,6 +24,14 @@ class SourceCatalog(Protocol):
 
     def source_set(self, source_set_id: str | None) -> Record | None: ...
 
+    def read_pinned_evidence(
+        self,
+        case_id: str,
+        source_set_id: str,
+        source_id: str,
+        block_ids: list[str],
+    ) -> list[Record]: ...
+
     def find_loan_universe_import(
         self,
         case_id: str,
@@ -133,6 +141,7 @@ class RunLedger(Protocol):
         node_id: str,
         artifact: Record,
         research: Record | None,
+        event_data: Record,
         artifact_validator: Callable[[Record], bool] | None = None,
     ) -> Record: ...
 
