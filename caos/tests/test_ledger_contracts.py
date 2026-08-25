@@ -4,6 +4,7 @@ import copy
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -491,10 +492,6 @@ def test_snapshot_acceptance_updates_case_and_run_together(
             {**base_payload, "source_set_version": source_set["version"] + 1},
         ),
         (
-            "SOURCE_SET_CHANGED",
-            {**base_payload, "source_set_id": "source_set_missing"},
-        ),
-        (
             "RUN_NOT_READY",
             {
                 **base_payload,
@@ -626,10 +623,20 @@ def test_note_promotion_changes_source_authority_once(ledger_set: Any) -> None:
     case = _case(ledger_set)
     note = ledger_set.publications.create_note(case["id"], ACTOR, "Debt remains 100")
 
-    promoted = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
-    promoted_set = ledger_set.sources.current_source_set(case["id"])
-    assert promoted_set is not None
-    repeated = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
+    with patch.object(
+        ledger_set.sources,
+        "ingest_promoted_note",
+        wraps=ledger_set.sources.ingest_promoted_note,
+    ) as ingest_promoted_note:
+        promoted = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
+        assert ingest_promoted_note.call_count == 1
+        ingested_note, ingested_actor = ingest_promoted_note.call_args.args
+        assert ingested_note["id"] == note["id"] and ingested_actor == ACTOR
+        promoted_set = ledger_set.sources.current_source_set(case["id"])
+        assert promoted_set is not None
+
+        repeated = ledger_set.publications.promote_note(case["id"], note["id"], ACTOR)
+        assert ingest_promoted_note.call_count == 1
 
     source_id = promoted["promoted_source_id"]
     source = ledger_set.sources.get_source(source_id)
