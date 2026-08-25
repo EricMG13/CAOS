@@ -316,14 +316,14 @@ try {
     const { promise: lateRunSeen, resolve: markLateRunSeen } = Promise.withResolvers();
     const { promise: lateRunBarrier, resolve: releaseLateRun } = Promise.withResolvers();
     const { promise: lateRunFulfilled, resolve: markLateRunFulfilled } = Promise.withResolvers();
-    let lateRunCaptured = false;
+    let lateRunIntercepts = 0;
     const runResponseRoute = (candidate) => /^\/api\/runs\/[^/]+$/.test(candidate.pathname);
     await journeyPage.route(runResponseRoute, async (route) => {
       if (route.request().method() !== "GET") return route.continue();
+      lateRunIntercepts += 1;
       const response = await route.fetch();
       const body = await response.json();
-      if (body.case_id !== journeyCase.id || lateRunCaptured) return route.fulfill({ response });
-      lateRunCaptured = true;
+      assert.equal(body.case_id, journeyCase.id, "late-response interceptor captured the wrong case");
       markLateRunSeen();
       await lateRunBarrier;
       await route.fulfill({
@@ -331,7 +331,7 @@ try {
         json: { ...body, status: "failed", error: { code: "CROSS_CASE_LATE_RESPONSE", message: "Late response from previous case" } },
       });
       markLateRunFulfilled();
-    });
+    }, { times: 1 });
     const startResponse = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/runs`) && response.request().method() === "POST");
     await journeyPage.getByRole("button", { name: "Compile and run" }).click();
     const started = await startResponse;
@@ -342,6 +342,7 @@ try {
     await journeyPage.getByRole("region", { name: "Accepted authority" }).getByText(`Synthetic Dense Issuer / ${denseDetail.name}`, { exact: true }).waitFor();
     releaseLateRun();
     await lateRunFulfilled;
+    assert.equal(lateRunIntercepts, 1, "late-response interceptor must handle exactly one request");
     assert.equal(await journeyPage.getByText("CROSS_CASE_LATE_RESPONSE", { exact: false }).count(), 0);
     assert.equal(new URL(journeyPage.url()).searchParams.get("case"), denseCaseId);
     await journeyPage.unroute(runResponseRoute);

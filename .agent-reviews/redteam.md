@@ -4524,3 +4524,40 @@ Decision: accept the Task 5 corrections for independent re-review. The earlier
 review handoff overstated completion: its deleted-test mapping was incomplete
 and it missed the case/source lock inversion. Both gaps are now fixed and
 verified across memory and live PostgreSQL.
+
+## 2026-08-25 — Normalized ledger final repository verification gate
+
+Decision under review: accept the complete normalized-ledger branch only after
+server, frontend, combined-production, workspace, accessibility, impact, and
+post-edit review gates agree on the final authority behavior.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-236 | Authority-race reviewer | An unrelated run success or failure in the same selected case/run context could clear a pending case-authority request, letting the UI present ready authority before the case detail that owns it arrived. | Critical | Resolved and verified | Completion now matches the active pending scope and its full generation/case/run context in addition to current authority. A focused reducer sequence proves unrelated run success and failure are identity returns, then proves the matching case response completes. The complete frontend unit suite passes 24/24, and two production inventories plus two workbench runs pass against the final build. |
+| RT-2026-08-25-237 | Gate-reliability reviewer | Asynchronous Playwright route handlers could fulfill or continue a route after ownership had already moved, making mandatory late-response and Deep Research gates nondeterministic. | High | Resolved and verified | The production interceptor is one-shot, asserts the captured journey case and exactly one invocation, and never attempts passthrough fulfillment. The workbench prefetches stable case detail before synchronous fixture fulfillment and waits on a real intercepted detail request before the Sources click. Production inventory passed four consecutive runs after its handler fix, and final inventory/workbench each passed twice. |
+| RT-2026-08-25-238 | Accessibility reviewer | Report Studio's FiledProof table wrapper could overflow without being keyboard focusable, so keyboard users could not reach all filed-table content. | High | Resolved and verified | Each scrollable filed table now uses the established `tabIndex={0}`, `role="region"`, and precise `aria-label="Scrollable filed report table"` pattern. Axe against the combined FastAPI-served production export and dense non-empty fixtures passes 29 route/viewport combinations with zero violations. |
+| RT-2026-08-25-239 | Production-topology reviewer | Empty fixtures or a `next dev` server could make the browser gates green without exercising report exports, accepted model authority, pending research, dense RV/source overflow, external job execution, or production static serving. | Critical | Resolved and verified | An isolated live-PostgreSQL schema contained a 100-source case, all six accepted pathways, 250 eligible and 50 excluded loans, approved model/report authority, thesis, recommendation, and PM membership. FastAPI served the production export with a real external worker; the local scanner stub exercised only the malware-protocol boundary. Inventory exported Markdown/PDF/XLSX, workbench covered Model Builder/Report Studio/workspace transitions, and dense axe used the pending-plan and ready-model fixtures. |
+| RT-2026-08-25-240 | Change-scope reviewer | GitNexus reports HIGH task-local impact and its `origin/main` comparison maps no changed symbols, so an unexpected flow could be hidden by incomplete index attribution. | High | Resolved and verified | The generated index was rebuilt to 7,653 nodes, 21,002 edges, 123 clusters, and 300 flows. Direct diff plus the Task 5 comparison maps only the authorized 13 workspace-authority flows and two FiledProof parsing/display flows; no unexpected process or code file appears. Complete no-DSN/live server suites pass 360/403, and frontend unit/lint/TypeScript/build, two final inventories, two workbench runs, and dense axe all pass. |
+
+Decision: accept the normalized-ledger branch for independent final review. All
+mandatory Task 6 gates pass, the confirmed critical authority race and gate
+defects are resolved, no high-impact objection is accepted unresolved, and no
+file was staged or committed.
+
+## 2026-08-25 — Task 6 authority-owner independent-review correction
+
+Correction under review: the preceding RT-236 disposition overstated the first
+authority-race fix because it covered only the ordering while a case request
+still had a non-null pending record.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-241 | Authority-state reviewer | After case/run selection, a same-context run success could still turn loading case authority ready; after matching case success cleared pending, a same-context run failure could still turn valid case authority error. The global status therefore remained writable by non-case scopes whenever pending was null. | Critical | Resolved and verified | Global authority now has an explicit case owner. Case-bearing hydration, case/run selection, case refresh start, and run invalidation seed an exact pending case context. Non-case starts and completions are identity returns before and after case resolution. Pending case success/failure requires the exact generation/case/run context; current-context no-pending completion is allowed only for `scope: "case"` so direct refreshes after upload, acceptance, or snapshot switch retain their legitimate error contract. Red-first probes failed 5/14 before the correction; the final focused suite passes 14/14 and the complete frontend unit suite passes 25/25. |
+| RT-2026-08-25-242 | Snapshot-authority reviewer | `snapshotAccepted` could mark authority ready and clear an in-flight case request while the React authority object was still unavailable. | High | Resolved and verified | Snapshot acceptance now requires current context, already-ready status, and no pending case request. A pending acceptance is an identity return; only matching case completion can resolve loading, after which the snapshot identity may be recorded. The focused sequence proves pending rejection and ready-state acceptance. |
+| RT-2026-08-25-243 | Initialization reviewer | Tightening completions could leave initial route hydration stuck or let `/api/cases` success/failure resolve case authority before detail/snapshot fetch. | High | Resolved and verified | A case-bearing hydrate seeds pending case ownership; both `scope: "cases"` success and failure are identity returns. Successful registry resolution then selects the authorized case/run and starts the exact case request. Empty-route hydration remains idle. Focused unit, lint, TypeScript, production build, and the combined workbench authority barrier pass. |
+| RT-2026-08-25-244 | Cleanup reviewer | The first Task 6 report named only the abandoned browser schema as residue even though the successful dense fixture schema also remained in the disposable database. | Medium | Corrected and coordinated | The report now names both exact schemas: `task6_browser_2be6e402ed6d4ed1a58608bbb0228014` and `task6_browser_dc430ceaa1cc42f3a16092ffb97f054a`. Neither was dropped during rereview; the parent owns coordinated schema or disposable-container removal after evidence is no longer needed. All app, worker, and scanner processes were stopped. |
+
+Decision: accept the authority-owner correction for independent rereview. The
+initial RT-236 implementation was incomplete and is superseded for reducer
+coverage by RT-241 through RT-243; the append-only historical entry remains as
+the review record. No schema was dropped, and no file was staged or committed.

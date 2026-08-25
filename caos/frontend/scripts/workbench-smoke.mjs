@@ -193,14 +193,22 @@ try {
   const authorityDetailBarrier = new Promise((resolve) => {
     releaseAuthorityDetail = resolve;
   });
+  let markAuthorityDetailSeen;
+  const authorityDetailSeen = new Promise((resolve) => {
+    markAuthorityDetailSeen = resolve;
+  });
   const heldAuthorityDetail = (url) => url.pathname === `/api/cases/${caseRecord.id}`;
   const holdAuthorityDetail = async (route) => {
+    markAuthorityDetailSeen();
     await authorityDetailBarrier;
     await route.continue();
   };
   await page.route(heldAuthorityDetail, holdAuthorityDetail);
   await page.goto(`${baseURL}/command-center/?case=${caseRecord.id}`, { waitUntil: "domcontentloaded" });
+  await authorityDetailSeen;
   const loadingSourcesTrigger = page.getByRole("button", { name: "Sources loading" });
+  assert.equal(await loadingSourcesTrigger.getAttribute("aria-expanded"), "false",
+    "client authority request did not establish a closed, hydrated source drawer");
   await loadingSourcesTrigger.click();
   const sourceDrawer = page.getByRole("dialog", { name: "Source details" });
   await sourceDrawer.getByText("Loading source authority…").waitFor();
@@ -440,11 +448,12 @@ try {
   const researchRunFixturePath = (url) => url.pathname === `/api/runs/${pendingResearchRun.id}`;
   const researchEventsFixturePath = (url) => url.pathname === `/api/runs/${pendingResearchRun.id}/events`;
   const approveResearchFixturePath = (url) => url.pathname === `/api/runs/${pendingResearchRun.id}/research-plan/approve`;
+  const caseDetailFixtureResponse = await api.get(`/api/cases/${caseRecord.id}`);
+  assert.equal(caseDetailFixtureResponse.status(), 200);
+  const caseDetailFixture = await caseDetailFixtureResponse.json();
   await page.route(caseDetailFixturePath, async (route) => {
     caseDetailFixtureHits += 1;
-    const response = await route.fetch();
-    const detail = await response.json();
-    await route.fulfill({ response, json: { ...detail, deep_research_available: true, deep_research_unavailable_reason: null } });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...caseDetailFixture, deep_research_available: true, deep_research_unavailable_reason: null }) });
   });
   await page.route(startResearchFixturePath, async (route) => {
     startFixtureHits += 1;
