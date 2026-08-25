@@ -144,10 +144,10 @@ def test_postgres_pending_reads_use_normalized_tables() -> None:
                 assert "ORDER BY created_at, id" in statement
                 self.rows = [("run-1", "analyst")]
             elif "FROM model_build_jobs" in statement:
-                assert "jsonb_extract_path_text" in statement
+                assert "job.actor" in statement
                 assert "build.created_by" in statement
                 assert "JOIN model_builds" in statement
-                assert "JOIN caos_state" in statement
+                assert "caos_state" not in statement
                 assert "job.state IN ('queued', 'claimed')" in statement
                 self.rows = [("build-1", "reviewer", "calculate")]
             else:

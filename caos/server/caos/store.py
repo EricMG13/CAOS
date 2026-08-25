@@ -1368,12 +1368,9 @@ class PostgresStore(MemoryStore):
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT job.build_id, "
-                    "COALESCE(NULLIF(jsonb_extract_path_text("
-                    "state.state, 'model_jobs', job.build_id || ':' || job.kind, 'actor'"
-                    "), ''), build.created_by), job.kind "
+                    "COALESCE(NULLIF(job.actor, ''), build.created_by), job.kind "
                     "FROM model_build_jobs AS job "
                     "JOIN model_builds AS build ON build.id = job.build_id "
-                    "JOIN caos_state AS state ON state.id = true "
                     "WHERE job.kind IN ('calculate', 'export') "
                     "AND job.state IN ('queued', 'claimed') "
                     "ORDER BY job.created_at, job.build_id, job.kind"
@@ -1446,8 +1443,9 @@ class PostgresStore(MemoryStore):
                             ),
                         )
                         cursor.execute(
-                            "INSERT INTO model_build_jobs(build_id, kind, state) VALUES (%s, 'calculate', 'queued')",
-                            (record["id"],),
+                            "INSERT INTO model_build_jobs(build_id, kind, actor, state) "
+                            "VALUES (%s, 'calculate', %s, 'queued')",
+                            (record["id"], actor),
                         )
                     connection.commit()
             except Exception:
@@ -1473,10 +1471,10 @@ class PostgresStore(MemoryStore):
                         state, revision, database_state, database_revision = self._persist_connection(connection)
                         self._update_model_build_connection(connection, build)
                         cursor.execute(
-                            "UPDATE model_build_jobs SET state='queued', worker_id=NULL, attempt_token=NULL, "
+                            "UPDATE model_build_jobs SET actor=%s, state='queued', worker_id=NULL, attempt_token=NULL, "
                             "lease_until=NULL, error=NULL, updated_at=now() "
                             "WHERE build_id=%s AND kind='calculate'",
-                            (build_id,),
+                            (actor, build_id),
                         )
                         if cursor.rowcount != 1:
                             raise RuntimeError("model retry job is unavailable")
@@ -1508,10 +1506,11 @@ class PostgresStore(MemoryStore):
                         state, revision, database_state, database_revision = self._persist_connection(connection)
                         self._update_model_build_connection(connection, build)
                         cursor.execute(
-                            "INSERT INTO model_build_jobs(build_id, kind, state) VALUES (%s, 'export', 'queued') "
-                            "ON CONFLICT (build_id, kind) DO UPDATE SET state='queued', worker_id=NULL, "
+                            "INSERT INTO model_build_jobs(build_id, kind, actor, state) "
+                            "VALUES (%s, 'export', %s, 'queued') "
+                            "ON CONFLICT (build_id, kind) DO UPDATE SET actor=EXCLUDED.actor, state='queued', worker_id=NULL, "
                             "attempt_token=NULL, lease_until=NULL, error=NULL, updated_at=now()",
-                            (build_id,),
+                            (build_id, actor),
                         )
                     connection.commit()
             except Exception:

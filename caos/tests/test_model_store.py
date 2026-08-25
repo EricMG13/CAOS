@@ -277,6 +277,112 @@ def test_migration_runner_applies_ordered_files_once(tmp_path: Path) -> None:
     assert apply_migrations(connection, tmp_path) == ()
 
 
+def test_model_job_actor_migration_backfills_creator_and_enforces_not_null() -> None:
+    migration = (
+        Path(__file__).parents[1]
+        / "server"
+        / "migrations"
+        / "004_model_build_job_actor.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "ADD COLUMN actor text" in migration
+    assert "SET actor = build.created_by" in migration
+    assert "FROM model_builds AS build" in migration
+    assert "WHERE job.build_id = build.id" in migration
+    assert "ALTER COLUMN actor SET NOT NULL" in migration
+    assert "caos_state" not in migration
+    assert migration.index("ADD COLUMN actor text") < migration.index(
+        "SET actor = build.created_by"
+    ) < migration.index("ALTER COLUMN actor SET NOT NULL")
+
+
+def test_postgres_model_queues_persist_each_requesting_actor() -> None:
+    store = PostgresStore.__new__(PostgresStore)
+    MemoryStore.__init__(store)
+    store.persist = lambda: None
+    build = _accepted_build(store)
+    store._state_revision = 0
+    store._base_state = store._snapshot()
+    calls: list[tuple[str, tuple[Any, ...] | None]] = []
+
+    class Cursor:
+        rowcount = 1
+
+        def __enter__(self) -> Cursor:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(
+            self, statement: str, parameters: tuple[Any, ...] | None = None
+        ) -> None:
+            calls.append((statement, parameters))
+
+        def fetchone(self) -> tuple[int, dict[str, Any]]:
+            return store._state_revision, copy.deepcopy(store._base_state)
+
+    class Connection:
+        def __enter__(self) -> Connection:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def commit(self) -> None:
+            return None
+
+    class Psycopg:
+        def connect(self, _dsn: str) -> Connection:
+            return Connection()
+
+    def persist(_connection: Connection) -> tuple[dict[str, Any], int, dict[str, Any], int]:
+        revision = store._state_revision
+        return (
+            store._snapshot(),
+            revision + 1,
+            copy.deepcopy(store._base_state),
+            revision,
+        )
+
+    store._dsn = "postgresql://test"
+    store._psycopg = Psycopg()
+    store._jsonb = lambda value: value
+    store._persist_connection = persist
+    store._update_model_build_connection = lambda *_args: None
+
+    queued, _created = store.queue_model_build(build, "analyst")
+    key = f"{queued['id']}:calculate"
+    store.model_builds[queued["id"]]["status"] = "FAILED"
+    store.model_jobs[key]["status"] = "failed"
+    store._base_state = store._snapshot()
+    store.retry_model_build(queued["id"], "reviewer")
+    store.model_builds[queued["id"]].update(
+        status="READY", export={"status": "NOT_REQUESTED", "error": None}
+    )
+    store._base_state = store._snapshot()
+    store.queue_model_export(queued["id"], "approver")
+
+    calculate = next(
+        call for call in calls if call[0].startswith("INSERT INTO model_build_jobs")
+    )
+    retry = next(
+        call for call in calls if call[0].startswith("UPDATE model_build_jobs SET")
+    )
+    export = next(
+        call
+        for call in calls
+        if call[0].startswith("INSERT INTO model_build_jobs")
+        and "'export'" in call[0]
+    )
+    assert "actor" in calculate[0] and calculate[1] == (queued["id"], "analyst")
+    assert "actor" in retry[0] and retry[1] == ("reviewer", queued["id"])
+    assert "actor" in export[0] and export[1] == (queued["id"], "approver")
+
+
 def test_postgres_model_queue_is_unique_and_takeover_is_fenced() -> None:
     database_url = os.getenv("CAOS_TEST_DATABASE_URL")
     if not database_url:
