@@ -1293,6 +1293,9 @@ def test_report_freeze_and_approval_require_exact_preview(
     )
     assert approved_first["status"] == "APPROVED"
 
+    assert ledger_set.runs.switch_visible_snapshot(
+        case_id, current_snapshot["id"], ACTOR
+    ) == current_snapshot
     stale_versions_report = _report_record(current_snapshot, inputs)
     stale_versions_report["content"]["thesis_version"] = 0
     stale_versions_report["content"]["recommendation_version"] = 0

@@ -1153,6 +1153,11 @@ class _MemoryPublicationLedger(_Adapter):
             or snapshot_digest != digest(snapshot)
         ):
             raise ValueError("SNAPSHOT_REQUIRED")
+        visible_snapshot_id = case.get("visible_snapshot_id") or case.get(
+            "accepted_snapshot_id"
+        )
+        if visible_snapshot_id != snapshot.get("id"):
+            raise ValueError("STALE_PREVIEW")
         theses = state.theses.get(case_id, [])
         recommendations = state.recommendations.get(case_id, [])
         thesis = next(

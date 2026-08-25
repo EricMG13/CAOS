@@ -1977,6 +1977,11 @@ class _PostgresPublicationLedger(_Adapter):
             or snapshot_digest != digest(snapshot)
         ):
             raise ValueError("SNAPSHOT_REQUIRED")
+        visible_snapshot_id = case.get("visible_snapshot_id") or case.get(
+            "accepted_snapshot_id"
+        )
+        if visible_snapshot_id != snapshot.get("id"):
+            raise ValueError("STALE_PREVIEW")
         cursor.execute(
             "SELECT * FROM thesis_versions WHERE case_id=%s AND version=%s",
             (case_id, content.get("thesis_version")),

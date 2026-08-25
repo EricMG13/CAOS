@@ -402,6 +402,51 @@ def test_report_preview_approver_governance_and_all_exports(tmp_path: Path) -> N
         assert workbook.content.startswith(b"PK")
 
 
+def test_report_approval_rejects_snapshot_after_visible_switch(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        case_id, _source = _accepted_http_case(client, "Visible authority switch")
+        assert client.post(
+            f"/api/cases/{case_id}/report-inputs", json=_report_inputs()
+        ).status_code == 201
+        frozen_response = client.post(
+            f"/api/cases/{case_id}/reports/freeze",
+            json={"thesis_version": 1, "recommendation_version": 1},
+        )
+        assert frozen_response.status_code == 201
+        frozen = frozen_response.json()
+
+        next_run = client.post(
+            f"/api/cases/{case_id}/runs",
+            json={"pathway": "EARNINGS_UPDATE", "depth": "screen"},
+        ).json()
+        for _ in range(60):
+            state = client.get(f"/api/runs/{next_run['id']}").json()
+            if state["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        assert state["status"] == "succeeded"
+        next_snapshot = client.post(f"/api/runs/{next_run['id']}/accept")
+        assert next_snapshot.status_code == 200
+        assert client.post(
+            f"/api/cases/{case_id}/snapshot/switch",
+            json={"snapshot_id": next_snapshot.json()["id"]},
+        ).status_code == 200
+
+        rejected = client.post(
+            f"/api/cases/{case_id}/reports/approve",
+            headers={"x-caos-role": "APPROVER"},
+            json={
+                "expected_status": "PENDING_APPROVAL",
+                "preview_digest": frozen["preview_digest"],
+                "input_fingerprint": frozen["input_fingerprint"],
+            },
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == "STALE_PREVIEW"
+        assert client.get(f"/api/cases/{case_id}/reports").json() == frozen
+
+
 
 
 
