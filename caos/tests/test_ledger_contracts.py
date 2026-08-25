@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,6 +32,28 @@ class CopyFailure(RuntimeError):
 class _Uncopyable:
     def __deepcopy__(self, memo: dict[int, Any]) -> Any:
         raise CopyFailure("copy failed")
+
+
+def _shared_behavior_calls() -> dict[str, set[str]]:
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    calls = {port: set() for port in ("sources", "runs", "publications", "models")}
+    for function in (
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(argument.arg == "ledger_set" for argument in node.args.args)
+    ):
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Attribute)
+                and isinstance(node.func.value.value, ast.Name)
+                and node.func.value.value.id == "ledger_set"
+                and node.func.value.attr in calls
+            ):
+                calls[node.func.value.attr].add(node.func.attr)
+    return calls
 
 
 def _reset_postgres() -> None:
@@ -261,6 +285,7 @@ def test_protocol_inventory_is_exact(ledger_set: Any) -> None:
         ("publications", ledgers.PublicationLedger),
         ("models", ledgers.ModelLedger),
     )
+    shared_calls = _shared_behavior_calls()
     method_count = 0
     for port_name, protocol in ports:
         adapter = getattr(ledger_set, port_name)
@@ -271,6 +296,7 @@ def test_protocol_inventory_is_exact(ledger_set: Any) -> None:
         }
         method_count += len(methods)
         assert all(callable(getattr(adapter, name, None)) for name in methods)
+        assert shared_calls[port_name] == methods
     assert method_count == PROTOCOL_METHOD_COUNT
 
 
@@ -753,6 +779,10 @@ def test_success_finalization_retires_claim_before_finish_and_fences_snapshot(
         deadline=time.monotonic() - 1,
     )
 
+    finalized = ledger_set.runs.get_run(run["id"])
+    assert finalized is not None
+    assert "final_attempt_token" not in finalized
+    assert set(finalized) == set(run)
     assert ledger_set.runs.is_current(run["id"], token) is False
     assert ledger_set.runs.pending_runs() == []
     time.sleep(LEASE_SECONDS + 0.1)
@@ -821,6 +851,13 @@ def test_case_run_membership_research_events_and_visible_snapshot_contracts(
 
     token = ledger_set.runs.claim(run["id"], "research-worker")
     assert token is not None
+    ledger_set.runs.emit_fenced(
+        run["id"], token, "contract.fenced", {"worker": "research-worker"}
+    )
+    fenced_events = ledger_set.runs.events_after(run["id"], 1)
+    assert len(fenced_events) == 1
+    assert fenced_events[0]["event"] == "contract.fenced"
+    assert fenced_events[0]["data"] == {"worker": "research-worker"}
     node = run["nodes"][0]
     ledger_set.runs.update_run_fenced(run["id"], token, status="running")
     proposed_plan = {
@@ -838,6 +875,8 @@ def test_case_run_membership_research_events_and_visible_snapshot_contracts(
     approved = ledger_set.runs.approve_research_plan(run["id"], ACTOR, plan_hash)
     assert approved["status"] == "queued"
     ledger_set.runs.finish(run["id"], token)
+    with pytest.raises(JobFencedError, match="stale workflow attempt"):
+        ledger_set.runs.emit_fenced(run["id"], token, "contract.stale", {})
 
     first_run, first_snapshot = _accept_empty_run(ledger_set, case["id"], source_set)
     second_run, second_snapshot = _accept_empty_run(ledger_set, case["id"], source_set)
@@ -947,6 +986,15 @@ def test_promoted_note_duplicate_digest_rolls_back_all_authority(
 
 def test_publication_methodology_rv_and_audit_contracts(ledger_set: Any) -> None:
     case = _case(ledger_set)
+    thesis = ledger_set.publications.append_thesis(
+        case["id"], ACTOR, 0, {"core_thesis": "Defensible", "evidence_ids": []}
+    )
+    assert thesis["version"] == 1
+    assert ledger_set.publications.list_theses(case["id"]) == [thesis]
+    with pytest.raises(ValueError, match="VERSION_CONFLICT"):
+        ledger_set.publications.append_thesis(
+            case["id"], ACTOR, 0, {"core_thesis": "Stale", "evidence_ids": []}
+        )
     recommendations = ledger_set.publications.append_recommendations(
         case["id"],
         ACTOR,
@@ -1459,6 +1507,47 @@ def test_postgres_model_export_queue_and_claim_do_not_deadlock(
     assert final_first == final_second
     assert final_first is not None
     assert final_first["export"]["status"] in {"QUEUED", "EXPORTING"}
+
+
+def test_postgres_model_retry_and_fail_do_not_deadlock(
+    postgres_pair: tuple[Any, Any],
+) -> None:
+    first, second = postgres_pair
+    build_input = _accepted_model_input(first)
+    queued, _ = first.models.queue_build(build_input, ACTOR)
+    token = first.models.claim(queued["id"], "failing-worker")
+    assert token is not None
+    barrier = threading.Barrier(2)
+
+    def retry() -> tuple[str, str]:
+        barrier.wait(timeout=5)
+        try:
+            retried = first.models.retry_build(queued["id"], "reviewer")
+        except ValueError as exc:
+            return "retry", str(exc)
+        return "retry", retried["status"]
+
+    def fail() -> tuple[str, str]:
+        barrier.wait(timeout=5)
+        failed = second.models.fail(
+            queued["id"],
+            token,
+            {"code": "MODEL_CALCULATION_FAILED", "detail": "bounded"},
+            "failing-worker",
+        )
+        return "fail", failed["status"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(retry), executor.submit(fail)]
+        outcomes = [future.result(timeout=10) for future in futures]
+
+    assert outcomes[0] in {("retry", "MODEL_RETRY_INVALID"), ("retry", "QUEUED")}
+    assert outcomes[1] == ("fail", "FAILED")
+    final_first = first.models.get_build(queued["id"])
+    final_second = second.models.get_build(queued["id"])
+    assert final_first == final_second
+    assert final_first is not None
+    assert final_first["status"] in {"FAILED", "QUEUED"}
 
 
 def test_postgres_stale_tokens_cannot_publish_any_authority(

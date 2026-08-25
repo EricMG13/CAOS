@@ -2399,12 +2399,12 @@ class _PostgresModelLedger(_Adapter):
 
     def retry_build(self, build_id: str, actor: str) -> Record:
         with self._db.connection() as connection, connection.cursor() as cursor:
-            build = self._build(cursor, build_id, lock=True)
             cursor.execute(
                 "SELECT * FROM model_build_jobs WHERE build_id=%s AND kind='calculate' FOR UPDATE",
                 (build_id,),
             )
             job = cursor.fetchone()
+            build = self._build(cursor, build_id, lock=True)
             if (
                 not build
                 or build.get("status") != "FAILED"

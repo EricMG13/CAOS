@@ -30,6 +30,7 @@ class _MemoryState(MemoryStore):
     def __init__(self, lease_seconds: float) -> None:
         super().__init__()
         self.lease_seconds = lease_seconds
+        self._final_attempt_tokens: dict[str, str] = {}
 
     @staticmethod
     def new_id(prefix: str) -> str:
@@ -613,7 +614,7 @@ class _MemoryRunLedger(_Adapter):
             if (
                 run
                 and run.get("status") == "succeeded"
-                and run.get("final_attempt_token") == attempt_token
+                and state._final_attempt_tokens.get(run_id) == attempt_token
                 and job
                 and job.get("status") == "finished"
                 and job.get("attempt_token") == attempt_token
@@ -627,17 +628,19 @@ class _MemoryRunLedger(_Adapter):
             prior_run = copy.deepcopy(state.runs[run_id])
             prior_job = copy.deepcopy(state.jobs[run_id])
             prior_events = copy.deepcopy(state.events.get(run_id, []))
+            had_prior_final_token = run_id in state._final_attempt_tokens
+            prior_final_token = state._final_attempt_tokens.get(run_id)
             try:
                 _remaining_finalization_seconds(deadline)
                 run_changes: Record = {
                     "status": "succeeded",
                     "current_node_id": None,
                     "error": None,
-                    "final_attempt_token": attempt_token,
                 }
                 if stored_research is not None:
                     run_changes["research"] = stored_research
                 state.runs[run_id].update(run_changes)
+                state._final_attempt_tokens[run_id] = attempt_token
                 state.jobs[run_id].update(
                     status="finished", lease_until=0.0, budget_reserved=0
                 )
@@ -656,6 +659,11 @@ class _MemoryRunLedger(_Adapter):
                 state.runs[run_id] = prior_run
                 state.jobs[run_id] = prior_job
                 state.events[run_id] = prior_events
+                if had_prior_final_token:
+                    assert prior_final_token is not None
+                    state._final_attempt_tokens[run_id] = prior_final_token
+                else:
+                    state._final_attempt_tokens.pop(run_id, None)
                 raise
             condition = state.event_conditions.get(run_id)
             if condition:
@@ -674,7 +682,7 @@ class _MemoryRunLedger(_Adapter):
             if not run or run.get("case_id") != case_id or case is None:
                 raise ValueError("RUN_NOT_FOUND")
 
-            final_attempt_token = run.get("final_attempt_token")
+            final_attempt_token = state._final_attempt_tokens.get(run_id)
             final_job = state.jobs.get(run_id)
             if (
                 run.get("status") != "succeeded"
