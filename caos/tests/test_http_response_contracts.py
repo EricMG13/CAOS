@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -21,6 +22,7 @@ from caos.responses import (
     ModelReadinessResponse,
     ReportResponse,
     RunResponse,
+    SnapshotDiffResponse,
     SnapshotResponse,
     SourceResponse,
     SourceSetResponse,
@@ -539,3 +541,62 @@ def test_source_response_validates_upload_and_stored_source_shapes(
     for name in ("source", "source_detail", "promoted_source_detail"):
         payload = response_payloads[name]
         assert SourceResponse.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_snapshot_diff_accepts_added_artifacts_without_snapshot_ids() -> None:
+    payload = {
+        "changed": True,
+        "added": [{"module_id": "CP-1", "digest": "added"}],
+        "removed": [{"module_id": "CP-0", "digest": "removed"}],
+        "modified": [],
+        "source_set_changed": False,
+    }
+
+    assert SnapshotDiffResponse.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_openapi_declares_strict_models_for_every_json_success_response(
+    client: TestClient,
+) -> None:
+    exempt = {
+        ("get", "/api/runs/{run_id}/events"),
+        ("get", "/api/cases/{case_id}/models/{build_id}/download"),
+        ("get", "/api/cases/{case_id}/reports/export/{format_name}"),
+    }
+    paths = client.app.openapi()["paths"]
+
+    for path, operations in paths.items():
+        if not path.startswith("/api/"):
+            continue
+        for method, operation in operations.items():
+            if (method, path) in exempt or method == "parameters":
+                continue
+            success = next(
+                response
+                for status, response in operation["responses"].items()
+                if status.startswith("2")
+            )
+            schema = success["content"]["application/json"]["schema"]
+            assert "#/components/schemas/" in json.dumps(schema), (method, path, schema)
+
+    assert paths["/api/me"]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/IdentityResponse"}
+    assert paths["/api/cases"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["items"] == {"$ref": "#/components/schemas/CaseResponse"}
+    assert "#/components/schemas/ReportResponse" in json.dumps(
+        paths["/api/cases/{case_id}/reports"]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]
+    )
+    schemas = client.app.openapi()["components"]["schemas"]
+    for name in (
+        "HealthResponse",
+        "CaseDetailResponse",
+        "ThesisResponse",
+        "LoanUniverseResponse",
+        "ModelListResponse",
+        "VisualRecipeValidationResponse",
+    ):
+        assert schemas[name]["additionalProperties"] is False

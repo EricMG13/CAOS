@@ -4046,3 +4046,19 @@ Decision: accept the implementation for commit and deployment packaging. Do not
 add bond fields, flexible spreadsheet mapping, a pricing engine, virtualized
 grid, or pre-CP-3 signals. Production activation remains gated on the existing
 real-PostgreSQL and Caddy/ClamAV deployment smoke in an environment with Docker.
+
+## 2026-08-25 — Explicit HTTP response-model gate
+
+Decision under review: attach strict FastAPI response models to every JSON
+success route without changing the existing wire protocol.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-163 | Compatibility reviewer | FastAPI response serialization can silently remove undeclared fields or add defaults, changing live payloads while OpenAPI looks more precise. | Critical | Resolved and verified | Route models use exact strict variants for omission-sensitive and lifecycle-dependent shapes. Existing key-set fixtures, populated HTTP variants, and the full server suite verify unchanged payloads. |
+| RT-2026-08-25-164 | Lifecycle reviewer | Representative queued/failed fixtures miss transient model builds, ready exports, detailed readiness requirements, approved reports, Deep Research runs, and loan-universe audit events. | High | Resolved and verified | The route contracts extend the shared Task 1 families with concrete strict variants for each persisted lifecycle shape; focused model, Deep Research, publishing, and loan tests exercise populated variants. |
+| RT-2026-08-25-165 | Schema-quality reviewer | A permissive root object could satisfy superficial OpenAPI coverage without documenting a usable response contract. | High | Resolved and verified | Every JSON success response references named component schemas, representative new components forbid unknown properties, and no catch-all root response model was introduced. Dynamic dictionaries remain only where the handler intentionally carries methodology, worksheet, artifact, or recipe payload data. |
+| RT-2026-08-25-166 | Transport reviewer | Modeling SSE or binary downloads as JSON could corrupt streaming/file semantics or advertise false response media types. | Critical | Resolved and verified | Run events, model downloads, and report exports retain their original `StreamingResponse`, `FileResponse`, or binary `Response` declarations and are explicitly exempt from JSON schema coverage. |
+
+Decision: accept the explicit response-model interface after full-suite
+verification. Do not add generated clients, permissive catch-all schemas, or
+models for the three non-JSON transport routes.

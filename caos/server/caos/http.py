@@ -75,6 +75,43 @@ from .publishing.domain import (
     report_input_fingerprint,
 )
 from .publishing.recipes import validate_recipe
+from .responses import (
+    ActiveLoanUniverseRouteResponse,
+    AdminBundleResponse,
+    ArtifactResponse,
+    AssumptionResponse,
+    AuditRouteResponse,
+    CaseDetailResponse,
+    CaseMemberResponse,
+    CaseLensResponse,
+    CaseResponse,
+    HealthResponse,
+    IdentityResponse,
+    LoanUniverseResponse,
+    MethodologyDraftResponse,
+    MethodologyVerificationResponse,
+    ModelBuildRouteResponse,
+    ModelListResponse,
+    ModelReadinessRouteResponse,
+    ModelWorksheetResponse,
+    NoteRouteResponse,
+    PathwayFitResponse,
+    QueueModelExportResponse,
+    QueueModelResponse,
+    RecommendationHistoryResponse,
+    RecommendationResponse,
+    ReportInputsResponse,
+    ReportRouteResponse,
+    RunRouteResponse,
+    RVRouteResponse,
+    RVUniverseResponse,
+    SnapshotOverviewResponse,
+    SnapshotResponse,
+    SourceResponse,
+    ThesisHistoryResponse,
+    ThesisResponse,
+    VisualRecipeValidationResponse,
+)
 from .sources.domain import current_source_set, ingest_upload, list_sources, pathway_fit
 from .store import STORE, MemoryStore, PostgresStore, now_iso
 from .workflows.domain import WorkflowError, WorkflowRuntime
@@ -137,31 +174,31 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             raise HTTPException(status_code=404, detail="model build not found")
         return build
 
-    @app.get("/api/health")
+    @app.get("/api/health", response_model=HealthResponse)
     def health() -> dict[str, Any]:
         return {"status": "ok", "service": "caos", "bundle_build_id": bundle.build_id, "database": "postgres-configured" if settings.database_url else "memory-dev", "worker": "same-image"}
 
-    @app.get("/api/me")
+    @app.get("/api/me", response_model=IdentityResponse)
     def me(request: Request) -> dict[str, Any]:
         who = identity(request)
         return {"subject": who.subject, "email": who.email, "role": who.role, "destinations": ["Admin Studio"] if who.role == "ADMIN" else list(DESTINATIONS)}
 
-    @app.get("/api/methodology/verify")
+    @app.get("/api/methodology/verify", response_model=MethodologyVerificationResponse)
     def methodology_verify(request: Request) -> dict[str, Any]:
         require_role(identity(request), "ADMIN", "ANALYST", "APPROVER")
         return bundle.verify()
 
-    @app.get("/api/cases")
+    @app.get("/api/cases", response_model=list[CaseResponse])
     def cases(request: Request) -> list[dict[str, Any]]:
         return store.list_cases(identity(request).subject)
 
-    @app.post("/api/cases", status_code=201)
+    @app.post("/api/cases", status_code=201, response_model=CaseResponse)
     def create_case(payload: CreateCaseRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_role(who, "ADMIN", "ANALYST", "APPROVER")
         return store.create_case(payload.name, payload.issuer, payload.sector, who.subject)
 
-    @app.get("/api/cases/{case_id}")
+    @app.get("/api/cases/{case_id}", response_model=CaseDetailResponse)
     def case_detail(case_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         case = require_case(store, case_id, who)
@@ -174,7 +211,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         )
         return {**case, "source_set": current_source_set(store, case_id), "source_count": len(list_sources(store, case_id)), "pathway_fit": pathway_fit(store, case_id), "accepted_snapshot": accepted_snapshot(store, case_id), "latest_run": store.get_run(latest["id"]) if latest else None, "deep_research_available": deep_research_available, "deep_research_unavailable_reason": deep_research_unavailable_reason}
 
-    @app.post("/api/cases/{case_id}/members", status_code=201)
+    @app.post("/api/cases/{case_id}/members", status_code=201, response_model=CaseMemberResponse)
     def add_member(case_id: str, payload: MemberRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         if not store.get_case(case_id):
@@ -185,12 +222,12 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             raise HTTPException(status_code=403, detail="case membership authority required")
         return {"case_id": case_id, "subject": payload.subject, "role": payload.role.value}
 
-    @app.get("/api/cases/{case_id}/sources")
+    @app.get("/api/cases/{case_id}/sources", response_model=list[SourceResponse])
     def sources(case_id: str, request: Request) -> list[dict[str, Any]]:
         require_case(store, case_id, identity(request))
         return list_sources(store, case_id)
 
-    @app.post("/api/cases/{case_id}/sources", status_code=201)
+    @app.post("/api/cases/{case_id}/sources", status_code=201, response_model=SourceResponse)
     async def upload_source(case_id: str, request: Request, file: UploadFile) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -198,7 +235,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         mark_assumptions_stale(store, case_id, {result["id"]})
         return result
 
-    @app.get("/api/cases/{case_id}/sources/{source_id}")
+    @app.get("/api/cases/{case_id}/sources/{source_id}", response_model=SourceResponse)
     def source_detail(case_id: str, source_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         with store.lock:
@@ -207,7 +244,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=404, detail="source not found")
             return {key: value for key, value in source.items() if key != "vault_path"}
 
-    @app.get("/api/cases/{case_id}/artifacts/{artifact_id}")
+    @app.get("/api/cases/{case_id}/artifacts/{artifact_id}", response_model=ArtifactResponse)
     def artifact_detail(case_id: str, artifact_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         artifact = store.get_artifact(artifact_id)
@@ -215,7 +252,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             raise HTTPException(status_code=404, detail="artifact not found")
         return artifact
 
-    @app.post("/api/cases/{case_id}/sources/{source_id}/withdraw")
+    @app.post("/api/cases/{case_id}/sources/{source_id}/withdraw", response_model=SourceResponse)
     def withdraw_source(case_id: str, source_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -269,18 +306,18 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise
         return {key: value for key, value in source.items() if key != "vault_path"}
 
-    @app.get("/api/cases/{case_id}/pathway-fit")
+    @app.get("/api/cases/{case_id}/pathway-fit", response_model=PathwayFitResponse)
     def fit(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return pathway_fit(store, case_id)
 
-    @app.get("/api/cases/{case_id}/runs")
+    @app.get("/api/cases/{case_id}/runs", response_model=list[RunRouteResponse])
     def runs(case_id: str, request: Request) -> list[dict[str, Any]]:
         require_case(store, case_id, identity(request))
         with store.lock:
             return [store.get_run(run["id"]) for run in store.runs.values() if run["case_id"] == case_id]
 
-    @app.post("/api/cases/{case_id}/runs", status_code=202)
+    @app.post("/api/cases/{case_id}/runs", status_code=202, response_model=RunRouteResponse)
     def start_run(case_id: str, payload: StartRunRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -295,7 +332,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except MethodologyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.post("/api/runs/{run_id}/upgrade", status_code=202)
+    @app.post("/api/runs/{run_id}/upgrade", status_code=202, response_model=RunRouteResponse)
     def upgrade_run(run_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         previous = get_run_or_404(run_id, who)
@@ -307,7 +344,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except MethodologyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.get("/api/runs/{run_id}")
+    @app.get("/api/runs/{run_id}", response_model=RunRouteResponse)
     def run_detail(run_id: str, request: Request) -> dict[str, Any]:
         return get_run_or_404(run_id, identity(request))
 
@@ -320,7 +357,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             cursor = 0
         return StreamingResponse(runtime.stream_events(run_id, cursor), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    @app.post("/api/runs/{run_id}/research-plan/approve")
+    @app.post("/api/runs/{run_id}/research-plan/approve", response_model=RunRouteResponse)
     def approve_research_plan(run_id: str, payload: ApproveResearchPlanRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         run = get_run_or_404(run_id, who)
@@ -330,7 +367,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except WorkflowError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.post("/api/runs/{run_id}/accept")
+    @app.post("/api/runs/{run_id}/accept", response_model=SnapshotResponse)
     def accept_run(run_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         run = get_run_or_404(run_id, who)
@@ -340,14 +377,14 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except WorkflowError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.get("/api/cases/{case_id}/snapshot")
+    @app.get("/api/cases/{case_id}/snapshot", response_model=SnapshotOverviewResponse)
     def snapshot(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         current = accepted_snapshot(store, case_id)
         latest_snapshot = latest_accepted_snapshot(store, case_id)
         return {"accepted": current, "latest_accepted": latest_snapshot, "diff": snapshot_diff(current, latest_snapshot) if latest_snapshot else None, "switch_required": bool(current and latest_snapshot and current["id"] != latest_snapshot["id"])}
 
-    @app.post("/api/cases/{case_id}/snapshot/switch")
+    @app.post("/api/cases/{case_id}/snapshot/switch", response_model=SnapshotResponse)
     def switch_snapshot(case_id: str, payload: SnapshotSwitchRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -360,18 +397,18 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             store.persist()
         return target.copy()
 
-    @app.get("/api/cases/{case_id}/lens")
+    @app.get("/api/cases/{case_id}/lens", response_model=CaseLensResponse)
     def lens(case_id: str, request: Request) -> dict[str, Any]:
         case = require_case(store, case_id, identity(request))
         accepted = accepted_snapshot(store, case_id)
         return {"issuer": case["issuer"], "sector": case["sector"], "accepted_snapshot_id": accepted["id"] if accepted else None, "accepted_snapshot_digest": accepted["digest"] if accepted else None, "source_set": current_source_set(store, case_id)}
 
-    @app.get("/api/cases/{case_id}/thesis")
+    @app.get("/api/cases/{case_id}/thesis", response_model=ThesisHistoryResponse)
     def thesis(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return {"versions": store.versioned(store.theses, case_id), "current": latest_version(store, store.theses, case_id)}
 
-    @app.post("/api/cases/{case_id}/report-inputs", status_code=201)
+    @app.post("/api/cases/{case_id}/report-inputs", status_code=201, response_model=ReportInputsResponse)
     def report_inputs(case_id: str, payload: ReportInputsRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -384,7 +421,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             status = 409 if str(exc) == "VERSION_CONFLICT" else 422
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
-    @app.post("/api/cases/{case_id}/thesis", status_code=201)
+    @app.post("/api/cases/{case_id}/thesis", status_code=201, response_model=ThesisResponse)
     def write_thesis(case_id: str, payload: ThesisRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -395,13 +432,13 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=409, detail="thesis version changed") from exc
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.get("/api/cases/{case_id}/recommendations")
+    @app.get("/api/cases/{case_id}/recommendations", response_model=RecommendationHistoryResponse)
     def recommendations(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         versions = store.versioned(store.recommendations, case_id)
         return {"versions": versions, "current": recommendation_state(store, case_id, versions[-1] if versions else None)}
 
-    @app.post("/api/cases/{case_id}/recommendations", status_code=201)
+    @app.post("/api/cases/{case_id}/recommendations", status_code=201, response_model=RecommendationResponse)
     def write_recommendations(case_id: str, payload: RecommendationMatrixRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -413,18 +450,18 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise HTTPException(status_code=409, detail="recommendation version changed") from exc
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.get("/api/cases/{case_id}/notes")
+    @app.get("/api/cases/{case_id}/notes", response_model=list[NoteRouteResponse])
     def notes(case_id: str, request: Request) -> list[dict[str, Any]]:
         require_case(store, case_id, identity(request))
         return store.versioned(store.notes, case_id)
 
-    @app.post("/api/cases/{case_id}/notes", status_code=201)
+    @app.post("/api/cases/{case_id}/notes", status_code=201, response_model=NoteRouteResponse)
     def write_note(case_id: str, payload: NoteRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
         return create_note(store, case_id, who.subject, payload.body)
 
-    @app.post("/api/cases/{case_id}/notes/{note_id}/promote")
+    @app.post("/api/cases/{case_id}/notes/{note_id}/promote", response_model=NoteRouteResponse)
     def promote(case_id: str, note_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -435,12 +472,12 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    @app.get("/api/cases/{case_id}/assumptions")
+    @app.get("/api/cases/{case_id}/assumptions", response_model=list[AssumptionResponse])
     def assumptions(case_id: str, request: Request) -> list[dict[str, Any]]:
         require_case(store, case_id, identity(request))
         return store.versioned(store.assumptions, case_id)
 
-    @app.post("/api/cases/{case_id}/assumptions", status_code=201)
+    @app.post("/api/cases/{case_id}/assumptions", status_code=201, response_model=AssumptionResponse)
     def write_assumption(case_id: str, payload: AssumptionRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -449,12 +486,12 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.get("/api/cases/{case_id}/rv")
+    @app.get("/api/cases/{case_id}/rv", response_model=RVRouteResponse)
     def rv(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return compare_universe(store, case_id, accepted_snapshot(store, case_id))
 
-    @app.post("/api/cases/{case_id}/rv", status_code=201)
+    @app.post("/api/cases/{case_id}/rv", status_code=201, response_model=RVUniverseResponse)
     def write_rv(case_id: str, payload: RVUniverseRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -463,7 +500,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.get("/api/cases/{case_id}/rv/loan-universes/active")
+    @app.get("/api/cases/{case_id}/rv/loan-universes/active", response_model=ActiveLoanUniverseRouteResponse)
     def active_loan_universe(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         active = store.active_loan_universe(case_id)
@@ -472,7 +509,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         rows = active.pop("rows")
         return {"status": "ACTIVE", "universe": active, "rows": rows}
 
-    @app.post("/api/cases/{case_id}/rv/loan-universes", status_code=201)
+    @app.post("/api/cases/{case_id}/rv/loan-universes", status_code=201, response_model=LoanUniverseResponse)
     def import_case_loan_universe(
         case_id: str,
         payload: LoanUniverseImportRequest,
@@ -502,12 +539,12 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.detail}) from exc
         return record if created else JSONResponse(status_code=200, content=record)
 
-    @app.get("/api/cases/{case_id}/model")
+    @app.get("/api/cases/{case_id}/model", response_model=ModelReadinessRouteResponse)
     def model(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return model_readiness.readiness(case_id)
 
-    @app.get("/api/cases/{case_id}/models")
+    @app.get("/api/cases/{case_id}/models", response_model=ModelListResponse)
     def models(case_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return {
@@ -515,7 +552,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             "builds": [public_model_build(build) for build in store.list_model_builds(case_id)],
         }
 
-    @app.post("/api/cases/{case_id}/models", status_code=202)
+    @app.post("/api/cases/{case_id}/models", status_code=202, response_model=QueueModelResponse)
     def queue_model(case_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -527,12 +564,12 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             model_runtime.schedule(build["id"], who.subject)
         return {"build": public_model_build(build), "created": created}
 
-    @app.get("/api/cases/{case_id}/models/{build_id}")
+    @app.get("/api/cases/{case_id}/models/{build_id}", response_model=ModelBuildRouteResponse)
     def model_status(case_id: str, build_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         return public_model_build(model_for_case(case_id, build_id))
 
-    @app.get("/api/cases/{case_id}/models/{build_id}/worksheet")
+    @app.get("/api/cases/{case_id}/models/{build_id}/worksheet", response_model=ModelWorksheetResponse)
     def model_worksheet(case_id: str, build_id: str, request: Request) -> dict[str, Any]:
         require_case(store, case_id, identity(request))
         build = model_for_case(case_id, build_id)
@@ -546,7 +583,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             "payload": build["payload"],
         }
 
-    @app.post("/api/cases/{case_id}/models/{build_id}/export", status_code=202)
+    @app.post("/api/cases/{case_id}/models/{build_id}/export", status_code=202, response_model=QueueModelExportResponse)
     def queue_model_export(case_id: str, build_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -609,7 +646,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
-    @app.post("/api/cases/{case_id}/reports/freeze", status_code=201)
+    @app.post("/api/cases/{case_id}/reports/freeze", status_code=201, response_model=ReportRouteResponse)
     def freeze(case_id: str, payload: FreezeReportRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -635,13 +672,13 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.get("/api/cases/{case_id}/reports")
+    @app.get("/api/cases/{case_id}/reports", response_model=ReportRouteResponse | None)
     def reports(case_id: str, request: Request) -> dict[str, Any] | None:
         require_case(store, case_id, identity(request))
         value = store.reports.get(case_id)
         return value.copy() if value else None
 
-    @app.post("/api/cases/{case_id}/reports/approve")
+    @app.post("/api/cases/{case_id}/reports/approve", response_model=ReportRouteResponse)
     def approve(case_id: str, payload: ApproveRequest, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
@@ -704,22 +741,22 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
             return Response(render_xlsx(report), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename={report['id']}.xlsx"})
         raise HTTPException(status_code=404, detail="unknown export format")
 
-    @app.get("/api/admin/audit")
+    @app.get("/api/admin/audit", response_model=list[AuditRouteResponse])
     def audit(request: Request) -> list[dict[str, Any]]:
         admin_step_up(request)
         return list(store.audit)
 
-    @app.get("/api/admin/bundle")
+    @app.get("/api/admin/bundle", response_model=AdminBundleResponse)
     def admin_bundle(request: Request) -> dict[str, Any]:
         admin_step_up(request)
         return {"build_id": bundle.build_id, "integrity": bundle.verify(), "drafts": list(store.methodology_drafts.values())}
 
-    @app.get("/api/admin/drafts")
+    @app.get("/api/admin/drafts", response_model=list[MethodologyDraftResponse])
     def methodology_drafts(request: Request) -> list[dict[str, Any]]:
         admin_step_up(request)
         return list(store.methodology_drafts.values())
 
-    @app.post("/api/admin/drafts", status_code=201)
+    @app.post("/api/admin/drafts", status_code=201, response_model=MethodologyDraftResponse)
     def create_methodology_draft(payload: MethodologyDraftRequest, request: Request) -> dict[str, Any]:
         who = admin_step_up(request)
         module_ids = {item["module_id"] for item in bundle.catalog["modules"]}
@@ -753,7 +790,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise
         return draft
 
-    @app.post("/api/admin/drafts/{draft_id}/validate")
+    @app.post("/api/admin/drafts/{draft_id}/validate", response_model=MethodologyDraftResponse)
     def validate_methodology_draft(draft_id: str, request: Request) -> dict[str, Any]:
         who = admin_step_up(request)
         with store.lock:
@@ -776,7 +813,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise
         return draft.copy()
 
-    @app.post("/api/admin/drafts/{draft_id}/confirm")
+    @app.post("/api/admin/drafts/{draft_id}/confirm", response_model=MethodologyDraftResponse)
     def confirm_methodology_draft(draft_id: str, payload: ConfirmDraftRequest, request: Request) -> dict[str, Any]:
         who = admin_step_up(request)
         with store.lock:
@@ -800,7 +837,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 raise
         return draft.copy()
 
-    @app.post("/api/admin/recipes/validate")
+    @app.post("/api/admin/recipes/validate", response_model=VisualRecipeValidationResponse)
     def validate_visual_recipe(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         admin_step_up(request)
         try:
