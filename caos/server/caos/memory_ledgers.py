@@ -1149,21 +1149,31 @@ class _MemoryPublicationLedger(_Adapter):
             not case
             or not snapshot
             or snapshot.get("case_id") != case_id
-            or case.get("accepted_snapshot_id") != snapshot.get("id")
             or report.get("snapshot_digest") != snapshot_digest
             or snapshot_digest != digest(snapshot)
         ):
             raise ValueError("SNAPSHOT_REQUIRED")
         theses = state.theses.get(case_id, [])
         recommendations = state.recommendations.get(case_id, [])
-        if not theses or not recommendations:
-            raise ValueError("THESIS_AND_RECOMMENDATIONS_REQUIRED")
-
-        thesis = theses[-1]
-        recommendation = recommendations[-1]
+        thesis = next(
+            (
+                row
+                for row in theses
+                if row.get("version") == content.get("thesis_version")
+            ),
+            None,
+        )
+        recommendation = next(
+            (
+                row
+                for row in recommendations
+                if row.get("version") == content.get("recommendation_version")
+            ),
+            None,
+        )
         if (
-            content.get("thesis_version") != thesis.get("version")
-            or content.get("recommendation_version") != recommendation.get("version")
+            not thesis
+            or not recommendation
             or recommendation.get("accepted_snapshot_id") != snapshot.get("id")
         ):
             raise ValueError("THESIS_AND_RECOMMENDATIONS_REQUIRED")

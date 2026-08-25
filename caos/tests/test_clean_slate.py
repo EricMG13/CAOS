@@ -29,6 +29,57 @@ def make_client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(settings, MemoryLedgerSet()))
 
 
+def _accepted_http_case(client: TestClient, name: str) -> tuple[str, dict[str, object]]:
+    case_id = client.post(
+        "/api/cases", json={"name": name, "issuer": "Issuer", "sector": "Testing"}
+    ).json()["id"]
+    source = client.post(
+        f"/api/cases/{case_id}/sources",
+        files={"file": ("source.txt", b"credit evidence", "text/plain")},
+    ).json()
+    run = client.post(
+        f"/api/cases/{case_id}/runs",
+        json={"pathway": "EARNINGS_UPDATE", "depth": "screen"},
+    ).json()
+    for _ in range(60):
+        state = client.get(f"/api/runs/{run['id']}").json()
+        if state["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.05)
+    assert state["status"] == "succeeded"
+    accepted = client.post(f"/api/runs/{run['id']}/accept")
+    assert accepted.status_code == 200
+    return case_id, source
+
+
+def _report_inputs(source_id: str | None = None) -> dict[str, object]:
+    return {
+        "thesis": {
+            "expected_version": 0,
+            "core_thesis": "Defensible",
+            "drivers": [],
+            "risks": [],
+            "catalysts": [],
+            "unresolved_questions": [],
+            "evidence_ids": [source_id] if source_id else [],
+        },
+        "recommendations": {
+            "expected_version": 0,
+            "market_snapshot_id": "market-1",
+            "rows": [
+                {
+                    "instrument_id": "bond",
+                    "instrument": "Bond",
+                    "recommendation": "N/A",
+                    "rationale": "Insufficient basis",
+                    "primary": True,
+                }
+            ],
+            "analytical_dependency_ids": [],
+        },
+    }
+
+
 def test_deploy_v_integrity_and_cp_parse_route_order() -> None:
     bundle = DeployVBundle(DEPLOY_V)
     report = bundle.verify()
@@ -241,6 +292,114 @@ def test_withdrawn_sources_are_rejected_for_new_evidence_references(tmp_path: Pa
         assert rejected_thesis.json()["detail"] == rejected_assumption.json()["detail"] == "EVIDENCE_SOURCE_WITHDRAWN"
         assert client.get(f"/api/cases/{case_id}/thesis").json()["current"]["version"] == 1
         assert client.get(f"/api/cases/{case_id}/assumptions").json() == []
+
+
+def test_report_inputs_route_rejects_withdrawn_source_evidence(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        case_id, source = _accepted_http_case(client, "Withdrawn report input")
+        source_id = str(source["id"])
+        assert client.post(
+            f"/api/cases/{case_id}/sources/{source_id}/withdraw"
+        ).status_code == 200
+
+        rejected = client.post(
+            f"/api/cases/{case_id}/report-inputs",
+            json=_report_inputs(source_id),
+        )
+
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"] == "EVIDENCE_SOURCE_WITHDRAWN"
+        assert client.get(f"/api/cases/{case_id}/thesis").json()["current"] is None
+        assert (
+            client.get(f"/api/cases/{case_id}/recommendations").json()["current"]
+            is None
+        )
+
+
+def test_promoted_note_can_be_repromoted_after_prior_source_withdrawal(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        case_id = client.post(
+            "/api/cases",
+            json={"name": "Note restore", "issuer": "Issuer", "sector": "Testing"},
+        ).json()["id"]
+        note = client.post(
+            f"/api/cases/{case_id}/notes", json={"body": "Debt remains 100"}
+        ).json()
+        first = client.post(
+            f"/api/cases/{case_id}/notes/{note['id']}/promote"
+        ).json()
+        repeated = client.post(
+            f"/api/cases/{case_id}/notes/{note['id']}/promote"
+        ).json()
+        assert repeated["promoted_source_id"] == first["promoted_source_id"]
+
+        assert client.post(
+            f"/api/cases/{case_id}/sources/{first['promoted_source_id']}/withdraw"
+        ).status_code == 200
+        restored = client.post(
+            f"/api/cases/{case_id}/notes/{note['id']}/promote"
+        )
+
+        assert restored.status_code == 200
+        assert restored.json()["promoted_source_id"] != first["promoted_source_id"]
+        detail = client.get(f"/api/cases/{case_id}").json()
+        assert detail["source_count"] == 1
+        assert detail["source_set"]["source_ids"] == [
+            restored.json()["promoted_source_id"]
+        ]
+
+
+def test_report_preview_approver_governance_and_all_exports(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        case_id, _source = _accepted_http_case(client, "Publication governance")
+        inputs = client.post(
+            f"/api/cases/{case_id}/report-inputs", json=_report_inputs()
+        )
+        assert inputs.status_code == 201
+        frozen = client.post(
+            f"/api/cases/{case_id}/reports/freeze",
+            json={"thesis_version": 1, "recommendation_version": 1},
+        )
+        assert frozen.status_code == 201
+        report = frozen.json()
+        approval = {
+            "expected_status": "PENDING_APPROVAL",
+            "preview_digest": report["preview_digest"],
+            "input_fingerprint": report["input_fingerprint"],
+            "comment": "Reviewed",
+        }
+
+        wrong_preview = client.post(
+            f"/api/cases/{case_id}/reports/approve",
+            headers={"x-caos-role": "APPROVER"},
+            json={**approval, "preview_digest": "wrong"},
+        )
+        analyst_only = client.post(
+            f"/api/cases/{case_id}/reports/approve", json=approval
+        )
+        approved = client.post(
+            f"/api/cases/{case_id}/reports/approve",
+            headers={"x-caos-role": "APPROVER"},
+            json=approval,
+        )
+
+        assert wrong_preview.status_code == 409
+        assert wrong_preview.json()["detail"] == "STALE_PREVIEW"
+        assert analyst_only.status_code == 403
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "APPROVED"
+
+        markdown = client.get(f"/api/cases/{case_id}/reports/export/md")
+        pdf = client.get(f"/api/cases/{case_id}/reports/export/pdf")
+        workbook = client.get(f"/api/cases/{case_id}/reports/export/xlsx")
+        assert markdown.status_code == pdf.status_code == workbook.status_code == 200
+        assert b"Report digest" in markdown.content
+        assert pdf.content.startswith(b"%PDF")
+        assert workbook.content.startswith(b"PK")
 
 
 

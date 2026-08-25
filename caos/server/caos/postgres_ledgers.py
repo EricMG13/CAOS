@@ -1973,21 +1973,26 @@ class _PostgresPublicationLedger(_Adapter):
             not case
             or not snapshot
             or snapshot.get("case_id") != case_id
-            or case.get("accepted_snapshot_id") != snapshot.get("id")
             or report.get("snapshot_digest") != snapshot_digest
             or snapshot_digest != digest(snapshot)
         ):
             raise ValueError("SNAPSHOT_REQUIRED")
-        thesis = self._latest_version(cursor, "thesis_versions", case_id)
-        recommendation = self._latest_version(
-            cursor, "recommendation_versions", case_id
+        cursor.execute(
+            "SELECT * FROM thesis_versions WHERE case_id=%s AND version=%s",
+            (case_id, content.get("thesis_version")),
         )
+        row = cursor.fetchone()
+        thesis = _version_record(row) if row else None
+        cursor.execute(
+            "SELECT * FROM recommendation_versions WHERE case_id=%s AND version=%s",
+            (case_id, content.get("recommendation_version")),
+        )
+        row = cursor.fetchone()
+        recommendation = _version_record(row) if row else None
         if not thesis or not recommendation:
             raise ValueError("THESIS_AND_RECOMMENDATIONS_REQUIRED")
         if (
-            content.get("thesis_version") != thesis.get("version")
-            or content.get("recommendation_version") != recommendation.get("version")
-            or recommendation.get("accepted_snapshot_id") != snapshot.get("id")
+            recommendation.get("accepted_snapshot_id") != snapshot.get("id")
         ):
             raise ValueError("THESIS_AND_RECOMMENDATIONS_REQUIRED")
         model = self._model_identity(cursor, content.get("model"), snapshot)

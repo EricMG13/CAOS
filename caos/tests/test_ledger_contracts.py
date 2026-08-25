@@ -18,6 +18,7 @@ from caos.contracts import clean_json, digest
 from caos.memory_ledgers import MemoryLedgerSet
 from caos.postgres_ledgers import PostgresLedgerSet
 from caos.store import JobFencedError
+from ledger_helpers import tamper_thesis_version
 
 
 ACTOR = "analyst"
@@ -1237,7 +1238,6 @@ def test_report_freeze_and_approval_require_exact_preview(
     )
     source_set = ledger_set.sources.source_set(model_input["source_set_id"])
     assert previous_snapshot is not None and source_set is not None
-    current_run, current_snapshot = _accept_empty_run(ledger_set, case_id, source_set)
     thesis_request = {
         "expected_version": 0,
         "core_thesis": "Defensible",
@@ -1261,19 +1261,37 @@ def test_report_freeze_and_approval_require_exact_preview(
         ],
         "analytical_dependency_ids": [],
     }
-    inputs = ledger_set.publications.save_report_inputs(
+    first_inputs = ledger_set.publications.save_report_inputs(
         case_id,
         ACTOR,
         thesis_request,
         recommendation_request,
+        accepted_snapshot_id=previous_snapshot["id"],
+    )
+    current_run, current_snapshot = _accept_empty_run(ledger_set, case_id, source_set)
+    assert ledger_set.runs.switch_visible_snapshot(
+        case_id, previous_snapshot["id"], ACTOR
+    ) == previous_snapshot
+    inputs = ledger_set.publications.save_report_inputs(
+        case_id,
+        ACTOR,
+        {**thesis_request, "expected_version": 1},
+        {**recommendation_request, "expected_version": 1},
         accepted_snapshot_id=current_snapshot["id"],
     )
 
-    with pytest.raises(ValueError, match="SNAPSHOT_REQUIRED"):
-        ledger_set.publications.freeze_report(
-            case_id, ACTOR, _report_record(previous_snapshot, inputs)
-        )
-    assert ledger_set.publications.get_report(case_id) is None
+    explicit_first = ledger_set.publications.freeze_report(
+        case_id, ACTOR, _report_record(previous_snapshot, first_inputs)
+    )
+    approved_first = ledger_set.publications.approve_report(
+        case_id,
+        "approver",
+        "PENDING_APPROVAL",
+        explicit_first["preview_digest"],
+        explicit_first["input_fingerprint"],
+        "Visible v1 remains authoritative",
+    )
+    assert approved_first["status"] == "APPROVED"
 
     stale_versions_report = _report_record(current_snapshot, inputs)
     stale_versions_report["content"]["thesis_version"] = 0
@@ -1282,7 +1300,7 @@ def test_report_freeze_and_approval_require_exact_preview(
     stale_versions_report["digest"] = stale_versions_report["preview_digest"]
     with pytest.raises(ValueError, match="THESIS_AND_RECOMMENDATIONS_REQUIRED"):
         ledger_set.publications.freeze_report(case_id, ACTOR, stale_versions_report)
-    assert ledger_set.publications.get_report(case_id) is None
+    assert ledger_set.publications.get_report(case_id) == approved_first
 
     invalid_model = {
         "build_id": "model_missing",
@@ -1296,7 +1314,7 @@ def test_report_freeze_and_approval_require_exact_preview(
             ACTOR,
             _report_record(current_snapshot, inputs, invalid_model),
         )
-    assert ledger_set.publications.get_report(case_id) is None
+    assert ledger_set.publications.get_report(case_id) == approved_first
 
     queued, created = ledger_set.models.queue_build(
         {
@@ -1333,7 +1351,7 @@ def test_report_freeze_and_approval_require_exact_preview(
             ACTOR,
             _report_record(current_snapshot, inputs, invalid_export),
         )
-    assert ledger_set.publications.get_report(case_id) is None
+    assert ledger_set.publications.get_report(case_id) == approved_first
 
     model_report = _report_record(current_snapshot, inputs, model_identity)
     frozen = ledger_set.publications.freeze_report(case_id, ACTOR, model_report)
@@ -1377,20 +1395,19 @@ def test_report_freeze_and_approval_require_exact_preview(
     updated_inputs = ledger_set.publications.save_report_inputs(
         case_id,
         ACTOR,
-        {**thesis_request, "expected_version": 1},
-        {**recommendation_request, "expected_version": 1},
+        {**thesis_request, "expected_version": 2},
+        {**recommendation_request, "expected_version": 2},
         accepted_snapshot_id=current_snapshot["id"],
     )
-    with pytest.raises(ValueError, match="STALE_PREVIEW"):
-        ledger_set.publications.approve_report(
-            case_id,
-            "approver",
-            "PENDING_APPROVAL",
-            frozen["preview_digest"],
-            frozen["input_fingerprint"],
-            None,
-        )
-    assert ledger_set.publications.get_report(case_id) == frozen
+    approved_model_report = ledger_set.publications.approve_report(
+        case_id,
+        "approver",
+        "PENDING_APPROVAL",
+        frozen["preview_digest"],
+        frozen["input_fingerprint"],
+        None,
+    )
+    assert approved_model_report["status"] == "APPROVED"
 
     publication_current = ledger_set.publications.freeze_report(
         case_id,
@@ -1398,38 +1415,44 @@ def test_report_freeze_and_approval_require_exact_preview(
         _report_record(current_snapshot, updated_inputs, model_identity),
     )
     _, next_snapshot = _accept_empty_run(ledger_set, case_id, source_set)
-    with pytest.raises(ValueError, match="STALE_PREVIEW"):
-        ledger_set.publications.approve_report(
-            case_id,
-            "approver",
-            "PENDING_APPROVAL",
-            publication_current["preview_digest"],
-            publication_current["input_fingerprint"],
-            None,
-        )
-    assert ledger_set.publications.get_report(case_id) == publication_current
-
-    final_inputs = ledger_set.publications.save_report_inputs(
-        case_id,
-        ACTOR,
-        {**thesis_request, "expected_version": 2},
-        {**recommendation_request, "expected_version": 2},
-        accepted_snapshot_id=next_snapshot["id"],
-    )
-    final_report = ledger_set.publications.freeze_report(
-        case_id, ACTOR, _report_record(next_snapshot, final_inputs)
-    )
     approved = ledger_set.publications.approve_report(
         case_id,
         "approver",
         "PENDING_APPROVAL",
-        final_report["preview_digest"],
-        final_report["input_fingerprint"],
+        publication_current["preview_digest"],
+        publication_current["input_fingerprint"],
         "Reviewed",
     )
     assert approved["status"] == "APPROVED"
     assert approved["approved_by"] == "approver"
     assert approved["approval_comment"] == "Reviewed"
+
+    tampered_inputs = ledger_set.publications.save_report_inputs(
+        case_id,
+        ACTOR,
+        {**thesis_request, "expected_version": 3},
+        {**recommendation_request, "expected_version": 3},
+        accepted_snapshot_id=current_snapshot["id"],
+    )
+    tampered_report = ledger_set.publications.freeze_report(
+        case_id, ACTOR, _report_record(current_snapshot, tampered_inputs)
+    )
+    tamper_thesis_version(
+        ledger_set,
+        case_id,
+        tampered_inputs["thesis"]["version"],
+        postgres_dsn=_postgres_test_dsn() if POSTGRES_URL else None,
+    )
+    with pytest.raises(ValueError, match="STALE_PREVIEW"):
+        ledger_set.publications.approve_report(
+            case_id,
+            "approver",
+            "PENDING_APPROVAL",
+            tampered_report["preview_digest"],
+            tampered_report["input_fingerprint"],
+            None,
+        )
+    assert ledger_set.publications.get_report(case_id) == tampered_report
 
 
 def test_model_jobs_retry_renew_takeover_and_fencing(ledger_set: Any) -> None:

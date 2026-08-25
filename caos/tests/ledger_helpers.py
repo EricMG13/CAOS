@@ -157,3 +157,35 @@ def mutate_model_job(
     state = ledger_set.models._state
     with state.lock:
         state.model_jobs[f"{build_id}:{kind}"].update(changes)
+
+
+def tamper_thesis_version(
+    ledger_set: Any,
+    case_id: str,
+    version: int,
+    *,
+    postgres_dsn: str | None = None,
+) -> None:
+    """Corrupt an immutable authority row to verify approval-time revalidation."""
+    state = getattr(ledger_set.publications, "_state", None)
+    if state is not None:
+        with state.lock:
+            thesis = next(
+                row
+                for row in state.theses[case_id]
+                if row.get("version") == version
+            )
+            thesis["core_thesis"] = "tampered after freeze"
+        return
+    if postgres_dsn is None:
+        raise AssertionError("PostgreSQL authority tamper requires a test DSN")
+    import psycopg
+
+    with psycopg.connect(postgres_dsn) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE thesis_versions "
+            "SET value=jsonb_set(value, '{core_thesis}', to_jsonb(%s::text)) "
+            "WHERE case_id=%s AND version=%s",
+            ("tampered after freeze", case_id, version),
+        )
+        assert cursor.rowcount == 1
