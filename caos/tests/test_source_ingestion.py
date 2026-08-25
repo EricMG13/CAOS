@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import re
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 from pypdf import PdfWriter
@@ -12,6 +15,7 @@ from starlette.datastructures import UploadFile
 
 from caos.config import Settings
 from caos.http import create_app
+from caos.sources import domain as source_domain
 from caos.sources.domain import Vault, ingest_upload
 from caos.store import MemoryStore
 
@@ -110,6 +114,80 @@ def test_evidence_free_text_csv_and_xlsx_are_rejected_before_source_set_creation
             assert upload.status_code == 422
             assert upload.json()["detail"] == "source contains no extractable evidence"
             assert client.get(f"/api/cases/{case_id}/pathway-fit").json()["fit"] == "NEEDS_SOURCE"
+
+
+def test_xlsx_evidence_extraction_rejects_truncated_workbooks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "first"
+    sheet["A2"] = "second"
+    sheet["A3"] = "row-limit-sentinel"
+    content = io.BytesIO()
+    workbook.save(content)
+    workbook.close()
+    monkeypatch.setattr(source_domain, "MAX_XLSX_EXTRACT_ROWS", 2)
+
+    settings = Settings(storage_dir=tmp_path / "vault", deploy_v_root=Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v")
+    with TestClient(create_app(settings, MemoryStore())) as client:
+        case_id = client.post("/api/cases", json={"name": "Bounded source", "issuer": "Issuer", "sector": "Test"}).json()["id"]
+        upload = client.post(
+            f"/api/cases/{case_id}/sources",
+            files={"file": ("bounded.xlsx", content.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+
+        assert upload.status_code == 422
+        assert upload.json()["detail"] == source_domain.EXTRACTION_LIMIT_DETAIL
+        assert client.get(f"/api/cases/{case_id}/pathway-fit").json()["fit"] == "NEEDS_SOURCE"
+
+
+def test_source_extraction_rejects_hidden_columns_sheets_and_long_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    def workbook_bytes(*, sheets: int = 1, row: int = 1, column: int = 1) -> bytes:
+        workbook = Workbook()
+        workbook.active.cell(row=row, column=column, value="evidence")
+        for index in range(1, sheets):
+            workbook.create_sheet(f"Sheet {index + 1}")["A1"] = "evidence"
+        content = io.BytesIO()
+        workbook.save(content)
+        workbook.close()
+        return content.getvalue()
+
+    def declare_only_a1(content: bytes) -> bytes:
+        source = ZipFile(io.BytesIO(content))
+        target_bytes = io.BytesIO()
+        with source, ZipFile(target_bytes, "w", ZIP_DEFLATED) as target:
+            for entry in source.infolist():
+                data = source.read(entry.filename)
+                if entry.filename == "xl/worksheets/sheet1.xml":
+                    data = re.sub(rb'<dimension ref="[^"]+"\s*/>', b'<dimension ref="A1:A1"/>', data, count=1)
+                target.writestr(entry, data)
+        return target_bytes.getvalue()
+
+    monkeypatch.setattr(source_domain, "MAX_XLSX_EXTRACT_COLUMNS", 1)
+    with pytest.raises(HTTPException, match="source exceeds safe extraction limits"):
+        source_domain.extract_blocks("wide.xlsx", workbook_bytes(column=2))
+
+    with pytest.raises(HTTPException, match="source exceeds safe extraction limits"):
+        source_domain.extract_blocks("false-dimension.xlsx", declare_only_a1(workbook_bytes(column=2)))
+
+    assert "evidence" in {
+        block["text"] for block in source_domain.extract_blocks("false-row-dimension.xlsx", declare_only_a1(workbook_bytes(row=2)))
+    }
+
+    monkeypatch.setattr(source_domain, "MAX_XLSX_EXTRACT_WORKSHEETS", 1)
+    with pytest.raises(HTTPException, match="source exceeds safe extraction limits"):
+        source_domain.extract_blocks("many-sheets.xlsx", workbook_bytes(sheets=2))
+
+    monkeypatch.setattr(source_domain, "MAX_SOURCE_LINE", 8)
+    with pytest.raises(HTTPException, match="source exceeds safe extraction limits"):
+        source_domain.extract_blocks("long.txt", b"adverse covenant")
+
+    monkeypatch.setattr(source_domain, "MAX_SOURCE_LINE", 20_000)
+    monkeypatch.setattr(source_domain, "MAX_SOURCE_TEXT", 13)
+    assert [block["text"] for block in source_domain.extract_blocks("bounded.txt", b"one\ntwo\nthree")] == ["one", "two", "three"]
+
+    monkeypatch.setattr(source_domain, "MAX_SOURCE_TEXT", 8)
+    with pytest.raises(HTTPException, match="source exceeds safe extraction limits"):
+        source_domain.extract_blocks("long.txt", b"one\ntwo\nthree")
 
 
 def test_evidence_free_json_values_are_rejected_before_source_set_creation(tmp_path: Path) -> None:

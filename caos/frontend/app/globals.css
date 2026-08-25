@@ -176,6 +176,7 @@ dialog:not(.context-drawer) { width: min(680px, calc(100% - 32px)); max-width: 6
 .loan-table td.positive { color: var(--caos-success); }
 .loan-table td.negative { color: var(--caos-critical); }
 .loan-table td.flat { color: var(--caos-muted); }
+.loan-pagination { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border-top: 1px solid var(--caos-border); }
 .row-actions { display: flex; gap: var(--space-sm); justify-content: flex-end; flex-wrap: wrap; }
 .change-list { margin: 0; padding-left: var(--space-lg); }
 .action-state { display: grid; justify-items: start; gap: var(--space-sm); border: 1px solid var(--caos-border); border-radius: 6px; padding: var(--space-md); background: var(--caos-bg); }

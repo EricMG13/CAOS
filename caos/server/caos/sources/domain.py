@@ -21,7 +21,13 @@ from ..store import MemoryStore, now_iso
 ALLOWED_SUFFIXES = {".pdf", ".xlsx", ".json", ".txt", ".md", ".csv"}
 MAX_ZIP_ENTRIES = 2000
 MAX_ZIP_RATIO = 100
-MAX_ZIP_UNCOMPRESSED = 1_000_000_000
+MAX_ZIP_UNCOMPRESSED = 100_000_000
+MAX_SOURCE_TEXT = 2_000_000
+MAX_SOURCE_LINE = 20_000
+MAX_XLSX_EXTRACT_WORKSHEETS = 64
+MAX_XLSX_EXTRACT_ROWS = 25_000
+MAX_XLSX_EXTRACT_COLUMNS = 64
+EXTRACTION_LIMIT_DETAIL = "source exceeds safe extraction limits"
 
 
 class Vault:
@@ -140,25 +146,50 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         if not text.strip():
             text = "PDF source stored; no text layer was available for safe extraction."
     elif suffix == ".xlsx":
+        workbook = None
         try:
             from openpyxl import load_workbook
 
             workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
+            if len(workbook.worksheets) > MAX_XLSX_EXTRACT_WORKSHEETS:
+                raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
             lines: list[str] = []
+            text_length = 0
+
+            def append_xlsx_line(line: str) -> None:
+                nonlocal text_length
+                next_length = text_length + len(line) + (1 if lines else 0)
+                if next_length > MAX_SOURCE_TEXT:
+                    raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
+                lines.append(line)
+                text_length = next_length
+
             has_cell_value = False
+            extracted_rows = 0
             for sheet in workbook.worksheets:
-                lines.append(f"[sheet:{sheet.title}]")
+                sheet.reset_dimensions()
+                append_xlsx_line(f"[sheet:{sheet.title}]")
                 for row in sheet.iter_rows(values_only=True):
+                    extracted_rows += 1
+                    if extracted_rows > MAX_XLSX_EXTRACT_ROWS:
+                        raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
+                    if len(row) > MAX_XLSX_EXTRACT_COLUMNS:
+                        raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
                     values = ["" if value is None else str(value) for value in row]
+                    values.extend([""] * (MAX_XLSX_EXTRACT_COLUMNS - len(values)))
                     has_cell_value = has_cell_value or any(value.strip() for value in values)
-                    lines.append("\t".join(values))
+                    line = "\t".join(values)
+                    append_xlsx_line(line)
             if not has_cell_value:
                 raise HTTPException(status_code=422, detail="source contains no extractable evidence")
             text = "\n".join(lines)
+        except HTTPException:
+            raise
         except Exception as exc:
-            if isinstance(exc, HTTPException):
-                raise
             raise HTTPException(status_code=422, detail="invalid XLSX source") from exc
+        finally:
+            if workbook is not None:
+                workbook.close()
     else:
         try:
             text = content.decode("utf-8")
@@ -168,11 +199,14 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         raise HTTPException(status_code=422, detail="source contains no extractable evidence")
     if suffix == ".csv" and not text.strip(" \t\r\n,\""):
         raise HTTPException(status_code=422, detail="source contains no extractable evidence")
-    text = text[:2_000_000]
+    if len(text) > MAX_SOURCE_TEXT:
+        raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
     blocks = []
     for index, line in enumerate(text.splitlines() or [text], start=1):
         if line.strip():
-            blocks.append({"block_id": f"b{index:05d}", "locator": {"line": index}, "text": line[:20_000], "extractor_version": "builtin-v1", "confidence": "MEDIUM", "untrusted_data": True})
+            if len(line) > MAX_SOURCE_LINE:
+                raise HTTPException(status_code=422, detail=EXTRACTION_LIMIT_DETAIL)
+            blocks.append({"block_id": f"b{index:05d}", "locator": {"line": index}, "text": line, "extractor_version": "builtin-v1", "confidence": "MEDIUM", "untrusted_data": True})
     return blocks or [{"block_id": "b00001", "locator": {"line": 1}, "text": "", "extractor_version": "builtin-v1", "confidence": "LOW", "untrusted_data": True}]
 
 

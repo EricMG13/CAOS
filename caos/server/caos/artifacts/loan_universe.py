@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import math
 import zipfile
 import copy
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
 
 from ..contracts import digest
@@ -17,7 +20,9 @@ from ..contracts import digest
 TEMPLATE_VERSION = "cp3-sector-rv-v1"
 IMPORTER_VERSION = "loan-rv-importer-v1"
 MAX_WORKSHEETS = 64
-MAX_ROWS = 25_000
+# ponytail: the MVP returns and binds the full universe; paginate the API and
+# CP-3 handoff before raising this ceiling.
+MAX_ROWS = 2_000
 MAX_COLUMNS = 64
 MAX_CELL_TEXT = 32 * 1024
 MAX_FINDINGS = 200
@@ -163,14 +168,17 @@ def _validate_package(content: bytes, findings: _Findings) -> None:
             for info in archive.infolist():
                 if not info.filename.lower().endswith(".rels"):
                     continue
-                relationship_xml = archive.read(info)
-                if b'TargetMode="External"' in relationship_xml or b"TargetMode='External'" in relationship_xml:
+                relationships = ElementTree.fromstring(archive.read(info))
+                if any(
+                    relationship.attrib.get("TargetMode", "").casefold() == "external"
+                    for relationship in relationships.iter()
+                ):
                     findings.add("RV_PACKAGE_EXTERNAL_LINK", "External package relationships are not allowed.")
                     break
             content_types = archive.read("[Content_Types].xml")
             if b"macroEnabled" in content_types or b"vbaProject" in content_types:
                 findings.add("RV_PACKAGE_MACRO", "Macro-enabled workbooks are not allowed.")
-    except (KeyError, OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+    except (ElementTree.ParseError, KeyError, OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
         findings.add("RV_PACKAGE_INVALID", "XLSX package is malformed.")
 
 
@@ -299,6 +307,7 @@ def _normalize_row(
     cells: tuple[Any, ...],
     findings: _Findings,
     epoch: datetime,
+    start_column: int,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "sector": sheet.title,
@@ -306,7 +315,8 @@ def _normalize_row(
     }
     for offset, field in enumerate(FIELDS):
         cell = cells[offset]
-        location = {"sheet": sheet.title, "row": row_number, "column": cell.column_letter}
+        column = get_column_letter(start_column + offset)
+        location = {"sheet": sheet.title, "row": row_number, "column": column}
         if field in NUMERIC_FIELDS:
             row[field] = _number(cell.value, findings, **location)
         elif field == "maturity_date":
@@ -317,7 +327,7 @@ def _normalize_row(
         if row[identifier]:
             row[identifier] = row[identifier].upper()
     if not row["borrower_name"]:
-        findings.add("RV_BORROWER_MISSING", "Borrower Name is required.", sheet=sheet.title, row=row_number, column=cells[1].column_letter)
+        findings.add("RV_BORROWER_MISSING", "Borrower Name is required.", sheet=sheet.title, row=row_number, column=get_column_letter(start_column + 1))
     if not row["figi"] and not row["bloomberg_loan_id"]:
         findings.add("RV_INSTRUMENT_ID_MISSING", "FIGI or Bloomberg loan ID is required.", sheet=sheet.title, row=row_number)
         row["instrument_key"] = f"INVALID:{sheet.title}:{row_number}"
@@ -381,7 +391,7 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
                 if raw_row_count > MAX_ROWS:
                     findings.add("RV_ROW_LIMIT", f"Workbook exceeds the {MAX_ROWS}-instrument-row limit.", sheet=sheet.title, row=row_number)
                     break
-                rows.append(_normalize_row(sheet, row_number, cells, findings, workbook.epoch))
+                rows.append(_normalize_row(sheet, row_number, cells, findings, workbook.epoch, start_column))
         if recognized_sheets == 0:
             findings.add("RV_TEMPLATE_MISSING", "Workbook contains no recognized visible sector worksheet.")
         elif raw_row_count == 0:
@@ -394,7 +404,6 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
         else:
             expected_date = None
 
-        identities: dict[str, tuple[str | None, str | None]] = {}
         normalized: dict[str, dict[str, Any]] = {}
         figi_to_bloomberg: dict[str, str] = {}
         bloomberg_to_figi: dict[str, str] = {}
@@ -408,6 +417,17 @@ def parse_loan_workbook(content: bytes, *, source_id: str, source_sha256: str) -
                     findings.add("RV_ID_CONFLICT", "Bloomberg loan ID maps to multiple FIGIs.", **row["source_locators"][0])
                 figi_to_bloomberg[figi] = bloomberg
                 bloomberg_to_figi[bloomberg] = figi
+
+        identities: dict[str, tuple[str | None, str | None]] = {}
+        for row in rows:
+            figi = row.get("figi")
+            bloomberg = row.get("bloomberg_loan_id")
+            if figi and not bloomberg:
+                row["bloomberg_loan_id"] = bloomberg = figi_to_bloomberg.get(figi)
+            elif bloomberg and not figi:
+                row["figi"] = figi = bloomberg_to_figi.get(bloomberg)
+            if figi or bloomberg:
+                row["instrument_key"] = f"FIGI:{figi}" if figi else f"BBG:{bloomberg}"
             key = row["instrument_key"]
             identity = (figi, bloomberg)
             if key in identities and identities[key] != identity:
@@ -448,7 +468,22 @@ def source_bytes(source: dict[str, Any]) -> bytes:
     path = Path(str(source.get("vault_path", "")))
     if not path.is_file():
         raise FileNotFoundError("RV_SOURCE_BYTES_UNAVAILABLE")
-    return path.read_bytes()
+    expected_size = source.get("bytes")
+    if not isinstance(expected_size, int) or isinstance(expected_size, bool) or expected_size < 0:
+        raise LoanUniverseSourceError(
+            "RV_SOURCE_INTEGRITY_MISMATCH",
+            "Stored workbook bytes do not match the immutable source digest.",
+        )
+    with path.open("rb") as stored:
+        content = stored.read(expected_size + 1)
+    expected = source.get("sha256")
+    actual = hashlib.sha256(content).hexdigest()
+    if len(content) != expected_size or not isinstance(expected, str) or actual != expected:
+        raise LoanUniverseSourceError(
+            "RV_SOURCE_INTEGRITY_MISMATCH",
+            "Stored workbook bytes do not match the immutable source digest.",
+        )
+    return content
 
 
 def import_loan_source(

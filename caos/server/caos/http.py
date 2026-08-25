@@ -275,55 +275,10 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
     def withdraw_source(case_id: str, source_id: str, request: Request) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
-        with store.lock:
-            source = store.sources.get(source_id)
-            if not source or source["case_id"] != case_id:
-                raise HTTPException(status_code=404, detail="source not found")
-            if source.get("withdrawn"):
-                return {key: value for key, value in source.items() if key != "vault_path"}
-            prior_source_set = store.source_sets.get(case_id)
-            prior_withdrawn = source.get("withdrawn", False)
-            prior_assumptions = copy.deepcopy(store.assumptions.get(case_id))
-            prior_loan_state = copy.deepcopy(
-                (
-                    store.rv_loan_universes,
-                    store.rv_loan_rows,
-                    store.rv_active_loan_universes,
-                )
-            )
-            audit_start = len(store.audit)
-            source["withdrawn"] = True
-            current = store.source_sets.get(case_id)
-            new_source_set_id: str | None = None
-            if current:
-                active_source_ids = [existing_id for existing_id in current["source_ids"] if not store.sources.get(existing_id, {}).get("withdrawn")]
-                new_source_set_id = store._id("set")
-                store.register_source_set({"id": new_source_set_id, "case_id": case_id, "version": current["version"] + 1, "source_ids": active_source_ids, "created_by": who.subject, "created_at": now_iso()})
-            mark_assumptions_stale(store, case_id, {source_id}, persist=False)
-            store._withdraw_loan_universe_for_source_locked(case_id, source_id, who.subject)
-            store.audit_event("source.withdrawn", who.subject, case_id=case_id, source_id=source_id)
-            try:
-                store.persist()
-            except Exception:
-                source["withdrawn"] = prior_withdrawn
-                if prior_source_set is None:
-                    store.source_sets.pop(case_id, None)
-                else:
-                    store.source_sets[case_id] = prior_source_set
-                if new_source_set_id:
-                    store.source_set_history.pop(new_source_set_id, None)
-                if prior_assumptions is None:
-                    store.assumptions.pop(case_id, None)
-                else:
-                    store.assumptions[case_id] = prior_assumptions
-                (
-                    store.rv_loan_universes,
-                    store.rv_loan_rows,
-                    store.rv_active_loan_universes,
-                ) = prior_loan_state
-                del store.audit[audit_start:]
-                raise
-        return {key: value for key, value in source.items() if key != "vault_path"}
+        source = store.withdraw_source(case_id, source_id, who.subject)
+        if source is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        return source
 
     @app.get("/api/cases/{case_id}/pathway-fit", response_model=PathwayFitResponse)
     def fit(case_id: str, request: Request) -> dict[str, Any]:
@@ -560,6 +515,7 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 "RV_SOURCE_TYPE_INVALID": 415,
                 "RV_SOURCE_WITHDRAWN": 409,
                 "RV_SOURCE_BYTES_UNAVAILABLE": 409,
+                "RV_SOURCE_INTEGRITY_MISMATCH": 409,
             }.get(exc.code, 422)
             raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.detail}) from exc
         if not created:
