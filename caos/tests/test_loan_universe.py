@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import io
-import hashlib
-import os
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -21,7 +18,6 @@ from caos.artifacts.loan_universe import (
 from caos.config import Settings
 from caos.http import create_app
 from caos.memory_ledgers import MemoryLedgerSet
-from caos.store import MemoryStore, PostgresStore
 
 
 def _row(
@@ -114,48 +110,6 @@ def _workbook_bytes(
 
 def _codes(error: LoanWorkbookValidationError) -> set[str]:
     return {finding["code"] for finding in error.findings}
-
-
-def _import_record(
-    store: MemoryStore,
-    case_id: str,
-    parsed: dict[str, object],
-    *,
-    status: str = "ACTIVE",
-    findings: list[dict[str, object]] | None = None,
-) -> dict[str, object]:
-    return {
-        "id": store._id("rvloan"),
-        "case_id": case_id,
-        "source_id": parsed["source_id"],
-        "source_filename": "REF_CP-3_Sector_RV.xlsx",
-        "source_sha256": parsed["source_sha256"],
-        "workbook_date": parsed.get("workbook_date"),
-        "template_version": parsed["template_version"],
-        "importer_version": parsed["importer_version"],
-        "universe_digest": parsed.get("universe_digest"),
-        "row_count": parsed.get("row_count", 0),
-        "status": status,
-        "findings": findings or [],
-    }
-
-
-def _add_source(
-    store: MemoryStore, case_id: str, source_id: str, *, withdrawn: bool = False
-) -> None:
-    store.sources[source_id] = {
-        "id": source_id,
-        "case_id": case_id,
-        "filename": "REF_CP-3_Sector_RV.xlsx",
-        "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "sha256": hashlib.sha256(source_id.encode()).hexdigest(),
-        "vault_path": "/tmp/test-loan-source.xlsx",
-        "bytes": 1,
-        "blocks": [],
-        "created_by": "analyst",
-        "created_at": "2026-08-24T00:00:00+00:00",
-        "withdrawn": withdrawn,
-    }
 
 
 def test_cp3_workbook_maps_all_visible_sector_rows_with_source_units() -> None:
@@ -368,123 +322,6 @@ def test_workbook_sheet_limit_rejects_without_scanning_beyond_the_cap() -> None:
     assert "RV_WORKSHEET_LIMIT" in _codes(raised.value)
 
 
-def test_memory_store_versions_idempotently_supersedes_and_withdraws_loan_universes() -> (
-    None
-):
-    store = MemoryStore()
-    case_id = store.create_case("Loan RV", "Issuer", "Services", "analyst")["id"]
-    for source_id in ("src_1", "src_2", "src_3"):
-        _add_source(store, case_id, source_id)
-    first_parsed = parse_loan_workbook(
-        _workbook_bytes(), source_id="src_1", source_sha256="1" * 64
-    )
-    first, created = store.save_loan_universe_import(
-        _import_record(store, case_id, first_parsed), first_parsed["rows"], "analyst"
-    )
-    duplicate, duplicate_created = store.save_loan_universe_import(
-        _import_record(store, case_id, first_parsed), first_parsed["rows"], "analyst"
-    )
-
-    assert (
-        created is True
-        and duplicate_created is False
-        and duplicate["id"] == first["id"]
-    )
-    assert (
-        first["version"] == 1
-        and store.active_loan_universe(case_id)["id"] == first["id"]
-    )
-
-    second_parsed = parse_loan_workbook(
-        _workbook_bytes(first_rows=[_row(margin=425)]),
-        source_id="src_2",
-        source_sha256="2" * 64,
-    )
-    second, second_created = store.save_loan_universe_import(
-        _import_record(store, case_id, second_parsed), second_parsed["rows"], "analyst"
-    )
-
-    assert second_created is True and second["version"] == 2
-    assert store.rv_loan_universes[first["id"]]["status"] == "SUPERSEDED"
-    assert store.active_loan_universe(case_id)["id"] == second["id"]
-
-    rejected_parsed = {
-        **second_parsed,
-        "source_id": "src_3",
-        "source_sha256": "3" * 64,
-        "row_count": 0,
-        "universe_digest": None,
-    }
-    rejected, rejected_created = store.save_loan_universe_import(
-        _import_record(
-            store,
-            case_id,
-            rejected_parsed,
-            status="REJECTED",
-            findings=[{"code": "RV_TEMPLATE_PARTIAL"}],
-        ),
-        [],
-        "analyst",
-    )
-    assert (
-        rejected_created is True
-        and rejected["status"] == "REJECTED"
-        and rejected["version"] is None
-    )
-    assert store.active_loan_universe(case_id)["id"] == second["id"]
-
-    with store.lock:
-        withdrawn_id = store._withdraw_loan_universe_for_source_locked(
-            case_id, "src_2", "analyst"
-        )
-        store.persist()
-    assert withdrawn_id == second["id"] and store.active_loan_universe(case_id) is None
-    assert store.rv_loan_universes[second["id"]]["status"] == "WITHDRAWN"
-
-
-def test_memory_store_rolls_back_complete_loan_state_when_persistence_fails() -> None:
-    class FailingStore(MemoryStore):
-        fail = False
-
-        def persist(self) -> None:
-            if self.fail:
-                raise RuntimeError("database unavailable")
-
-    store = FailingStore()
-    case_id = store.create_case("Loan RV", "Issuer", "Services", "analyst")["id"]
-    _add_source(store, case_id, "src")
-    parsed = parse_loan_workbook(
-        _workbook_bytes(), source_id="src", source_sha256="4" * 64
-    )
-    store.fail = True
-
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        store.save_loan_universe_import(
-            _import_record(store, case_id, parsed), parsed["rows"], "analyst"
-        )
-
-    assert not store.rv_loan_universes
-    assert not store.rv_loan_rows
-    assert not store.rv_active_loan_universes
-    assert all(event["action"] != "rv.loan_universe.activated" for event in store.audit)
-
-
-def test_store_rejects_a_source_withdrawn_while_its_workbook_was_parsing() -> None:
-    store = MemoryStore()
-    case_id = store.create_case("Loan RV", "Issuer", "Services", "analyst")["id"]
-    _add_source(store, case_id, "src", withdrawn=True)
-    parsed = parse_loan_workbook(
-        _workbook_bytes(), source_id="src", source_sha256="5" * 64
-    )
-
-    with pytest.raises(ValueError, match="RV_SOURCE_NOT_ACTIVE"):
-        store.save_loan_universe_import(
-            _import_record(store, case_id, parsed), parsed["rows"], "analyst"
-        )
-
-    assert store.active_loan_universe(case_id) is None
-
-
 def test_loan_universe_migration_has_atomic_identity_and_active_constraints() -> None:
     migration = (
         Path(__file__).parents[1]
@@ -520,104 +357,6 @@ def test_loan_universe_source_foreign_key_migration_backfills_before_validation(
         in migration
     )
     assert "VALIDATE CONSTRAINT rv_loan_universes_source_id_fkey" in migration
-
-
-def test_postgres_loan_import_converges_and_normalizes_rows() -> None:
-    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip(
-            "CAOS_TEST_DATABASE_URL is required for durable loan-universe proof"
-        )
-    first_store = PostgresStore(database_url)
-    case = first_store.create_case(
-        "Loan RV", first_store._id("issuer"), "Services", "analyst"
-    )
-    source_id = first_store._id("src")
-    _add_source(first_store, case["id"], source_id)
-    first_store.persist()
-    second_store = PostgresStore(database_url)
-    parsed = parse_loan_workbook(
-        _workbook_bytes(),
-        source_id=source_id,
-        source_sha256=first_store.sources[source_id]["sha256"],
-    )
-    first_record = _import_record(first_store, case["id"], parsed)
-    second_record = _import_record(second_store, case["id"], parsed)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(
-            executor.map(
-                lambda item: item[0].save_loan_universe_import(
-                    item[1], parsed["rows"], "analyst"
-                ),
-                ((first_store, first_record), (second_store, second_record)),
-            )
-        )
-
-    assert sum(created for _record, created in results) == 1
-    universe_id = results[0][0]["id"]
-    assert results[1][0]["id"] == universe_id
-    check = PostgresStore(database_url)
-    active = check.active_loan_universe(case["id"])
-    assert (
-        active is not None
-        and active["id"] == universe_id
-        and len(active["rows"]) == parsed["row_count"]
-    )
-    with check._psycopg.connect(check._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT universe.status, (SELECT count(*) FROM rv_loan_rows WHERE universe_id=%s), source.id "
-                "FROM rv_loan_universes AS universe JOIN sources AS source ON source.id=universe.source_id "
-                "WHERE universe.id=%s",
-                (universe_id, universe_id),
-            )
-            row = cursor.fetchone()
-    assert row == ("ACTIVE", parsed["row_count"], source_id)
-
-
-def test_postgres_import_and_source_withdrawal_converge_without_active_residue() -> (
-    None
-):
-    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip(
-            "CAOS_TEST_DATABASE_URL is required for durable loan-universe proof"
-        )
-    import_store = PostgresStore(database_url)
-    case = import_store.create_case(
-        "Loan withdrawal race", import_store._id("issuer"), "Services", "analyst"
-    )
-    source_id = import_store._id("src")
-    _add_source(import_store, case["id"], source_id)
-    import_store.persist()
-    withdrawal_store = PostgresStore(database_url)
-    parsed = parse_loan_workbook(
-        _workbook_bytes(),
-        source_id=source_id,
-        source_sha256=import_store.sources[source_id]["sha256"],
-    )
-    record = _import_record(import_store, case["id"], parsed)
-
-    def activate() -> str:
-        try:
-            import_store.save_loan_universe_import(record, parsed["rows"], "analyst")
-            return "activated"
-        except ValueError as exc:
-            assert str(exc) == "RV_SOURCE_NOT_ACTIVE"
-            return "withdrawn-first"
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        activation = executor.submit(activate)
-        withdrawal = executor.submit(
-            withdrawal_store.withdraw_source, case["id"], source_id, "analyst"
-        )
-        assert activation.result() in {"activated", "withdrawn-first"}
-        assert withdrawal.result() is not None
-
-    check = PostgresStore(database_url)
-    assert check.sources[source_id]["withdrawn"] is True
-    assert check.active_loan_universe(case["id"]) is None
 
 
 def _client(tmp_path: Path, ledgers: MemoryLedgerSet | None = None) -> TestClient:

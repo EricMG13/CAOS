@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from caos.config import Settings
+from caos.http import create_app
 from caos.migrations import apply_migrations
+from caos.postgres_ledgers import PostgresLedgerSet
 from migrate import migrate
 
 
@@ -77,6 +82,104 @@ def test_normalized_authority_migration_applies_once_and_is_idempotent() -> None
             assert "node_id is null" in job_index
             assert "queued" in job_index and "claimed" in job_index
         connection.rollback()
+
+
+def test_normalized_app_never_reads_or_writes_a_post_migration_legacy_row(
+    tmp_path: Path,
+) -> None:
+    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("CAOS_TEST_DATABASE_URL is required for legacy-row inertness proof")
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+    from psycopg.types.json import Jsonb
+
+    database_url = database_url.replace("postgresql+psycopg://", "postgresql://")
+    schema = f"task5_envelope_{uuid.uuid4().hex}"
+    migrations = Path(__file__).parents[1] / "server" / "migrations"
+    with psycopg.connect(database_url) as admin:
+        with admin.cursor() as cursor:
+            cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    scoped_url = make_conninfo(database_url, options=f"-c search_path={schema}")
+    try:
+        with psycopg.connect(scoped_url) as connection:
+            assert apply_migrations(connection, migrations)
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "CREATE TABLE caos_state ("
+                    "id boolean PRIMARY KEY, revision bigint NOT NULL, state jsonb NOT NULL)"
+                )
+                cursor.execute(
+                    "INSERT INTO caos_state(id, revision, state) VALUES (true, %s, %s)",
+                    (37, Jsonb({"owner": "unrelated-system", "payload": [1, 2, 3]})),
+                )
+                cursor.execute(
+                    "SELECT revision, convert_to(state::text, 'UTF8') "
+                    "FROM caos_state WHERE id=true"
+                )
+                legacy_before = cursor.fetchone()
+
+        settings = Settings(
+            database_url=scoped_url,
+            storage_dir=tmp_path / "vault",
+            deploy_v_root=Path(__file__).parents[1]
+            / "server"
+            / "caos"
+            / "methodology"
+            / "vendor"
+            / "deploy_v",
+        )
+        ledgers = PostgresLedgerSet(scoped_url)
+        with TestClient(create_app(settings, ledgers)) as client:
+            case = client.post(
+                "/api/cases",
+                json={
+                    "name": "Envelope inertness",
+                    "issuer": "Issuer",
+                    "sector": "Testing",
+                },
+            )
+            assert case.status_code == 201
+            case_id = case.json()["id"]
+            source = client.post(
+                f"/api/cases/{case_id}/sources",
+                files={"file": ("earnings.txt", b"Revenue 100", "text/plain")},
+            )
+            assert source.status_code == 201
+            source_id = source.json()["id"]
+            run = client.app.state.ledgers.runs.create_run_with_nodes(
+                case_id,
+                "local-analyst",
+                {
+                    "pathway": "EARNINGS_UPDATE",
+                    "source_set_id": source.json()["source_set"]["id"],
+                },
+                [],
+            )
+            run_id = run["id"]
+
+        with psycopg.connect(scoped_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT revision, convert_to(state::text, 'UTF8') "
+                    "FROM caos_state WHERE id=true"
+                )
+                assert cursor.fetchone() == legacy_before
+                cursor.execute(
+                    "SELECT "
+                    "EXISTS(SELECT 1 FROM cases WHERE id=%s), "
+                    "EXISTS(SELECT 1 FROM sources WHERE id=%s), "
+                    "EXISTS(SELECT 1 FROM runs WHERE id=%s)",
+                    (case_id, source_id, run_id),
+                )
+                assert cursor.fetchone() == (True, True, True)
+    finally:
+        with psycopg.connect(database_url) as admin:
+            with admin.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
+                )
 
 
 def test_migrate_rejects_non_postgresql_database_url(

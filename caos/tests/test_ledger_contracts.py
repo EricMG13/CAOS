@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -64,6 +65,124 @@ def postgres_ledger_set() -> PostgresLedgerSet:
         yield durable
     finally:
         _clear_postgres(database_url)
+
+
+class _CaseLockGate:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.acquired = threading.Event()
+        self.release = threading.Event()
+
+
+class _GatedCursor:
+    def __init__(self, cursor: Any, gate: _CaseLockGate) -> None:
+        self._cursor = cursor
+        self._gate = gate
+
+    def __enter__(self) -> _GatedCursor:
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> Any:
+        return self._cursor.__exit__(*args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+    def execute(self, statement: Any, parameters: Any = None) -> _GatedCursor:
+        self._cursor.execute(statement, parameters)
+        normalized = " ".join(str(statement).split())
+        if self._gate.enabled and normalized == (
+            "SELECT 1 FROM cases WHERE id=%s FOR UPDATE"
+        ):
+            self._gate.enabled = False
+            self._gate.acquired.set()
+            if not self._gate.release.wait(timeout=15):
+                raise TimeoutError("case-lock race gate was not released")
+        return self
+
+
+class _GatedConnection:
+    def __init__(self, connection: Any, gate: _CaseLockGate) -> None:
+        self._connection = connection
+        self._gate = gate
+
+    def __enter__(self) -> _GatedConnection:
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> Any:
+        return self._connection.__exit__(*args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def cursor(self, *args: object, **kwargs: object) -> _GatedCursor:
+        return _GatedCursor(self._connection.cursor(*args, **kwargs), self._gate)
+
+
+class _GatedPostgresLedgerSet(PostgresLedgerSet):
+    def __init__(self, database_url: str) -> None:
+        self._case_lock_gate: _CaseLockGate | None = None
+        super().__init__(database_url)
+
+    def gate_next_case_lock(self) -> _CaseLockGate:
+        gate = _CaseLockGate()
+        self._case_lock_gate = gate
+        return gate
+
+    def _connect(self) -> Any:
+        connection = super()._connect()
+        gate = self._case_lock_gate
+        return _GatedConnection(connection, gate) if gate is not None else connection
+
+
+class _ObservedPostgresLedgerSet(PostgresLedgerSet):
+    def __init__(self, database_url: str) -> None:
+        self._observe_next_connection = False
+        self._connection_opened = threading.Event()
+        self.observed_pid: int | None = None
+        super().__init__(database_url)
+
+    def observe_next_connection(self) -> None:
+        self.observed_pid = None
+        self._connection_opened.clear()
+        self._observe_next_connection = True
+
+    def wait_for_observed_connection(self) -> int:
+        assert self._connection_opened.wait(timeout=5)
+        assert self.observed_pid is not None
+        return self.observed_pid
+
+    def _connect(self) -> Any:
+        connection = super()._connect()
+        if self._observe_next_connection:
+            self._observe_next_connection = False
+            self.observed_pid = connection.info.backend_pid
+            self._connection_opened.set()
+        return connection
+
+
+def _wait_for_postgres_blocker(database_url: str, backend_pid: int) -> None:
+    import psycopg
+
+    deadline = time.monotonic() + 10
+    observed: list[tuple[Any, ...]] = []
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            while time.monotonic() < deadline:
+                cursor.execute(
+                    "SELECT state, wait_event_type, wait_event, pg_blocking_pids(pid) "
+                    "FROM pg_stat_activity WHERE pid=%s",
+                    (backend_pid,),
+                )
+                observed = list(cursor.fetchall())
+                if any(row[3] for row in observed):
+                    return
+                time.sleep(0.01)
+    raise AssertionError(
+        f"follower connection never blocked on the production case lock: {observed!r}"
+    )
 
 
 def _case(ledger_set: Any) -> dict[str, Any]:
@@ -328,6 +447,80 @@ def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
     assert ledger_set.sources.source_set(historical_set["id"]) == historical_set
 
 
+def test_loan_universe_versions_supersede_reject_and_withdraw_portably(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    sources = [
+        ledger_set.sources.ingest(_source(case["id"], sha256=character * 64), ACTOR)
+        for character in ("a", "b", "c")
+    ]
+
+    def proposal(
+        index: int, digest_character: str, *, status: str = "ACTIVE"
+    ) -> dict[str, Any]:
+        return {
+            "case_id": case["id"],
+            "source_id": sources[index]["id"],
+            "source_filename": sources[index]["filename"],
+            "source_sha256": sources[index]["sha256"],
+            "workbook_date": "2026-08-24",
+            "template_version": "contract-template-v1",
+            "importer_version": "contract-importer-v1",
+            "universe_digest": (
+                None if status == "REJECTED" else digest_character * 64
+            ),
+            "row_count": 0 if status == "REJECTED" else 1,
+            "status": status,
+            "findings": [] if status == "ACTIVE" else [{"code": "RV_TEMPLATE_PARTIAL"}],
+        }
+
+    first, created = ledger_set.sources.save_loan_universe_import(
+        proposal(0, "d"),
+        [{"instrument_key": "loan-1", "borrower": "Issuer"}],
+        ACTOR,
+    )
+    replay, replay_created = ledger_set.sources.save_loan_universe_import(
+        proposal(0, "d"),
+        [{"instrument_key": "loan-1", "borrower": "Issuer"}],
+        ACTOR,
+    )
+    assert created is True and first["version"] == 1
+    assert replay_created is False and replay["id"] == first["id"]
+
+    second, second_created = ledger_set.sources.save_loan_universe_import(
+        proposal(1, "e"),
+        [{"instrument_key": "loan-2", "borrower": "Issuer"}],
+        ACTOR,
+    )
+    superseded = ledger_set.sources.find_loan_universe_import(
+        case["id"], sources[0]["sha256"], "contract-template-v1", "contract-importer-v1"
+    )
+    assert second_created is True and second["version"] == 2
+    assert superseded is not None and superseded["status"] == "SUPERSEDED"
+    assert ledger_set.sources.active_loan_universe(case["id"])["id"] == second["id"]
+
+    rejected, rejected_created = ledger_set.sources.save_loan_universe_import(
+        proposal(2, "f", status="REJECTED"), [], ACTOR
+    )
+    assert rejected_created is True
+    assert rejected["status"] == "REJECTED" and rejected["version"] is None
+    assert ledger_set.sources.active_loan_universe(case["id"])["id"] == second["id"]
+
+    assert ledger_set.sources.withdraw(case["id"], sources[1]["id"], ACTOR)
+    assert ledger_set.sources.active_loan_universe(case["id"]) is None
+    withdrawn = ledger_set.sources.find_loan_universe_import(
+        case["id"], sources[1]["sha256"], "contract-template-v1", "contract-importer-v1"
+    )
+    assert withdrawn is not None and withdrawn["status"] == "WITHDRAWN"
+    invalid = proposal(1, "e")
+    invalid["template_version"] = "contract-template-after-withdrawal"
+    with pytest.raises(ValueError, match="RV_SOURCE_NOT_ACTIVE"):
+        ledger_set.sources.save_loan_universe_import(
+            invalid, [{"instrument_key": "loan-3", "borrower": "Issuer"}], ACTOR
+        )
+
+
 def test_source_reads_hide_adapter_fields_and_private_bytes_are_explicit(
     ledger_set: Any, tmp_path: Path
 ) -> None:
@@ -577,6 +770,32 @@ def test_run_claim_has_one_winner(ledger_set: Any) -> None:
         )
 
     assert sum(token is not None for token in tokens) == 1
+
+
+def test_run_claim_respects_the_shared_active_job_limit(
+    ledger_set: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("caos.memory_ledgers.MAX_ACTIVE_JOBS", 2)
+    monkeypatch.setattr("caos.postgres_ledgers.MAX_ACTIVE_JOBS", 2)
+    case = _case(ledger_set)
+    source_set = ledger_set.sources.ingest(_source(case["id"]), ACTOR)["source_set"]
+    runs = [
+        ledger_set.runs.create_run_with_nodes(
+            case["id"],
+            ACTOR,
+            {"pathway": "EARNINGS_UPDATE", "source_set_id": source_set["id"]},
+            [],
+        )
+        for _ in range(3)
+    ]
+
+    first = ledger_set.runs.claim(runs[0]["id"], "worker-a")
+    second = ledger_set.runs.claim(runs[1]["id"], "worker-b")
+    assert first is not None and second is not None
+    assert ledger_set.runs.claim(runs[2]["id"], "worker-c") is None
+
+    ledger_set.runs.finish(runs[0]["id"], first)
+    assert ledger_set.runs.claim(runs[2]["id"], "worker-c") is not None
 
 
 def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
@@ -1342,6 +1561,161 @@ def test_model_jobs_retry_renew_takeover_and_fencing(ledger_set: Any) -> None:
     assert ledger_set.models.is_current(build_id, retry_token) is False
 
 
+def test_model_result_validation_matrix_and_copy_isolation(ledger_set: Any) -> None:
+    queued, _ = ledger_set.models.queue_build(_accepted_model_input(ledger_set), ACTOR)
+    token = ledger_set.models.claim(queued["id"], "model-worker")
+    assert token is not None
+    valid = _model_result()
+    missing_qa = {
+        "payload": copy.deepcopy(valid["payload"]),
+        "payload_digest": valid["payload_digest"],
+    }
+    mismatched_digest = {**copy.deepcopy(valid), "payload_digest": "0" * 64}
+    unexpected_field = {**copy.deepcopy(valid), "unexpected": True}
+    malformed_tabs = copy.deepcopy(valid)
+    malformed_tabs["payload"]["tabs"] = {}
+    malformed_tabs["payload_digest"] = digest(malformed_tabs["payload"])
+    incomplete_cell = copy.deepcopy(valid)
+    incomplete_cell["payload"]["tabs"][0]["cells"] = [{"address": "A1"}]
+    incomplete_cell["qa"]["worksheet_cell_count"] = 1
+    incomplete_cell["payload_digest"] = digest(incomplete_cell["payload"])
+    nonfinite_width = copy.deepcopy(valid)
+    nonfinite_width["payload"]["tabs"][0]["columns"][0]["width"] = float("nan")
+    nonfinite_width["payload_digest"] = digest(nonfinite_width["payload"])
+
+    for invalid in (
+        missing_qa,
+        mismatched_digest,
+        unexpected_field,
+        malformed_tabs,
+        incomplete_cell,
+        nonfinite_width,
+    ):
+        assert ledger_set.models.renew(queued["id"], token) is True
+        with pytest.raises(ValueError, match="MODEL_RESULT_INVALID"):
+            ledger_set.models.complete(queued["id"], token, invalid, "model-worker")
+        assert ledger_set.models.is_current(queued["id"], token) is True
+        assert ledger_set.models.get_build(queued["id"])["status"] == "BUILDING"
+
+    assert ledger_set.models.renew(queued["id"], token) is True
+    ready = ledger_set.models.complete(queued["id"], token, valid, "model-worker")
+    valid["payload"]["identity"]["issuer_name"] = "mutated after completion"
+    assert ready["status"] == "READY"
+    assert (
+        ledger_set.models.get_build(queued["id"])["payload"]["identity"]["issuer_name"]
+        == "Issuer"
+    )
+
+
+def test_model_errors_and_export_failure_requeue_are_bounded(ledger_set: Any) -> None:
+    queued, _ = ledger_set.models.queue_build(_accepted_model_input(ledger_set), ACTOR)
+    calculate = ledger_set.models.claim(queued["id"], "model-worker")
+    assert calculate is not None
+    with pytest.raises(ValueError, match="MODEL_ERROR_INVALID"):
+        ledger_set.models.fail(
+            queued["id"],
+            calculate,
+            {"code": "X", "detail": "x" * 501},
+            "model-worker",
+        )
+    assert ledger_set.models.is_current(queued["id"], calculate) is True
+    calculation_error = {
+        "code": "MODEL_CALCULATION_FAILED",
+        "detail": "bounded",
+    }
+    failed = ledger_set.models.fail(
+        queued["id"], calculate, calculation_error, "model-worker"
+    )
+    calculation_error["detail"] = "mutated after failure"
+    assert failed["status"] == "FAILED"
+    assert ledger_set.models.get_build(queued["id"])["error"]["detail"] == "bounded"
+
+    ledger_set.models.retry_build(queued["id"], "reviewer")
+    retry = ledger_set.models.claim(queued["id"], "retry-worker")
+    assert retry is not None
+    ledger_set.models.complete(queued["id"], retry, _model_result(), "retry-worker")
+    exporting, created = ledger_set.models.queue_export(queued["id"], "approver")
+    assert created is True and exporting["export"]["status"] == "QUEUED"
+    assert ledger_set.models.pending_jobs() == [(queued["id"], "approver", "export")]
+    export = ledger_set.models.claim(queued["id"], "export-worker", kind="export")
+    assert export is not None
+    with pytest.raises(ValueError, match="MODEL_ERROR_INVALID"):
+        ledger_set.models.fail(
+            queued["id"],
+            export,
+            {"code": "X" * 81, "detail": "bounded"},
+            "export-worker",
+            kind="export",
+        )
+    export_error = {"code": "MODEL_EXPORT_FAILED", "detail": "bounded"}
+    export_failed = ledger_set.models.fail(
+        queued["id"], export, export_error, "export-worker", kind="export"
+    )
+    export_error["detail"] = "mutated after failure"
+    assert export_failed["status"] == "READY"
+    assert export_failed["export"] == {
+        "status": "FAILED",
+        "error": {"code": "MODEL_EXPORT_FAILED", "detail": "bounded"},
+    }
+    retried, requeued = ledger_set.models.queue_export(queued["id"], "analyst")
+    assert requeued is True and retried["export"]["status"] == "QUEUED"
+    assert ledger_set.models.pending_jobs() == [(queued["id"], "analyst", "export")]
+
+
+def test_model_build_rejects_cross_case_and_superseded_authority(
+    ledger_set: Any,
+) -> None:
+    build = _accepted_model_input(ledger_set)
+    other = _accepted_model_input(ledger_set)
+    with pytest.raises(ValueError, match="MODEL_BUILD_INVALID"):
+        ledger_set.models.queue_build(
+            {**build, "source_set_id": other["source_set_id"]}, ACTOR
+        )
+
+    source_set = ledger_set.sources.source_set(build["source_set_id"])
+    assert source_set is not None
+    current_run, current_snapshot = _accept_empty_run(
+        ledger_set, build["case_id"], source_set
+    )
+    with pytest.raises(ValueError, match="MODEL_BUILD_INVALID"):
+        ledger_set.models.queue_build(build, ACTOR)
+
+    current, created = ledger_set.models.queue_build(
+        {
+            **build,
+            "accepted_run_id": current_run["id"],
+            "accepted_snapshot_id": current_snapshot["id"],
+            "input_fingerprint": "d" * 64,
+        },
+        ACTOR,
+    )
+    assert created is True and current["accepted_snapshot_id"] == current_snapshot["id"]
+
+
+def test_model_and_workflow_claims_share_one_active_job_budget(
+    ledger_set: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("caos.memory_ledgers.MAX_ACTIVE_JOBS", 2)
+    monkeypatch.setattr("caos.postgres_ledgers.MAX_ACTIVE_JOBS", 2)
+    queued, _ = ledger_set.models.queue_build(_accepted_model_input(ledger_set), ACTOR)
+    time.sleep(LEASE_SECONDS + 0.1)
+    model_token = ledger_set.models.claim(queued["id"], "model-worker")
+    assert model_token is not None
+    _, first_run = _queued_run(ledger_set)
+    _, blocked_run = _queued_run(ledger_set)
+    workflow_token = ledger_set.runs.claim(first_run["id"], "workflow-worker")
+    assert workflow_token is not None
+    assert ledger_set.runs.claim(blocked_run["id"], "blocked-worker") is None
+
+    ledger_set.models.fail(
+        queued["id"],
+        model_token,
+        {"code": "MODEL_CALCULATION_FAILED", "detail": "bounded"},
+        "model-worker",
+    )
+    assert ledger_set.runs.claim(blocked_run["id"], "replacement-worker") is not None
+
+
 def test_pending_job_reads_are_authoritative(ledger_set: Any) -> None:
     _, run = _queued_run(ledger_set)
     build = _accepted_model_input(ledger_set)
@@ -1406,6 +1780,100 @@ def test_postgres_two_connection_uniqueness_and_claim_races(
             )
         )
     assert sum(token is not None for token in tokens) == 1
+
+
+def test_postgres_loan_import_and_withdrawal_serialize_without_deadlock(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    database_url = postgres_ledger_set._database_url
+    for leader_kind in ("import", "withdraw"):
+        case = _case(postgres_ledger_set)
+        source = postgres_ledger_set.sources.ingest(_source(case["id"]), ACTOR)
+        record = {
+            "case_id": case["id"],
+            "source_id": source["id"],
+            "source_filename": source["filename"],
+            "source_sha256": source["sha256"],
+            "workbook_date": "2026-08-24",
+            "template_version": f"race-template-{leader_kind}",
+            "importer_version": "race-importer-v1",
+            "universe_digest": "e" * 64,
+            "row_count": 1,
+            "status": "ACTIVE",
+            "findings": [],
+        }
+        rows = [{"instrument_key": "loan-1", "borrower": "Issuer"}]
+        leader = _GatedPostgresLedgerSet(database_url)
+        follower = _ObservedPostgresLedgerSet(database_url)
+        gate = leader.gate_next_case_lock()
+
+        def import_loan(ledgers: PostgresLedgerSet) -> str:
+            try:
+                _saved, created = ledgers.sources.save_loan_universe_import(
+                    record, rows, ACTOR
+                )
+                assert created is True
+                return "imported"
+            except ValueError as exc:
+                assert str(exc) == "RV_SOURCE_NOT_ACTIVE"
+                return "source-inactive"
+
+        def withdraw_source(ledgers: PostgresLedgerSet) -> str:
+            withdrawn = ledgers.sources.withdraw(case["id"], source["id"], ACTOR)
+            assert withdrawn is not None and withdrawn["withdrawn"] is True
+            return "withdrawn"
+
+        leader_operation = import_loan if leader_kind == "import" else withdraw_source
+        follower_operation = withdraw_source if leader_kind == "import" else import_loan
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(leader_operation, leader)
+                assert gate.acquired.wait(timeout=5)
+                follower.observe_next_connection()
+                second = executor.submit(follower_operation, follower)
+                follower_pid = follower.wait_for_observed_connection()
+                _wait_for_postgres_blocker(database_url, follower_pid)
+                gate.release.set()
+                outcomes = {first.result(timeout=15), second.result(timeout=15)}
+        finally:
+            gate.release.set()
+
+        expected = (
+            {"imported", "withdrawn"}
+            if leader_kind == "import"
+            else {"source-inactive", "withdrawn"}
+        )
+        assert outcomes == expected
+        assert postgres_ledger_set.sources.list_sources(case["id"]) == []
+        withdrawn_source = postgres_ledger_set.sources.get_source(source["id"])
+        assert withdrawn_source is not None and withdrawn_source["withdrawn"] is True
+        assert postgres_ledger_set.sources.active_loan_universe(case["id"]) is None
+
+
+def test_postgres_concurrent_model_queue_is_idempotent_and_preserves_actor(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    build = _accepted_model_input(postgres_ledger_set)
+    actors = ("requester-a", "requester-b")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda actor: (
+                    actor,
+                    *postgres_ledger_set.models.queue_build(build, actor),
+                ),
+                actors,
+            )
+        )
+
+    assert sum(created for _actor, _record, created in results) == 1
+    assert len({record["id"] for _actor, record, _created in results}) == 1
+    winner, queued, _ = next(item for item in results if item[2])
+    assert queued["created_by"] == winner
+    assert postgres_ledger_set.models.pending_jobs() == [
+        (queued["id"], winner, "calculate")
+    ]
 
 
 def test_postgres_stale_attempt_cannot_change_fenced_authority(

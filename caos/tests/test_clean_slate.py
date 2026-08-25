@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import os
 import re
 import stat
@@ -25,7 +24,6 @@ from caos.memory_ledgers import MemoryLedgerSet
 from caos.methodology.bundle import DeployVBundle
 from caos.methodology.prompt import compile_prompt, validate_invocation_plan
 from caos.publishing.recipes import validate_recipe
-from caos.store import MemoryStore, PostgresStore
 from fastapi.testclient import TestClient
 
 DEPLOY_V = (
@@ -1283,168 +1281,6 @@ def test_worker_respects_poll_interval_while_job_is_active(
     with pytest.raises(StopIteration):
         worker_module.main()
     assert sleeps == [expected, expected, expected]
-
-
-def test_postgres_refresh_skips_unchanged_state() -> None:
-    class Cursor:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-
-        def __enter__(self) -> "Cursor":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def execute(self, *_: object) -> None:
-            return None
-
-        def fetchone(self) -> tuple[int, dict[str, object]]:
-            return self.database.row
-
-    class Connection:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-
-        def __enter__(self) -> "Connection":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def cursor(self) -> Cursor:
-            return Cursor(self.database)
-
-    class Database:
-        def __init__(self) -> None:
-            self.row = (7, {"cases": {"stale": {"id": "stale"}}})
-
-        def connect(self, _: str) -> Connection:
-            return Connection(self)
-
-    database = Database()
-    store = PostgresStore.__new__(PostgresStore)
-    MemoryStore.__init__(store)
-    store.cases["local"] = {"id": "local"}
-    store._dsn = "postgresql://local/qa"
-    store._psycopg = database
-    store._state_revision = 7
-    store._base_state = store._snapshot()
-
-    store.refresh()
-    assert set(store.cases) == {"local"}
-
-    database.row = (8, {"cases": {"current": {"id": "current"}}})
-    store.refresh()
-    assert set(store.cases) == {"current"}
-
-
-def test_postgres_adopts_state_only_after_commit() -> None:
-    class Cursor:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-            self.result: object = None
-
-        def __enter__(self) -> "Cursor":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
-            if query.startswith("SELECT 1 FROM jobs"):
-                self.result = (1,)
-            elif query.startswith("SELECT revision"):
-                self.result = copy.deepcopy(self.database.row)
-            elif query.startswith("UPDATE caos_state"):
-                self.database.pending = (params[0], copy.deepcopy(params[1]))
-
-        def fetchone(self) -> object:
-            return self.result
-
-    class Connection:
-        def __init__(self, database: "Database") -> None:
-            self.database = database
-
-        def __enter__(self) -> "Connection":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            self.database.pending = None
-            return None
-
-        def cursor(self) -> Cursor:
-            return Cursor(self.database)
-
-        def commit(self) -> None:
-            if self.database.fail_commit:
-                raise RuntimeError("commit failed")
-            assert self.database.pending is not None
-            self.database.row = self.database.pending
-            self.database.pending = None
-
-    class Database:
-        def __init__(self) -> None:
-            self.row: tuple[int, dict[str, object]]
-            self.pending: tuple[int, dict[str, object]] | None = None
-            self.fail_commit = False
-
-        def connect(self, _: str) -> Connection:
-            return Connection(self)
-
-    database = Database()
-    store = PostgresStore.__new__(PostgresStore)
-    MemoryStore.__init__(store)
-    store._dsn = "postgresql://local/qa"
-    store._psycopg = database
-    store._jsonb = lambda value: value
-    store._state_revision = 1
-    store._base_state = store._snapshot()
-    current = copy.deepcopy(store._base_state)
-    current["cases"]["external"] = {
-        "id": "external",
-        "name": "External",
-        "issuer": "External issuer",
-        "sector": "Testing",
-        "created_by": "analyst",
-        "created_at": "2026-08-23T00:00:00+00:00",
-    }
-    database.row = (2, current)
-
-    store.cases["local"] = {"id": "local"}
-    database.fail_commit = True
-    with pytest.raises(RuntimeError, match="commit failed"):
-        store.persist()
-    assert set(store.cases) == {"external"}
-    assert store._state_revision == 2
-
-    database.fail_commit = False
-    store.runs["run"] = {
-        "id": "run",
-        "case_id": "external",
-        "status": "queued",
-        "plan": {},
-        "accepted_snapshot_id": None,
-        "created_by": "analyst",
-        "created_at": "2026-08-23T00:00:00+00:00",
-        "error": None,
-    }
-    store.persist()
-    database.fail_commit = True
-    with pytest.raises(RuntimeError, match="commit failed"):
-        store.update_run_fenced("run", "attempt", status="running")
-    assert store.runs["run"]["status"] == "queued"
-    assert database.row[1]["runs"]["run"]["status"] == "queued"
-
-
-def test_job_claim_is_single_and_budget_capped() -> None:
-    store = MemoryStore()
-    tokens = [store.claim_job(f"run-{index}", "worker") for index in range(21)]
-    assert sum(token is not None for token in tokens) == 20
-    assert store.claim_job("run-0", "second-worker") is None
-    for index, token in enumerate(tokens):
-        if token:
-            store.finish_job(f"run-{index}", token)
 
 
 def test_frozen_report_requires_exact_preview_and_approver(tmp_path: Path) -> None:

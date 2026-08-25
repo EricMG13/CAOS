@@ -268,6 +268,12 @@ class _PostgresSourceCatalog(_Adapter):
         with self._owner._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
+                    "SELECT 1 FROM cases WHERE id=%s FOR UPDATE",
+                    (case_id,),
+                )
+                if cursor.fetchone() is None:
+                    return None
+                cursor.execute(
                     "SELECT record FROM sources WHERE id=%s AND case_id=%s FOR UPDATE",
                     (source_id, case_id),
                 )
@@ -2284,38 +2290,48 @@ class _PostgresModelLedger(_Adapter):
         return copy.deepcopy(row[0]), row[1]
 
     def queue_build(self, build: Record, actor: str) -> tuple[Record, bool]:
+        case_id = build.get("case_id")
+        run_id = build.get("accepted_run_id")
+        snapshot_id = build.get("accepted_snapshot_id")
+        source_set_id = build.get("source_set_id")
+        fingerprint = build.get("input_fingerprint")
+        fingerprint_is_valid = (
+            isinstance(fingerprint, str)
+            and len(fingerprint) == 64
+            and all(character in "0123456789abcdef" for character in fingerprint)
+        )
         proposal = copy.deepcopy(build)
         proposal["id"] = _new_id("model")
-        fingerprint = proposal.get("input_fingerprint")
         with self._owner._connect() as connection:
             try:
                 with connection.cursor() as cursor:
                     cursor.execute(
                         "SELECT record FROM model_builds WHERE case_id=%s AND "
                         "input_fingerprint=%s",
-                        (proposal.get("case_id"), fingerprint),
+                        (case_id, fingerprint),
                     )
                     existing = cursor.fetchone()
                     if existing:
                         return copy.deepcopy(existing[0]), False
                     cursor.execute(
                         "SELECT record FROM cases WHERE id=%s FOR UPDATE",
-                        (proposal.get("case_id"),),
+                        (case_id,),
                     )
-                    case = cursor.fetchone()
+                    case_row = cursor.fetchone()
+                    case = case_row[0] if case_row else None
                     cursor.execute(
                         "SELECT record FROM runs WHERE id=%s",
-                        (proposal.get("accepted_run_id"),),
+                        (run_id,),
                     )
                     run_row = cursor.fetchone()
                     cursor.execute(
                         "SELECT record FROM accepted_snapshots WHERE id=%s",
-                        (proposal.get("accepted_snapshot_id"),),
+                        (snapshot_id,),
                     )
                     snapshot_row = cursor.fetchone()
                     cursor.execute(
                         "SELECT record FROM source_sets WHERE id=%s",
-                        (proposal.get("source_set_id"),),
+                        (source_set_id,),
                     )
                     source_set_row = cursor.fetchone()
                     run = run_row[0] if run_row else None
@@ -2323,24 +2339,18 @@ class _PostgresModelLedger(_Adapter):
                     source_set = source_set_row[0] if source_set_row else None
                     if (
                         not case
+                        or case.get("accepted_snapshot_id") != snapshot_id
                         or not run
-                        or run.get("case_id") != proposal.get("case_id")
+                        or run.get("case_id") != case_id
                         or run.get("status") != "succeeded"
-                        or run.get("accepted_snapshot_id")
-                        != proposal.get("accepted_snapshot_id")
+                        or run.get("accepted_snapshot_id") != snapshot_id
                         or not snapshot
-                        or snapshot.get("case_id") != proposal.get("case_id")
-                        or snapshot.get("run_id") != proposal.get("accepted_run_id")
-                        or snapshot.get("source_set_id")
-                        != proposal.get("source_set_id")
+                        or snapshot.get("case_id") != case_id
+                        or snapshot.get("run_id") != run_id
+                        or snapshot.get("source_set_id") != source_set_id
                         or not source_set
-                        or source_set.get("case_id") != proposal.get("case_id")
-                        or not isinstance(fingerprint, str)
-                        or len(fingerprint) != 64
-                        or any(
-                            character not in "0123456789abcdef"
-                            for character in fingerprint
-                        )
+                        or source_set.get("case_id") != case_id
+                        or not fingerprint_is_valid
                     ):
                         raise ValueError("MODEL_BUILD_INVALID")
                     proposal.update(
@@ -2359,10 +2369,10 @@ class _PostgresModelLedger(_Adapter):
                         "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL)",
                         (
                             proposal["id"],
-                            proposal["case_id"],
-                            proposal["accepted_run_id"],
-                            proposal["accepted_snapshot_id"],
-                            proposal["source_set_id"],
+                            case_id,
+                            run_id,
+                            snapshot_id,
+                            source_set_id,
                             fingerprint,
                             proposal["status"],
                             Jsonb(proposal),
@@ -2379,13 +2389,13 @@ class _PostgresModelLedger(_Adapter):
                         cursor,
                         "model.queued",
                         actor,
-                        case_id=proposal["case_id"],
+                        case_id=case_id,
                         build_id=proposal["id"],
                     )
                     return copy.deepcopy(proposal), True
             except psycopg.errors.UniqueViolation:
                 connection.rollback()
-        existing = self.get_build_for_fingerprint(proposal["case_id"], fingerprint)
+        existing = self.get_build_for_fingerprint(case_id, fingerprint)
         if existing is None:
             raise RuntimeError("concurrent model build was not committed")
         return existing, False

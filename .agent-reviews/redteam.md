@@ -4489,3 +4489,38 @@ Decision: accept the corrections for independent re-review. The focused
 HTTP/loan/ledger gates pass 73 tests without PostgreSQL (25 explicit skips) and
 98 tests with PostgreSQL; the final complete suites pass 367 tests with 37
 environment skips and 404/404 against the live task database.
+
+## 2026-08-25 — Normalized ledger whole-state envelope removal gate
+
+Decision under review: retire the dead `MemoryStore`/`PostgresStore` whole-state
+envelope after the four-port ledger cutover, while preserving memory semantics
+and proving the normalized application leaves a post-migration legacy row inert.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-228 | Memory-parity reviewer | Removing `MemoryStore` could silently lose validation, rollback, fencing, or loan-version behavior even though production no longer uses its public bucket and persistence surface. | Critical | Resolved and verified | The exact stateful methods used by the four existing memory adapters moved to a private `_MemoryState` carrier with the same single lock and copy-before-mutation boundaries; the persistence calls and public bucket/proxy surface alone were removed. AST comparison covers the mechanically moved methods, the portable ledger contracts pass, and both complete server-suite modes pass. |
+| RT-2026-08-25-229 | Cutover reviewer | A normalized adapter, app bootstrap, or transition could still read, merge, refresh, or write `caos_state` indirectly and re-establish dual authority. | Critical | Resolved and verified | A real-PostgreSQL test applies all migrations first, creates an unrelated sentinel `caos_state` row afterward, boots the normalized app, performs case/source/run transitions through its ledger set, and proves the sentinel revision and state bytes are identical while normalized rows update. A boundary-aware production scan finds no live envelope symbols or operations; migration 004 remains historical and no drop, import, or backfill was added. |
+| RT-2026-08-25-230 | Coverage reviewer | Deleting concrete-store tests could erase behavioral protection rather than remove obsolete implementation proofs. | High | Resolved and verified | Every retired proof is mapped to the approved Task 4 portable memory/PostgreSQL ledger contracts: model lifecycle and fencing to retry/takeover, stale-attempt, and remaining-protocol tests; loan atomicity/idempotency/withdrawal to source duplicate/withdrawal, governed-write, race, and protocol tests; pending authority and active-cap behavior to pending/claim/shared-cap contracts. Pure model migration validators, loan parsing/validation, HTTP/import, and clean-slate behavior tests remain. |
+| RT-2026-08-25-231 | Test-isolation reviewer | Triggering an asynchronous HTTP run immediately before dropping an isolated PostgreSQL schema can race a still-running executor and make the proof flaky or strand schemas. | High | Resolved and verified | The first live-suite run exposed that cleanup race. The inertness proof now performs the run transition through the booted app's real normalized run port, avoiding an unrelated background executor while still exercising composition and normalized persistence; the corrected focused and complete live suites pass and cleanup is deterministic. |
+
+Decision: accept Task 5 for independent review. The live whole-state envelope is
+gone; historical migration 004 and the explicit inertness regression are the
+only intended `caos_state` references.
+
+## 2026-08-25 — Normalized ledger Task 5 independent-review correction
+
+Correction under review: close the lock-order and model-contract coverage gaps
+identified by independent review without restoring any whole-state envelope or
+concrete-store hook.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-232 | Concurrency reviewer | Source withdrawal locked source then case while loan import locked case then source, so concurrent import/withdrawal could deadlock and leak a storage exception. | Critical | Resolved and verified | PostgreSQL withdrawal now locks case before source, matching import and adjacent case/source transitions. A deterministic two-connection real-PostgreSQL contract pauses the leader after the production case lock, proves the exact follower backend PID is blocked, and covers both serialized outcomes: import commits before withdrawal cascades, or withdrawal wins and import returns stable `RV_SOURCE_NOT_ACTIVE`. Neither order leaks `DeadlockDetected`, and no active source or loan universe survives withdrawal. |
+| RT-2026-08-25-233 | Coverage reviewer | Retiring the concrete model-store suite removed representative behavioral proofs that the narrower Task 4 contracts did not replace. | High | Resolved and verified | Shared memory/PostgreSQL contracts now cover malformed and incomplete results, non-finite widths, unexpected fields, copy isolation, bounded calculate/export errors, export failure/requeue, cross-case and superseded authority rejection, shared claimed-job budget, and concurrent PostgreSQL same-build queue idempotency with the winning requester preserved. Obsolete persistence-hook assertions remain deleted. |
+| RT-2026-08-25-234 | Authority reviewer | A build pinned to a formerly accepted snapshot could still be queued after the case accepted a newer snapshot. | High | Resolved and verified | Both adapters now require the proposed accepted snapshot to equal the case's current accepted pointer at queue time. The shared cross-case/superseded-authority contract rejects stale authority and accepts the current proposal in both memory and PostgreSQL. |
+| RT-2026-08-25-235 | Harness reviewer | A short model lease and application-name blocker detection made the first full live correction run timing-sensitive and could hide whether the intended PostgreSQL session was actually blocked. | High | Resolved and verified | The matrix renews through the public protocol before each validation attempt, and the race observes the follower's exact backend PID and polls `pg_blocking_pids(pid)`. The race passed three consecutive standalone live runs and the complete live suite passed 403/403. |
+
+Decision: accept the Task 5 corrections for independent re-review. The earlier
+review handoff overstated completion: its deleted-test mapping was incomplete
+and it missed the case/source lock inversion. Both gaps are now fixed and
+verified across memory and live PostgreSQL.
