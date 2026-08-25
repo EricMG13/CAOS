@@ -4078,3 +4078,19 @@ wire protocol.
 Decision: accept the remediation after focused loan/API coverage and the full
 server suite. Preserve the dual 201-created/200-idempotent status contract and
 keep the nested response families strict.
+
+## 2026-08-25 — Workflow provider composition-root gate
+
+Decision under review: inject one provider-owned `AgentLoop` into
+`WorkflowRuntime` for canonical Full Credit and CP-DR instead of constructing an
+Anthropic gateway inside each module execution.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-170 | Boot-path reviewer | Eagerly constructing the Anthropic client can make local or provider-disabled app boot require credentials and transport dependencies that no enabled pathway uses. | High | Resolved in composition contract | `create_app` constructs `AnthropicProvider` only when an API key exists and at least one provider-backed pathway is enabled; otherwise the runtime receives `None` and the existing pathway/key guards retain `AGENT_PROVIDER_UNAVAILABLE`. |
+| RT-2026-08-25-171 | Runtime-isolation reviewer | Constructing a fresh gateway per node prevents deterministic fake injection and can let canonical and CP-DR paths drift onto different provider objects or policies. | High | Resolved in runtime contract | `WorkflowRuntime` owns exactly one optional `AgentLoop`, created from the injected two-method `Provider`; both execution paths call that same loop and tests inject provider-neutral fakes without module-global patches. |
+| RT-2026-08-25-172 | Accounting reviewer | Moving off the Anthropic compatibility facade could alter retries, reservation/reconciliation, fencing, timeout, repair, or terminal telemetry. | Critical | Verification required | Both paths retain the unchanged host callbacks, semaphore, limits, and `AgentLoop.run` contract. Focused CP-DR/canonical tests plus the full server suite must pass before commit; direct adapter tests remain the legacy Anthropic serialization/digest tripwire. |
+
+Decision: proceed with the narrow constructor and composition-root change. Do
+not widen the `Provider` port, add a provider factory, or construct a transport
+inside workflow execution.
