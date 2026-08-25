@@ -49,48 +49,53 @@ export function workspaceAuthorityReducer(state: AuthorityState, event: Authorit
   switch (event.type) {
     case "hydrate": {
       const runId = event.caseId ? event.runId : null;
+      const generation = state.generation + 1;
       return {
         ...state,
         caseId: event.caseId,
         runId,
         hydrated: true,
         status: event.caseId ? "loading" : "idle",
-        generation: state.generation + 1,
-        pending: null,
+        generation,
+        pending: event.caseId ? { scope: "case", context: { generation, caseId: event.caseId, runId } } : null,
         acceptedSnapshotId: null,
       };
     }
-    case "selectCase":
+    case "selectCase": {
       if (state.caseId === event.caseId) return state;
+      const generation = state.generation + 1;
       return {
         ...state,
         caseId: event.caseId,
         runId: null,
         status: event.caseId ? "loading" : "idle",
-        generation: state.generation + 1,
-        pending: null,
+        generation,
+        pending: event.caseId ? { scope: "case", context: { generation, caseId: event.caseId, runId: null } } : null,
         acceptedSnapshotId: null,
       };
-    case "selectRun":
+    }
+    case "selectRun": {
       if (state.caseId !== event.caseId || state.runId === event.runId) return state;
+      const generation = state.generation + 1;
       return {
         ...state,
         runId: event.runId,
         status: "loading",
-        generation: state.generation + 1,
-        pending: null,
+        generation,
+        pending: { scope: "case", context: { generation, caseId: event.caseId, runId: event.runId } },
         acceptedSnapshotId: null,
       };
+    }
     case "requestStarted": {
       const generation = state.generation + 1;
       const context = { generation, caseId: state.caseId, runId: state.runId };
       return { ...state, status: "loading", generation, pending: { scope: event.scope, context } };
     }
     case "requestSucceeded":
-      if (!matchesAuthority(state, event.context)) return state;
+      if (!matchesAuthority(state, event.context) || state.pending?.scope !== event.scope) return state;
       return { ...state, status: "ready", pending: null };
     case "requestFailed":
-      if (!matchesAuthority(state, event.context)) return state;
+      if (!matchesAuthority(state, event.context) || state.pending?.scope !== event.scope) return state;
       return { ...state, status: "error", pending: null };
     case "snapshotAccepted":
       if (!matchesAuthority(state, event.context)) return state;
@@ -106,15 +111,17 @@ export function workspaceAuthorityReducer(state: AuthorityState, event: Authorit
         pending: null,
         acceptedSnapshotId: null,
       };
-    case "invalidateRun":
+    case "invalidateRun": {
       if (state.caseId !== event.caseId || state.runId !== event.runId) return state;
+      const generation = state.generation + 1;
       return {
         ...state,
         runId: null,
         status: "loading",
-        generation: state.generation + 1,
-        pending: null,
+        generation,
+        pending: { scope: "case", context: { generation, caseId: event.caseId, runId: null } },
         acceptedSnapshotId: null,
       };
+    }
   }
 }

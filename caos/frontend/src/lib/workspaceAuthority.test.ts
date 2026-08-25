@@ -27,7 +27,7 @@ test("hydrates route authority as a loading case/run boundary", () => {
     hydrated: true,
     status: "loading",
     generation: 1,
-    pending: null,
+    pending: { scope: "case", context: { generation: 1, caseId: "case_a", runId: "run_a" } },
     acceptedSnapshotId: null,
   });
 });
@@ -83,6 +83,35 @@ test("rejects a previous-generation completion for the same case and run", () =>
   assert.strictEqual(
     workspaceAuthorityReducer(replacement, { type: "requestSucceeded", context: requestContext(first), scope: "case" }),
     replacement,
+  );
+});
+
+test("does not let a run refresh resolve pending case authority", () => {
+  const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const pendingCase = workspaceAuthorityReducer(hydrated, { type: "requestStarted", scope: "case" });
+
+  assert.strictEqual(
+    workspaceAuthorityReducer(pendingCase, {
+      type: "requestSucceeded",
+      context: requestContext(pendingCase),
+      scope: "run",
+    }),
+    pendingCase,
+  );
+});
+
+test("selected case authority failure resolves its pending generation", () => {
+  const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
+  const selected = workspaceAuthorityReducer(hydrated, { type: "selectCase", caseId: "case_b" });
+
+  assert.deepEqual(selected.pending, { scope: "case", context: requestContext(selected) });
+  assert.equal(
+    workspaceAuthorityReducer(selected, {
+      type: "requestFailed",
+      context: requestContext(selected),
+      scope: "case",
+    }).status,
+    "error",
   );
 });
 
@@ -150,6 +179,7 @@ test("invalidates only the active case or run authority", () => {
   assert.equal(runInvalidated.caseId, "case_a");
   assert.equal(runInvalidated.runId, null);
   assert.equal(runInvalidated.generation, hydrated.generation + 1);
+  assert.deepEqual(runInvalidated.pending, { scope: "case", context: requestContext(runInvalidated) });
 
   const caseInvalidated = workspaceAuthorityReducer(hydrated, { type: "invalidateCase", caseId: "case_a" });
   assert.equal(caseInvalidated.caseId, null);
