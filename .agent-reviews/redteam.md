@@ -4128,3 +4128,128 @@ Decision: accept the normalized actor migration. Do not retain JSON-envelope
 fallbacks or add a second actor source; normalized `model_build_jobs.actor` is
 the scheduling identity, with build creator fallback only for a malformed blank
 value.
+
+## 2026-08-25 — Browser authority reducer gate
+
+Decision under review: establish one pure browser authority reducer for route
+hydration, case/run selection, async completion, invalidation, and accepted
+snapshot identity.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-180 | Browser-concurrency reviewer | A stale Case A request can complete after Case B, or an older refresh can complete after a newer refresh for the same case/run. | Critical | Resolved and tested | Each request start increments the generation and captures `{ generation, caseId, runId }`; all completion events use one exact-match guard and mismatches return the identical state. |
+| RT-2026-08-25-181 | Cross-case authority reviewer | A route or action can attach a run from another case, making a foreign run appear active. | Critical | Resolved and tested | `selectRun` only accepts the active case ID; a case transition clears run and accepted-snapshot identity before any further read can land. |
+| RT-2026-08-25-182 | State-lifecycle reviewer | An invalidated case/run can leave a stale accepted snapshot or pending operation visible as current authority. | High | Resolved and tested | Matching invalidation increments generation and clears pending and accepted snapshot identity; foreign invalidations are no-ops. |
+
+Decision: accept the closed, dependency-free reducer boundary. Keep draft
+confirmation and I/O outside it; do not add a state library or duplicate async
+guards in Workspace.
+
+## 2026-08-25 — Browser authority Workspace integration gate
+
+Decision under review: make the reviewed reducer the sole browser case/run
+authority while preserving Workspace effects, draft decisions, and visible
+workflows.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-183 | Browser-concurrency reviewer | Updating only React reducer state leaves a same-turn window where a late Case A completion can validate before the Case B render commits. | Critical | Resolved and verified | One dispatcher applies the pure reducer to `authorityRef.current` before queuing React's reducer event. Every authority-sensitive completion checks the exact generation/case/run tuple before display setters, and the reducer repeats the guard. Cross-case reducer and delayed-browser-response regressions cover the boundary. |
+| RT-2026-08-25-184 | Refresh-order reviewer | Generation guards do not distinguish two overlapping reads for the same case/run, so an older response can overwrite a newer response; rejecting an old-ID callback after incrementing its sequence can also invalidate the valid new request. | Critical | Resolved and verified | Case and run reads retain narrow latest-request sequence guards in addition to reducer authority. Sequence allocation occurs only after the requested ID matches current authority, so stale callbacks cannot cancel the current read. Focused unit, lint, type-check, and production build gates pass. |
+| RT-2026-08-25-185 | User-decision reviewer | Dispatching a case event before Report Studio confirmation can discard a dirty draft even when the analyst rejects navigation. | Critical | Resolved by ordering | `selectCase` reads the current reducer authority, runs confirmation first, and returns without reducer, storage, URL, or display mutation on rejection. Session removal and reducer dispatch occur only after acceptance. |
+| RT-2026-08-25-186 | Harness reviewer | A delayed run route can accidentally intercept the SSE endpoint or resume the journey without reattaching the created run, producing a false authority result. | High | Resolved in regression design | The production journey delays only exact JSON `/api/runs/{id}` GETs, releases a distinctive foreign-case failure after selecting the dense case, asserts it never renders, removes the route, and resumes through an explicit case/run URL. The script passes syntax validation. |
+| RT-2026-08-25-187 | Environment reviewer | A worktree dependency symlink can make Turbopack fail before application compilation, and the production inventory requires a restored PostgreSQL/ClamAV fixture that may not be active locally. | High | Environment-gated | Unit, ESLint, TypeScript, and `next build --webpack` pass. The default build failure is the external `node_modules` symlink crossing Turbopack's filesystem root, not application code. Production inventory remains required in the restored fixture environment; no local API was listening during this gate. |
+
+Decision: accept the reducer integration for commit after confidence review and
+change-impact verification. Preserve the API helper, URL/session effects, and
+Report Studio decision boundary; rerun the maintained production inventory in
+the restored production-scale fixture before deployment.
+
+## 2026-08-25 — Browser authority integration correction gate
+
+Decision under review: close the same-case generation refresh gap and make the
+cross-case late-response journey wait on protocol completion instead of time.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-188 | Authority-lifecycle reviewer | A valid same-case run selection advances the reducer generation, so an in-flight case snapshot read is correctly rejected but never retried when the effect subscribes only to case identity. | Critical | Resolved and tested | The case-authority effect now subscribes to reducer generation as well as case identity/authorization. Matching request completion and snapshot acceptance do not advance generation, preventing a completion loop; a deterministic architectural regression fails if that dependency is removed. |
+| RT-2026-08-25-189 | Harness-ordering reviewer | Sleeping 100 ms after releasing a routed response can assert absence before `route.fulfill()` completes and produce a false pass. Multiple held reads can make a first-completion signal equally ambiguous. | High | Resolved in regression design | The journey captures exactly one matching Case A JSON read, resolves a completion signal only after awaited fulfillment, and awaits that signal before DOM/URL assertions. Later matching reads pass through normally, and the exact route still excludes SSE. |
+| RT-2026-08-25-190 | Interaction reviewer | Retrying on a same-case generation also clears the visible snapshot and open contextual drawer, which can briefly remove context during run selection. | Medium | Accepted fail-closed behavior | Reducer run selection already clears accepted-snapshot identity. Clearing display state until the guarded fresh case-authority read lands avoids presenting a stale snapshot as current; URL/session, SSE/polling, focus behavior, and accessibility markup are unchanged. |
+
+Decision: accept the focused correction after unit, lint, type-check, inventory
+syntax, webpack production build, rewrite-tournament, confidence-review, and
+GitNexus change-impact gates. The live journey remains required in the restored
+production fixture environment.
+
+## 2026-08-25 — Ledger behavioral-contract gate
+
+Decision under review: define four structural ledger ports and one shared
+adapter contract suite before either memory or normalized PostgreSQL adapters
+exist.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-191 | Consistency-boundary reviewer | Mirroring mutable buckets or exposing generic persistence would preserve caller-managed transactions behind a new name. | Critical | Resolved by interface inventory | Every production `store.*` access outside `store.py` was inventoried. Direct state is assigned once to source, run (including case ownership), publication, or model authority; protocols expose compound transitions and no bucket, lock, ID, persist, save, or refresh surface. |
+| RT-2026-08-25-192 | Cross-ledger transaction reviewer | Note promotion or source withdrawal could update source authority without the matching note, assumption-staleness, or loan-universe transition. | Critical | Resolved in contract | `SourceCatalog.ingest_promoted_note` owns the promoted-note/source-set change used by `PublicationLedger.promote_note`; the suite verifies promotion is idempotent and changes both authorities. Withdrawal verifies the source set and dependent assumption change together. |
+| RT-2026-08-25-193 | Fencing reviewer | A nominal claim API can still allow two workers or let an expired attempt commit an artifact. | Critical | Resolved in contract | The shared suite races two claimers, exercises configured short-lease takeover and running-node recovery, rejects stale completion with `JobFencedError`, and proves the replacement attempt can complete. |
+| RT-2026-08-25-194 | Delivery reviewer | Making Task 1 green by skipping missing adapters would silently leave the behavioral suite unbound to Task 2. | High | Accepted planned RED | The test imports the required Task 2 `MemoryLedgerSet` factory directly and currently fails collection with `ModuleNotFoundError: caos.memory_ledgers`. Assertions are not skipped or weakened; protocol compile/Ruff and unaffected source/model suites pass. Task 2 must supply the factory and turn this suite green. |
+
+Decision: accept the narrow protocol and fail-first contract slice. Do not add a
+generic store protocol, adapter stub, legacy `caos_state` compatibility path, or
+test skip; Task 2 owns the first executable adapter.
+
+## 2026-08-25 — Ledger behavioral-contract correction gate
+
+Decision under review: strengthen the Task 1 contracts after independent review
+without implementing an adapter or widening the four ledger boundaries.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-195 | Evidence-authority reviewer | Reading a source set and source separately leaves a race in which pinned evidence can cross case, withdrawal, membership, or block identity boundaries. | Critical | Resolved in interface and contract | `SourceCatalog.read_pinned_evidence` performs one authority read, and the suite rejects an unpinned source, foreign case, withdrawn source, and missing block while preserving exact returned block identity. |
+| RT-2026-08-25-196 | Workflow-atomicity reviewer | Completing the node/artifact and emitting `node.succeeded` in separate writes can expose success without its event or an event without committed state. | Critical | Resolved in interface and contract | `RunLedger.complete_node` now owns event data in the same transition. The suite proves state and event commit together and that validator failure or stale fencing leaves both unchanged. |
+| RT-2026-08-25-197 | Acceptance-governance reviewer | Snapshot and report transitions could accept stale or foreign lineage while partially advancing case, run, or publication authority. | Critical | Resolved in contract | Snapshot acceptance rejects unfinished runs, mismatched case/run, source-set version drift, foreign artifacts, and bad digests with pointer rollback. Report freeze rejects stale snapshots/versions and invalid model/export identity; approval revalidates publication and snapshot authority before changing status. |
+| RT-2026-08-25-198 | Lease-lifecycle reviewer | Model tests that cover only a successful claim miss renewal, abandoned-job discovery, takeover, stale terminal writes, digest rollback, and retry attribution. | Critical | Resolved in contract | The suite renews a lease, discovers the expired claimed job, performs takeover, fences stale complete/fail, preserves the replacement lease after bad-result rejection, fails, retries under a new actor, and completes the retried build. |
+| RT-2026-08-25-199 | Identity/portability reviewer | Caller-assigned entity IDs and adapter implementation spies would couple the shared suite to one in-memory representation and undermine the normalized PostgreSQL contract. | High | Resolved and verified | Source, artifact, snapshot, model, and report proposals omit IDs and later operations use returned IDs. Note promotion is verified through black-box source/note/source-set state, and version updates use caller-shaped requests rather than persisted response records. Exactly four structural protocols remain. |
+
+Decision: accept the corrected Task 1 contract surface. Preserve the sole planned
+collection RED on absent `caos.memory_ledgers`; Task 2 must make these assertions
+execute without changing their behavioral strength.
+
+## 2026-08-25 — Ledger behavioral-contract second correction gate
+
+Decision under review: close the final rollback and lineage gaps using only
+portable black-box behavior in the shared contract suite.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-200 | Transaction-rollback reviewer | Node and event rollback assertions can still miss an orphaned artifact, and a later successful completion can make that leak impossible to distinguish. | Critical | Resolved in contract | Immediately after both stale-worker rejection and validator rejection, the suite queries the exact run/module/input fingerprint and requires no artifact before allowing the successful completion. Node and event state are checked at the same points. |
+| RT-2026-08-25-201 | Snapshot-lineage reviewer | Checking only a source-set version mismatch allows an adapter to ignore a foreign or nonexistent source-set identity when the rest of the snapshot is valid. | Critical | Resolved in contract | A separate snapshot proposal changes only `source_set_id`, recomputes the proposal digest, expects `SOURCE_SET_CHANGED`, and proves both case and run accepted-snapshot pointers remain unchanged. |
+| RT-2026-08-25-202 | Cross-adapter reviewer | Monkeypatching a concrete source adapter makes the shared behavior suite depend on writable instance methods and can reject a valid PostgreSQL implementation for test-harness reasons. | High | Resolved and verified | The spy and mocking import are removed. Promotion is specified only by returned source identity, persisted source kind, source-set membership, and unchanged version/identity on replay. |
+
+Decision: accept the second focused correction. Do not introduce adapter hooks,
+test-only abstractions, or implementation instrumentation; keep the missing
+Task 2 factory as the sole planned collection RED.
+
+## 2026-08-25 — Ledger behavioral-contract final adjudication gate
+
+Decision under review: close the remaining cross-adapter fixture gaps while
+preserving the required promotion ownership boundary without coupling the
+shared contract to mutable Python adapter methods.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-203 | Transaction-boundary reviewer | Black-box promotion success cannot by itself prove that `PublicationLedger.promote_note` delegates through the injected `SourceCatalog.ingest_promoted_note` or that PostgreSQL uses one transaction. | Critical | Staged by explicit task ownership | Task 1 asserts portable note/source/source-set identity, rollback, and replay postconditions. Task 2 implementation review must inspect and verify the exact injected delegation under the shared memory state/lock. Task 3 must prove PostgreSQL atomicity and rollback with transaction/race tests. Adapter monkeypatching is excluded from the cross-adapter suite. |
+| RT-2026-08-25-204 | Source-ownership reviewer | A nonexistent source-set rejection does not prove an adapter rejects an existing source set owned by another case. | Critical | Required in final Task 1 fixture | Seed another case's real source set, submit it with a recomputed snapshot digest, and require rejection with unchanged case/run pointers and no recoverable orphan snapshot. |
+| RT-2026-08-25-205 | Artifact-shape reviewer | Secondary snapshot fixtures can force a strict adapter to accept artifacts missing fields that production callers always provide. | High | Required in final Task 1 fixture | Every successful `complete_node` proposal must contain the full caller-owned public artifact shape with payload-derived digest; only adapter-owned identity may be absent. |
+
+Decision: accept the portable staged proof. Task 1 is not permitted to claim
+database atomicity; Task 2 and Task 3 reviews inherit the named delegation and
+transaction gates above.
+
+## 2026-08-25 — Ledger promotion-proof wording correction
+
+The final task review found that the prior adjudication over-promised portable
+promotion rollback in Task 1 even though the cross-adapter contract proves only
+identity and replay behavior. The implementation plan and extracted Task 1
+brief now assign exact delegation plus memory rollback to Task 2, and
+PostgreSQL atomicity plus rollback to Task 3. This corrects proof ownership
+without weakening either later gate or introducing adapter instrumentation.

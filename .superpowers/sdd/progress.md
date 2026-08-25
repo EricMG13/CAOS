@@ -24,3 +24,23 @@ Base plan commit: `9d816ed`
 - Phase 7A: complete (commit `56c69fc`; full automated matrix PASS; independent review approved with no findings; current frontend reconfirmed after concurrent commits through `9ef34da`: lint, TypeScript, 6 unit tests, build, workbench, and 28 rendered axe combinations PASS with 0 violations)
 - Stored post-MVP controls: pending and NOT AUTHORIZED, but not MVP blockers (ZDR/commercial approval, sanitized live-provider smoke, twenty-case blinded evaluation, named opt-in pilot, and exercised live rollback)
 - MVP boundary: complete (commit `9ef34da`; approved plan/spec preserve the controls as mandatory before activation while removing them from MVP creation)
+
+# Codebase Deepening — SDD Progress
+
+Base plan commit: `e2571d7`
+Worktree: `codex/codebase-deepening`
+
+- HTTP Task 1: complete (commits e2571d7..27b8abb, review clean)
+- HTTP Task 2: complete (commits 27b8abb..2783378, review clean)
+- HTTP Task 3: complete (commits 2783378..7c98104, review clean)
+- Runtime Task 1: complete (commits 7c98104..0600c02, review clean)
+- Runtime Task 2: complete (commits 0600c02..9cc70b1, review clean)
+- Runtime Task 3: complete (commits 9cc70b1..cf5c4ad, review clean under fresh-database contract)
+- Browser Task 1: complete (commits cf5c4ad..818b6b2, review clean)
+- Browser Task 2: complete (commits 818b6b2..d52e4d1, review clean after one remediation pass)
+- Ledger Task 1: complete (commits d52e4d1..64f1908, review clean after portable proof adjudication)
+- Ledger Task 2: pending
+- Ledger Task 3: pending
+- Ledger Task 4: pending
+- Ledger Task 5: pending
+- Ledger Task 6: pending
