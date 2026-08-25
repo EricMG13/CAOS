@@ -23,6 +23,17 @@ test("hydrates route authority as a loading case/run boundary", () => {
   });
 });
 
+test("hydrates an empty route into a new authority generation", () => {
+  const beforeHydration = requestContext(initialAuthorityState);
+  const hydrated = reduce({ type: "hydrate", caseId: null, runId: null });
+
+  assert.equal(hydrated.generation, initialAuthorityState.generation + 1);
+  assert.strictEqual(
+    workspaceAuthorityReducer(hydrated, { type: "requestSucceeded", context: beforeHydration, scope: "case" }),
+    hydrated,
+  );
+});
+
 test("selecting a different case clears the selected run and snapshot authority", () => {
   const hydrated = reduce({ type: "hydrate", caseId: "case_a", runId: "run_a" });
   const accepted = workspaceAuthorityReducer(hydrated, {

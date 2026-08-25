@@ -49,15 +49,13 @@ export function workspaceAuthorityReducer(state: AuthorityState, event: Authorit
   switch (event.type) {
     case "hydrate": {
       const runId = event.caseId ? event.runId : null;
-      if (state.hydrated && state.caseId === event.caseId && state.runId === runId) return state;
-      const changed = state.caseId !== event.caseId || state.runId !== runId;
       return {
         ...state,
         caseId: event.caseId,
         runId,
         hydrated: true,
         status: event.caseId ? "loading" : "idle",
-        generation: changed ? state.generation + 1 : state.generation,
+        generation: state.generation + 1,
         pending: null,
         acceptedSnapshotId: null,
       };
