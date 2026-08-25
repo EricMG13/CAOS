@@ -14,9 +14,10 @@ from .ledgers import SourceCatalog
 from .store import (
     MAX_ACTIVE_JOBS,
     JobFencedError,
-    MemoryStore,
+    MODEL_JOB_KINDS,
     _model_job_key,
     _remaining_finalization_seconds,
+    _validated_model_result,
     now_iso,
 )
 
@@ -24,11 +25,35 @@ from .store import (
 Record = dict[str, Any]
 
 
-class _MemoryState(MemoryStore):
+class _MemoryState:
     """One private state carrier shared by all four memory adapters."""
 
     def __init__(self, lease_seconds: float) -> None:
-        super().__init__()
+        self.lock = threading.RLock()
+        self.cases: dict[str, dict[str, Any]] = {}
+        self.sources: dict[str, dict[str, Any]] = {}
+        self.source_sets: dict[str, dict[str, Any]] = {}
+        self.source_set_history: dict[str, dict[str, Any]] = {}
+        self.runs: dict[str, dict[str, Any]] = {}
+        self.nodes: dict[str, dict[str, Any]] = {}
+        self.artifacts: dict[str, dict[str, Any]] = {}
+        self.snapshots: dict[str, dict[str, Any]] = {}
+        self.theses: dict[str, list[dict[str, Any]]] = {}
+        self.recommendations: dict[str, list[dict[str, Any]]] = {}
+        self.notes: dict[str, list[dict[str, Any]]] = {}
+        self.assumptions: dict[str, list[dict[str, Any]]] = {}
+        self.reports: dict[str, dict[str, Any]] = {}
+        self.methodology_drafts: dict[str, dict[str, Any]] = {}
+        self.rv_universes: dict[str, dict[str, Any]] = {}
+        self.rv_loan_universes: dict[str, dict[str, Any]] = {}
+        self.rv_loan_rows: dict[str, list[dict[str, Any]]] = {}
+        self.rv_active_loan_universes: dict[str, str] = {}
+        self.audit: list[dict[str, Any]] = []
+        self.events: dict[str, list[dict[str, Any]]] = {}
+        self.event_conditions: dict[str, threading.Condition] = {}
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self.model_builds: dict[str, dict[str, Any]] = {}
+        self.model_jobs: dict[str, dict[str, Any]] = {}
         self.lease_seconds = lease_seconds
         self._final_attempt_tokens: dict[str, str] = {}
 
@@ -38,6 +63,778 @@ class _MemoryState(MemoryStore):
 
     def _id(self, prefix: str) -> str:
         return self.new_id(prefix)
+
+    def pending_runs(self) -> list[tuple[str, str]]:
+        with self.lock:
+            return [
+                (run["id"], run["created_by"])
+                for run in self.runs.values()
+                if run["status"] in {"queued", "running"}
+            ]
+
+    def pending_model_jobs(self) -> list[tuple[str, str, str]]:
+        with self.lock:
+            return [
+                (
+                    job["build_id"],
+                    job.get("actor")
+                    or self.model_builds[job["build_id"]]["created_by"],
+                    job["kind"],
+                )
+                for job in self.model_jobs.values()
+                if job.get("kind") in MODEL_JOB_KINDS
+                and job.get("status") in {"queued", "claimed"}
+                and job.get("build_id") in self.model_builds
+            ]
+
+    def audit_event(self, action: str, actor: str, **details: Any) -> None:
+        with self.lock:
+            self.audit.append(
+                {
+                    "id": self._id("aud"),
+                    "action": action,
+                    "actor": actor,
+                    "at": now_iso(),
+                    **details,
+                }
+            )
+
+    def create_case(
+        self, name: str, issuer: str, sector: str, actor: str
+    ) -> dict[str, Any]:
+        with self.lock:
+            case = {
+                "id": self._id("case"),
+                "name": name,
+                "issuer": issuer,
+                "sector": sector,
+                "created_by": actor,
+                "created_at": now_iso(),
+                "members": {actor: "ANALYST"},
+                "accepted_snapshot_id": None,
+                "visible_snapshot_id": None,
+                "current_execution_id": None,
+            }
+            self.cases[case["id"]] = case
+            self.audit_event("case.created", actor, case_id=case["id"])
+            return copy.deepcopy(case)
+
+    def list_cases(self, actor: str) -> list[dict[str, Any]]:
+        with self.lock:
+            return [
+                copy.deepcopy(c)
+                for c in self.cases.values()
+                if actor in c["members"] or c["members"].get(actor) == "ADMIN"
+            ]
+
+    def get_case(self, case_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            case = self.cases.get(case_id)
+            return copy.deepcopy(case) if case else None
+
+    def is_member(
+        self, case_id: str, actor: str, roles: set[str] | None = None
+    ) -> bool:
+        with self.lock:
+            case = self.cases.get(case_id)
+            if not case:
+                return False
+            role = case["members"].get(actor)
+            return role is not None and (roles is None or role in roles)
+
+    def add_member(
+        self,
+        case_id: str,
+        actor: str,
+        member: str,
+        role: str,
+        actor_role: str | None = None,
+    ) -> bool:
+        with self.lock:
+            case = self.cases.get(case_id)
+            if not case or (
+                actor_role != "ADMIN"
+                and case["members"].get(actor) not in {"ADMIN", "APPROVER"}
+            ):
+                return False
+            case["members"][member] = role
+            self.audit_event(
+                "case.member_added", actor, case_id=case_id, member=member, role=role
+            )
+            return True
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            run = self.runs.get(run_id)
+            if not run:
+                return None
+            result = copy.deepcopy(run)
+            result["nodes"] = [
+                copy.deepcopy(self.nodes[node_id]) for node_id in run["node_ids"]
+            ]
+            result["events"] = copy.deepcopy(self.events.get(run_id, []))
+            return result
+
+    def update_run_fenced(
+        self, run_id: str, attempt_token: str, **changes: Any
+    ) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            self.runs[run_id].update(copy.deepcopy(changes))
+
+    def update_node_fenced(
+        self, run_id: str, attempt_token: str, node_id: str, **changes: Any
+    ) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            if self.nodes[node_id]["run_id"] != run_id:
+                raise JobFencedError("node does not belong to run")
+            self.nodes[node_id].update(copy.deepcopy(changes))
+
+    def pause_research_plan_fenced(
+        self, run_id: str, attempt_token: str, node_id: str, research: dict[str, Any]
+    ) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            if self.nodes[node_id]["run_id"] != run_id:
+                raise JobFencedError("node does not belong to run")
+            prior_run = copy.deepcopy(self.runs[run_id])
+            prior_node = copy.deepcopy(self.nodes[node_id])
+            try:
+                self.nodes[node_id].update(status="pending", error=None)
+                self.runs[run_id].update(
+                    status="paused",
+                    current_node_id=None,
+                    error={
+                        "code": "PLAN_APPROVAL_REQUIRED",
+                        "message": "Approve the proposed research plan before execution.",
+                    },
+                    research=copy.deepcopy(research),
+                )
+            except Exception:
+                self.runs[run_id] = prior_run
+                self.nodes[node_id] = prior_node
+                raise
+
+    def _recover_running_nodes_locked(self, run_id: str) -> None:
+        run = self.runs.get(run_id)
+        if not run:
+            return
+        for node_id in run.get("node_ids", []):
+            node = self.nodes.get(node_id)
+            if node and node.get("status") == "running":
+                node.update(status="pending", artifact_id=None, error=None)
+        run["current_node_id"] = None
+
+    def finish_job(self, run_id: str, attempt_token: str) -> None:
+        with self.lock:
+            if self._job_is_current_locked(run_id, attempt_token):
+                self.jobs[run_id]["status"] = "finished"
+                self.jobs[run_id]["budget_reserved"] = 0
+
+    def job_is_current(self, run_id: str, attempt_token: str) -> bool:
+        with self.lock:
+            return self._job_is_current_locked(run_id, attempt_token)
+
+    def _job_is_current_locked(self, run_id: str, attempt_token: str) -> bool:
+        job = self.jobs.get(run_id)
+        return bool(
+            job
+            and job["status"] == "running"
+            and job.get("attempt_token") == attempt_token
+            and job["lease_until"] > time.monotonic()
+        )
+
+    def _assert_job_locked(self, run_id: str, attempt_token: str) -> None:
+        if not self._job_is_current_locked(run_id, attempt_token):
+            raise JobFencedError("stale workflow attempt")
+
+    def queue_model_build(
+        self,
+        build: dict[str, Any],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            prior = (
+                self.model_builds.copy(),
+                self.model_jobs.copy(),
+                self.audit.copy(),
+            )
+            try:
+                record, created = self._queue_model_build_locked(build, actor)
+            except Exception:
+                self.model_builds, self.model_jobs, self.audit = prior
+                raise
+            return copy.deepcopy(record), created
+
+    def _queue_model_build_locked(
+        self,
+        build: dict[str, Any],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        existing = next(
+            (
+                value
+                for value in self.model_builds.values()
+                if value.get("case_id") == build.get("case_id")
+                and value.get("input_fingerprint") == build.get("input_fingerprint")
+            ),
+            None,
+        )
+        if existing is not None:
+            return copy.deepcopy(existing), False
+        fingerprint = build.get("input_fingerprint")
+        run = self.runs.get(build.get("accepted_run_id"))
+        snapshot = self.snapshots.get(build.get("accepted_snapshot_id"))
+        source_set = self.source_set_history.get(build.get("source_set_id"))
+        if (
+            not isinstance(build.get("id"), str)
+            or build["id"] in self.model_builds
+            or build.get("case_id") not in self.cases
+            or not run
+            or run.get("case_id") != build.get("case_id")
+            or run.get("status") != "succeeded"
+            or run.get("accepted_snapshot_id") != build.get("accepted_snapshot_id")
+            or not snapshot
+            or snapshot.get("case_id") != build.get("case_id")
+            or snapshot.get("run_id") != build.get("accepted_run_id")
+            or snapshot.get("source_set_id") != build.get("source_set_id")
+            or not source_set
+            or source_set.get("case_id") != build.get("case_id")
+            or not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in fingerprint)
+        ):
+            raise ValueError("MODEL_BUILD_INVALID")
+        record = copy.deepcopy(build)
+        record.update(
+            status="QUEUED",
+            created_by=actor,
+            queued_at=record.get("queued_at") or now_iso(),
+            started_at=None,
+            completed_at=None,
+            error=None,
+        )
+        record["export"] = {"status": "NOT_REQUESTED", "error": None}
+        key = _model_job_key(record["id"], "calculate")
+        self.model_builds[record["id"]] = record
+        self.model_jobs[key] = {
+            "build_id": record["id"],
+            "kind": "calculate",
+            "actor": actor,
+            "status": "queued",
+            "worker": None,
+            "attempt_token": None,
+            "lease_until": 0.0,
+            "error": None,
+        }
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "model.queued",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": record["case_id"],
+                "build_id": record["id"],
+            }
+        )
+        return copy.deepcopy(record), True
+
+    def get_model_build(self, build_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            value = self.model_builds.get(build_id)
+            return copy.deepcopy(value) if value else None
+
+    def retry_model_build(self, build_id: str, actor: str) -> dict[str, Any]:
+        with self.lock:
+            prior = copy.deepcopy((self.model_builds, self.model_jobs, self.audit))
+            try:
+                build = self._retry_model_build_locked(build_id, actor)
+            except Exception:
+                self.model_builds, self.model_jobs, self.audit = prior
+                raise
+            return build
+
+    def _retry_model_build_locked(self, build_id: str, actor: str) -> dict[str, Any]:
+        build = self.model_builds.get(build_id)
+        key = _model_job_key(build_id, "calculate")
+        job = self.model_jobs.get(key)
+        if (
+            not build
+            or build.get("status") != "FAILED"
+            or not job
+            or job.get("status") != "failed"
+        ):
+            raise ValueError("MODEL_RETRY_INVALID")
+        build.update(status="QUEUED", started_at=None, completed_at=None, error=None)
+        job.update(
+            actor=actor,
+            status="queued",
+            worker=None,
+            attempt_token=None,
+            lease_until=0.0,
+            error=None,
+        )
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "model.retried",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+            }
+        )
+        return copy.deepcopy(build)
+
+    def list_model_builds(self, case_id: str) -> list[dict[str, Any]]:
+        with self.lock:
+            values = [
+                value
+                for value in self.model_builds.values()
+                if value.get("case_id") == case_id
+            ]
+            return copy.deepcopy(
+                sorted(values, key=lambda value: value["queued_at"], reverse=True)
+            )
+
+    def queue_model_export(
+        self, build_id: str, actor: str
+    ) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            prior = copy.deepcopy((self.model_builds, self.model_jobs, self.audit))
+            try:
+                build, queued = self._queue_model_export_locked(build_id, actor)
+                if not queued:
+                    return build, False
+            except Exception:
+                self.model_builds, self.model_jobs, self.audit = prior
+                raise
+            return build, True
+
+    def _queue_model_export_locked(
+        self, build_id: str, actor: str
+    ) -> tuple[dict[str, Any], bool]:
+        build = self.model_builds.get(build_id)
+        if not build or build.get("status") != "READY":
+            raise ValueError("MODEL_EXPORT_NOT_READY")
+        key = _model_job_key(build_id, "export")
+        job = self.model_jobs.get(key)
+        if job and job.get("status") in {"queued", "claimed", "succeeded"}:
+            return copy.deepcopy(build), False
+        self.model_jobs[key] = {
+            "build_id": build_id,
+            "kind": "export",
+            "actor": actor,
+            "status": "queued",
+            "worker": None,
+            "attempt_token": None,
+            "lease_until": 0.0,
+            "error": None,
+        }
+        build["export"] = {"status": "QUEUED", "error": None}
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "model.export.queued",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+            }
+        )
+        return copy.deepcopy(build), True
+
+    def model_job_is_current(
+        self, build_id: str, attempt_token: str, kind: str = "calculate"
+    ) -> bool:
+        with self.lock:
+            return self._model_job_is_current_locked(
+                _model_job_key(build_id, kind), attempt_token
+            )
+
+    def _model_job_is_current_locked(self, key: str, attempt_token: str) -> bool:
+        job = self.model_jobs.get(key)
+        return bool(
+            job
+            and job["status"] == "claimed"
+            and job.get("attempt_token") == attempt_token
+            and job["lease_until"] > time.monotonic()
+        )
+
+    def _assert_model_job_locked(
+        self, build_id: str, attempt_token: str, kind: str
+    ) -> str:
+        key = _model_job_key(build_id, kind)
+        if not self._model_job_is_current_locked(key, attempt_token):
+            raise JobFencedError("stale model attempt")
+        return key
+
+    def complete_model_job(
+        self,
+        build_id: str,
+        attempt_token: str,
+        result: dict[str, Any],
+        actor: str,
+        kind: str = "calculate",
+    ) -> dict[str, Any]:
+        with self.lock:
+            key = self._assert_model_job_locked(build_id, attempt_token, kind)
+            prior = copy.deepcopy(
+                (self.model_builds[build_id], self.model_jobs[key], self.audit)
+            )
+            try:
+                completed = self._complete_model_job_locked(
+                    build_id, key, result, actor, kind
+                )
+            except Exception:
+                self.model_builds[build_id], self.model_jobs[key], self.audit = prior
+                raise
+            return completed
+
+    def _complete_model_job_locked(
+        self,
+        build_id: str,
+        key: str,
+        result: dict[str, Any],
+        actor: str,
+        kind: str,
+    ) -> dict[str, Any]:
+        build = self.model_builds[build_id]
+        validated = _validated_model_result(build, result, kind)
+        if kind == "calculate":
+            build.update(validated)
+            build.update(status="READY", completed_at=now_iso(), error=None)
+        else:
+            build["export"] = {
+                **build["export"],
+                **validated,
+                "status": "READY",
+                "error": None,
+            }
+        self.model_jobs[key].update(status="succeeded", lease_until=0.0)
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": f"model.{kind}.succeeded",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+            }
+        )
+        return copy.deepcopy(build)
+
+    def fail_model_job(
+        self,
+        build_id: str,
+        attempt_token: str,
+        error: dict[str, Any],
+        actor: str,
+        kind: str = "calculate",
+    ) -> dict[str, Any]:
+        with self.lock:
+            key = self._assert_model_job_locked(build_id, attempt_token, kind)
+            prior = copy.deepcopy(
+                (self.model_builds[build_id], self.model_jobs[key], self.audit)
+            )
+            try:
+                failed = self._fail_model_job_locked(build_id, key, error, actor, kind)
+            except Exception:
+                self.model_builds[build_id], self.model_jobs[key], self.audit = prior
+                raise
+            return failed
+
+    def _fail_model_job_locked(
+        self,
+        build_id: str,
+        key: str,
+        error: dict[str, Any],
+        actor: str,
+        kind: str,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(error, dict)
+            or set(error) != {"code", "detail"}
+            or not isinstance(error["code"], str)
+            or len(error["code"]) > 80
+            or not isinstance(error["detail"], str)
+            or len(error["detail"]) > 500
+        ):
+            raise ValueError("MODEL_ERROR_INVALID")
+        build = self.model_builds[build_id]
+        if kind == "calculate":
+            build.update(
+                status="FAILED", completed_at=now_iso(), error=copy.deepcopy(error)
+            )
+        else:
+            build["export"] = {
+                **build["export"],
+                "status": "FAILED",
+                "error": copy.deepcopy(error),
+            }
+        self.model_jobs[key].update(
+            status="failed", lease_until=0.0, error=copy.deepcopy(error)
+        )
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": f"model.{kind}.failed",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": build["case_id"],
+                "build_id": build_id,
+                "code": error["code"],
+            }
+        )
+        return copy.deepcopy(build)
+
+    def emit(self, run_id: str, event: str, data: dict[str, Any]) -> None:
+        with self.lock:
+            item = {
+                "id": len(self.events.setdefault(run_id, [])) + 1,
+                "event": event,
+                "at": now_iso(),
+                "data": copy.deepcopy(data),
+            }
+            self.events[run_id].append(item)
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def emit_fenced(
+        self, run_id: str, attempt_token: str, event: str, data: dict[str, Any]
+    ) -> None:
+        with self.lock:
+            self._assert_job_locked(run_id, attempt_token)
+            item = {
+                "id": len(self.events.setdefault(run_id, [])) + 1,
+                "event": event,
+                "at": now_iso(),
+                "data": copy.deepcopy(data),
+            }
+            self.events[run_id].append(item)
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
+
+    def _assert_run_artifacts_ready_locked(self, run_id: str) -> None:
+        run = self.runs[run_id]
+        for node_id in run.get("node_ids", []):
+            node = self.nodes.get(node_id)
+            artifact = self.artifacts.get(node.get("artifact_id")) if node else None
+            if (
+                not node
+                or node.get("run_id") != run_id
+                or node.get("status") != "succeeded"
+                or not artifact
+                or artifact.get("run_id") != run_id
+                or artifact.get("module_id") != node.get("module_id")
+            ):
+                raise ValueError("RUN_NOT_READY")
+
+    def events_after(self, run_id: str, cursor: int = 0) -> list[dict[str, Any]]:
+        with self.lock:
+            return copy.deepcopy(self.events.get(run_id, [])[cursor:])
+
+    def wait_for_events(
+        self, run_id: str, cursor: int, timeout: float = 1.0
+    ) -> list[dict[str, Any]]:
+        with self.lock:
+            existing = self.events.get(run_id, [])[cursor:]
+            if existing:
+                return copy.deepcopy(existing)
+            condition = self.event_conditions.get(run_id)
+            if condition:
+                condition.wait(timeout)
+            return copy.deepcopy(self.events.get(run_id, [])[cursor:])
+
+    def artifact_for_fingerprint(
+        self, run_id: str, module_id: str, input_fingerprint: str
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            existing = next(
+                (
+                    value
+                    for value in self.artifacts.values()
+                    if value.get("run_id") == run_id
+                    and value.get("module_id") == module_id
+                    and value.get("input_fingerprint") == input_fingerprint
+                ),
+                None,
+            )
+            return copy.deepcopy(existing) if existing else None
+
+    def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            value = self.artifacts.get(artifact_id)
+            return copy.deepcopy(value) if value else None
+
+    def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            value = self.snapshots.get(snapshot_id)
+            return copy.deepcopy(value) if value else None
+
+    @staticmethod
+    def _loan_import_key(record: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            record["case_id"],
+            record["source_sha256"],
+            record["template_version"],
+            record["importer_version"],
+        )
+
+    def find_loan_universe_import(
+        self,
+        case_id: str,
+        source_sha256: str,
+        template_version: str,
+        importer_version: str,
+    ) -> dict[str, Any] | None:
+        key = (case_id, source_sha256, template_version, importer_version)
+        with self.lock:
+            for record in self.rv_loan_universes.values():
+                if self._loan_import_key(record) == key:
+                    return copy.deepcopy(record)
+        return None
+
+    def save_loan_universe_import(
+        self,
+        record: dict[str, Any],
+        rows: list[dict[str, Any]],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        with self.lock:
+            universes = self.rv_loan_universes.copy()
+            previous_id = self.rv_active_loan_universes.get(record.get("case_id"))
+            previous = universes.get(previous_id)
+            if previous:
+                universes[previous_id] = previous.copy()
+
+            prior = (
+                universes,
+                self.rv_loan_rows.copy(),
+                self.rv_active_loan_universes.copy(),
+                self.audit.copy(),
+            )
+            try:
+                saved, created = self._save_loan_universe_import_locked(
+                    record, rows, actor
+                )
+            except Exception:
+                (
+                    self.rv_loan_universes,
+                    self.rv_loan_rows,
+                    self.rv_active_loan_universes,
+                    self.audit,
+                ) = prior
+                raise
+            return copy.deepcopy(saved), created
+
+    def _save_loan_universe_import_locked(
+        self,
+        record: dict[str, Any],
+        rows: list[dict[str, Any]],
+        actor: str,
+    ) -> tuple[dict[str, Any], bool]:
+        if record.get("status") not in {"ACTIVE", "REJECTED"}:
+            raise ValueError("RV_UNIVERSE_STATUS_INVALID")
+        source = self.sources.get(record.get("source_id"))
+        if (
+            not source
+            or source.get("case_id") != record.get("case_id")
+            or source.get("withdrawn")
+        ):
+            raise ValueError("RV_SOURCE_NOT_ACTIVE")
+        key = self._loan_import_key(record)
+        for existing in self.rv_loan_universes.values():
+            if self._loan_import_key(existing) == key:
+                return copy.deepcopy(existing), False
+        if record["status"] == "ACTIVE":
+            if record.get("row_count") != len(rows) or len(
+                {row.get("instrument_key") for row in rows}
+            ) != len(rows):
+                raise ValueError("RV_UNIVERSE_ROWS_INVALID")
+        elif rows:
+            raise ValueError("RV_REJECTED_UNIVERSE_HAS_ROWS")
+
+        saved = copy.deepcopy(record)
+        saved.setdefault("created_at", now_iso())
+        saved.setdefault("created_by", actor)
+        if saved["status"] == "ACTIVE":
+            versions = [
+                value.get("version", 0) or 0
+                for value in self.rv_loan_universes.values()
+                if value.get("case_id") == saved["case_id"]
+            ]
+            saved["version"] = max(versions, default=0) + 1
+            saved["activated_at"] = now_iso()
+            saved["superseded_at"] = None
+            saved["withdrawn_at"] = None
+            previous_id = self.rv_active_loan_universes.get(saved["case_id"])
+            previous = self.rv_loan_universes.get(previous_id) if previous_id else None
+            if previous:
+                previous["status"] = "SUPERSEDED"
+                previous["superseded_at"] = saved["activated_at"]
+            self.rv_active_loan_universes[saved["case_id"]] = saved["id"]
+            self.rv_loan_rows[saved["id"]] = copy.deepcopy(rows)
+            action = "rv.loan_universe.activated"
+        else:
+            saved["version"] = None
+            saved["activated_at"] = None
+            saved["superseded_at"] = None
+            saved["withdrawn_at"] = None
+            self.rv_loan_rows[saved["id"]] = []
+            action = "rv.loan_universe.rejected"
+        self.rv_loan_universes[saved["id"]] = saved
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": action,
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": saved["case_id"],
+                "source_id": saved["source_id"],
+                "universe_id": saved["id"],
+            }
+        )
+        return copy.deepcopy(saved), True
+
+    def active_loan_universe(
+        self, case_id: str, *, include_rows: bool = True
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            universe_id = self.rv_active_loan_universes.get(case_id)
+            record = self.rv_loan_universes.get(universe_id) if universe_id else None
+            if not record or record.get("status") != "ACTIVE":
+                return None
+            result = copy.deepcopy(record)
+            if include_rows:
+                result["rows"] = copy.deepcopy(self.rv_loan_rows.get(universe_id, []))
+            return result
+
+    def _withdraw_loan_universe_for_source_locked(
+        self, case_id: str, source_id: str, actor: str
+    ) -> str | None:
+        universe_id = self.rv_active_loan_universes.get(case_id)
+        record = self.rv_loan_universes.get(universe_id) if universe_id else None
+        if not record or record.get("source_id") != source_id:
+            return None
+        record["status"] = "WITHDRAWN"
+        record["withdrawn_at"] = now_iso()
+        self.rv_active_loan_universes.pop(case_id, None)
+        self.audit.append(
+            {
+                "id": self._id("aud"),
+                "action": "rv.loan_universe.withdrawn",
+                "actor": actor,
+                "at": now_iso(),
+                "case_id": case_id,
+                "source_id": source_id,
+                "universe_id": universe_id,
+            }
+        )
+        return universe_id
 
 
 class _Adapter:
@@ -364,7 +1161,10 @@ class _MemoryRunLedger(_Adapter):
             if case_id not in state.cases:
                 raise ValueError("CASE_NOT_FOUND")
             created_at = now_iso()
-            if stored_generation is not None and "reporting_period" in stored_generation:
+            if (
+                stored_generation is not None
+                and "reporting_period" in stored_generation
+            ):
                 stored_generation["reporting_period"] = created_at[:10]
             run_id = state.new_id("run")
             node_records = [
@@ -685,7 +1485,6 @@ class _MemoryRunLedger(_Adapter):
                         "data": stored_event_data,
                     }
                 )
-                state.persist()
                 _remaining_finalization_seconds(deadline)
             except Exception:
                 state.runs[run_id] = prior_run

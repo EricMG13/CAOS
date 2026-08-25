@@ -15,6 +15,8 @@ from caos.config import Settings
 from caos.contracts import Recommendation
 from caos.http import create_app
 from caos.memory_ledgers import MemoryLedgerSet
+from caos.migrations import apply_migrations
+from caos.postgres_ledgers import PostgresLedgerSet
 from ledger_helpers import remove_source_set
 from caos.methodology.bundle import DeployVBundle
 from caos.methodology.prompt import compile_prompt, validate_invocation_plan
@@ -22,6 +24,7 @@ from caos.publishing.recipes import validate_recipe
 from fastapi.testclient import TestClient
 
 DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
+MIGRATIONS = Path(__file__).parents[1] / "server" / "migrations"
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -50,6 +53,94 @@ def _accepted_http_case(client: TestClient, name: str) -> tuple[str, dict[str, o
     accepted = client.post(f"/api/runs/{run['id']}/accept")
     assert accepted.status_code == 200
     return case_id, source
+
+
+def test_postgres_legacy_state_table_is_inert(tmp_path: Path) -> None:
+    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("CAOS_TEST_DATABASE_URL is not set")
+
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    base_dsn = database_url.replace("postgresql+psycopg://", "postgresql://")
+    schema = f"caos_inert_{os.urandom(12).hex()}"
+    isolated_dsn = make_conninfo(
+        base_dsn,
+        options=f"-c search_path={schema},public",
+    )
+    schema_created = False
+    with psycopg.connect(base_dsn) as connection:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
+                )
+                schema_created = True
+                cursor.execute(
+                    sql.SQL("SET search_path TO {}, public").format(
+                        sql.Identifier(schema)
+                    )
+                )
+            apply_migrations(connection, MIGRATIONS)
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "CREATE TABLE caos_state ("
+                    "id boolean PRIMARY KEY, revision bigint NOT NULL, state jsonb NOT NULL)"
+                )
+                cursor.execute(
+                    "INSERT INTO caos_state(id, revision, state) "
+                    "VALUES (true, 41, %s::jsonb)",
+                    ('{"foreign":"opaque","payload":[0,1,255]}',),
+                )
+                cursor.execute(
+                    "SELECT id, revision, encode(jsonb_send(state), 'hex') "
+                    "FROM caos_state"
+                )
+                legacy_before = cursor.fetchone()
+                cursor.execute(
+                    "SELECT (SELECT count(*) FROM cases), "
+                    "(SELECT count(*) FROM sources), (SELECT count(*) FROM runs)"
+                )
+                normalized_before = cursor.fetchone()
+            connection.commit()
+
+            settings = Settings(
+                database_url=isolated_dsn,
+                storage_dir=tmp_path / "vault",
+                deploy_v_root=DEPLOY_V,
+            )
+            with TestClient(
+                create_app(settings, PostgresLedgerSet(isolated_dsn))
+            ) as client:
+                _accepted_http_case(client, "Legacy table inertness")
+
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, revision, encode(jsonb_send(state), 'hex') "
+                    "FROM caos_state"
+                )
+                legacy_after = cursor.fetchone()
+                cursor.execute(
+                    "SELECT (SELECT count(*) FROM cases), "
+                    "(SELECT count(*) FROM sources), (SELECT count(*) FROM runs)"
+                )
+                normalized_after = cursor.fetchone()
+            assert legacy_after == legacy_before
+            assert normalized_before == (0, 0, 0)
+            assert all(value > 0 for value in normalized_after)
+        finally:
+            connection.rollback()
+            if schema_created:
+                with connection.cursor() as cursor:
+                    cursor.execute("SET search_path TO public")
+                    cursor.execute(
+                        sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                            sql.Identifier(schema)
+                        )
+                    )
+                connection.commit()
 
 
 def _report_inputs(source_id: str | None = None) -> dict[str, object]:

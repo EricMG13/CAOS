@@ -24,13 +24,21 @@ def test_migrate_rejects_non_postgresql_database_url(
 
 def test_run_generation_migration_is_next_and_non_destructive() -> None:
     paths = migration_files(MIGRATIONS)
+    legacy_table = "caos_state"
 
     assert paths[-1].name == "006_run_canonical_generation.sql"
     sql = paths[-1].read_text(encoding="utf-8").lower()
-    assert "caos_state" not in sql
+    assert legacy_table not in sql
     assert "drop table" not in sql
     assert "delete from" not in sql
     assert "legacy" not in sql
+
+
+def test_migrations_never_manage_removed_state_envelope() -> None:
+    legacy_table = "caos_state"
+
+    for path in migration_files(MIGRATIONS):
+        assert legacy_table not in path.read_text(encoding="utf-8").lower()
 
 
 def test_run_generation_migration_applies_once() -> None:
