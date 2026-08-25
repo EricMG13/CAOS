@@ -1075,6 +1075,42 @@ class _FakeProvider:
         return result
 
 
+def _queue_cpdr_success(provider: _FakeProvider, final: dict[str, Any], source_id: str) -> None:
+    responses = [
+        ProviderMessage(
+            content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
+            stop_reason="tool_use",
+            usage=ProviderUsage(20, 30),
+        ),
+        ProviderMessage(
+            content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_matrix_2", "block_ids": ["b00002"]})],
+            stop_reason="tool_use",
+            usage=ProviderUsage(20, 30),
+        ),
+        ProviderMessage(
+            content=[ProviderBlock(type="text", text=json.dumps(final))],
+            stop_reason="end_turn",
+            usage=ProviderUsage(20, 30),
+        ),
+    ]
+    provider.responses.extend(responses)
+    provider.counts.extend([20] * len(responses))
+
+
+def test_workflow_runtime_uses_one_agent_loop_for_injected_provider() -> None:
+    provider = _FakeProvider([])
+    runtime = WorkflowRuntime(
+        MemoryStore(),
+        DeployVBundle(DEPLOY_V),
+        Settings(storage_dir=Path("/tmp/caos-injected-provider"), deploy_v_root=DEPLOY_V),
+        provider=provider,
+    )
+    try:
+        assert runtime._agent_loop.provider is provider
+    finally:
+        runtime.close()
+
+
 def test_agent_loop_provider_injection_handles_tools_and_reconciles_normalized_usage() -> None:
     provider = _FakeProvider([
         ProviderMessage(
@@ -1599,8 +1635,9 @@ def test_gateway_uses_one_repair_without_evidence_tools() -> None:
     assert "tools" not in client.messages.create_calls[-1]
 
 
-def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() -> None:
     store = MemoryStore()
+    provider = _FakeProvider([])
     settings = Settings(
         environment="production",
         storage_dir=Path("/tmp/caos-cpdr-e2e"),
@@ -1609,7 +1646,7 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
         cpdr_agent_enabled=True,
         cpdr_pilot_subjects=("analyst",),
     )
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings)
+    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings, provider=provider)
     case = store.create_case("CP-DR", "Issuer", "Testing", "analyst")
     source_id = "src_cpdr"
     store.sources[source_id] = {
@@ -1657,7 +1694,7 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
                 {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_cpdr_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
             ],
         )
-        provider = _FakeProvider([
+        provider.responses.extend([
             AgentError("AGENT_PROVIDER_TIMEOUT"),
             ProviderMessage(
                 content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
@@ -1676,7 +1713,7 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact(mo
                 usage=ProviderUsage(20, 30), request_id="req-final",
             ),
         ])
-        monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AgentLoop(provider))
+        provider.counts.extend([20] * 5)
 
         runtime._execute(run["id"], "approver")
 
@@ -1760,7 +1797,10 @@ def test_approved_cpdr_disabled_or_missing_key_fails_explicitly(settings: Settin
         runtime.close()
 
 
-def _approved_cpdr_case(store: MemoryStore | None = None) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], str]:
+def _approved_cpdr_case(
+    store: MemoryStore | None = None,
+    provider: _FakeProvider | None = None,
+) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], str]:
     store = store or MemoryStore()
     settings = Settings(
         environment="production",
@@ -1770,7 +1810,7 @@ def _approved_cpdr_case(store: MemoryStore | None = None) -> tuple[MemoryStore, 
         cpdr_agent_enabled=True,
         cpdr_pilot_subjects=("analyst",),
     )
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings)
+    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings, provider=provider)
     case = store.create_case("CP-DR matrix", "Issuer", "Testing", "analyst")
     source_id = "src_matrix"
     store.sources[source_id] = {
@@ -1901,17 +1941,13 @@ def test_cpdr_reclaimed_unresolved_inflight_fails_closed() -> None:
         runtime.close()
 
 
-def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget() -> None:
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     store.runs[approved["id"]]["research"]["phase"] = "researching"
     store.runs[approved["id"]]["research"]["inflight_request_digest"] = None
     final = _approved_final(store, approved, source_id)
-    client = _Client([
-        _Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})]),
-        _Response("tool_use", [_Block("tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_matrix_2", "block_ids": ["b00002"]})]),
-        _Response("end_turn", [_Block("text", text=json.dumps(final))]),
-    ])
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test", "claude-sonnet-4-6", client=client))
+    _queue_cpdr_success(provider, final, source_id)
     try:
         runtime._execute(approved["id"], "replacement")
         completed = store.get_run(approved["id"])
@@ -1921,14 +1957,14 @@ def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget
         runtime.close()
 
 
-def test_cpdr_existing_fingerprint_is_relinked_without_provider_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+def test_cpdr_existing_fingerprint_is_relinked_without_provider_call() -> None:
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
     recovered = _canonical_cpdr_artifact(store, runtime, approved, source_id)
     assert cpdr_artifact_is_valid(store, approved, cpdr_node, recovered, runtime.bundle)
     store.artifacts[recovered["id"]] = recovered
     store.runs[approved["id"]]["research"]["phase"] = "researching"
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider called")))
     try:
         runtime._execute(approved["id"], "replacement")
         completed = store.get_run(approved["id"])
@@ -1936,6 +1972,7 @@ def test_cpdr_existing_fingerprint_is_relinked_without_provider_call(monkeypatch
         assert completed is not None and completed["status"] == "succeeded"
         assert linked is not None and linked["artifact_id"] == recovered["id"]
         assert len([item for item in store.artifacts.values() if item.get("module_id") == "CP-DR"]) == 1
+        assert provider.calls == []
     finally:
         runtime.close()
 
@@ -2072,8 +2109,9 @@ def test_atomic_completion_replaces_invalid_same_fingerprint_artifact(backend: s
         ("duplicate_block", "AGENT_OUTPUT_INVALID"),
     ],
 )
-def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(monkeypatch: pytest.MonkeyPatch, mode: str, expected: str) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(mode: str, expected: str) -> None:
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     tool_source = source_id
     tool_block = "b00001"
     if mode == "cross_case":
@@ -2086,8 +2124,12 @@ def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(monk
     elif mode == "absent_block":
         tool_block = "missing"
     block_ids = [tool_block, tool_block] if mode == "duplicate_block" else [tool_block]
-    client = _Client([_Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": tool_source, "block_ids": block_ids})])])
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test", "claude-sonnet-4-6", client=client))
+    provider.responses.append(ProviderMessage(
+        content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": tool_source, "block_ids": block_ids})],
+        stop_reason="tool_use",
+        usage=ProviderUsage(20, 30),
+    ))
+    provider.counts.append(20)
     try:
         runtime._execute(approved["id"], "approver")
         failed = store.get_run(approved["id"])
@@ -2097,14 +2139,24 @@ def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(monk
 
 
 @pytest.mark.parametrize("budget", ["turns", "input_tokens", "output_tokens", "active_minutes", "evidence_reads", "evidence_bytes"])
-def test_cpdr_runwide_budget_ceilings_fail_before_overspend(monkeypatch: pytest.MonkeyPatch, budget: str) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+def test_cpdr_runwide_budget_ceilings_fail_before_overspend(budget: str) -> None:
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     store.runs[approved["id"]]["research"]["budget_limits"][budget] = 0 if budget != "evidence_bytes" else 1
     if budget in {"evidence_reads", "evidence_bytes"}:
-        response = _Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})])
+        response = ProviderMessage(
+            content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
+            stop_reason="tool_use",
+            usage=ProviderUsage(20, 30),
+        )
     else:
-        response = _Response("end_turn", [_Block("text", text="{}")])
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test", "claude-sonnet-4-6", client=_Client([response])))
+        response = ProviderMessage(
+            content=[ProviderBlock(type="text", text="{}")],
+            stop_reason="end_turn",
+            usage=ProviderUsage(20, 30),
+        )
+    provider.responses.append(response)
+    provider.counts.append(20)
     try:
         runtime._execute(approved["id"], "approver")
         failed = store.get_run(approved["id"])
@@ -2115,8 +2167,9 @@ def test_cpdr_runwide_budget_ceilings_fail_before_overspend(monkeypatch: pytest.
 
 
 @pytest.mark.parametrize("limit", ["blocks", "bytes"])
-def test_cpdr_manifest_ceiling_fails_before_provider_construction(monkeypatch: pytest.MonkeyPatch, limit: str) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+def test_cpdr_manifest_ceiling_fails_before_provider_construction(limit: str) -> None:
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     if limit == "blocks":
         store.sources[source_id]["blocks"] = [
             {"block_id": f"b{index:05d}", "locator": {"line": index}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}
@@ -2124,25 +2177,19 @@ def test_cpdr_manifest_ceiling_fails_before_provider_construction(monkeypatch: p
         ]
     else:
         store.sources[source_id]["blocks"][0]["locator"] = {"section": "x" * (256 * 1_024)}
-    constructed: list[bool] = []
-
-    def forbidden_gateway(*_args: Any, **_kwargs: Any) -> Any:
-        constructed.append(True)
-        raise AssertionError("provider must not be constructed")
-
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", forbidden_gateway)
     try:
         runtime._execute(approved["id"], "approver")
         failed = store.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert constructed == []
+        assert provider.calls == []
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize("field", ["filename", "media_type", "locator", "extractor_version", "confidence"])
 def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     source = store.sources[source_id]
     sentinel = "manifest-sentinel-" + "x" * (512 * 1_024)
     if field in {"filename", "media_type"}:
@@ -2161,17 +2208,18 @@ def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pyt
         return original_dumps(value, *args, **kwargs)
 
     monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: pytest.fail("provider constructed"))
     try:
         runtime._execute(approved["id"], "approver")
         failed = store.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
+        assert provider.calls == []
     finally:
         runtime.close()
 
 
 def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     locator = {"groups": [list(range(100)) for _ in range(6)]}
     store.sources[source_id]["blocks"][0]["locator"] = locator
     original_dumps = workflow_domain.json.dumps
@@ -2181,17 +2229,18 @@ def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypa
         return original_dumps(value, *args, **kwargs)
 
     monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: pytest.fail("provider constructed"))
     try:
         runtime._execute(approved["id"], "approver")
         failed = store.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
+        assert provider.calls == []
     finally:
         runtime.close()
 
 
 def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    provider = _FakeProvider([], counts=[ProviderUnavailable("boundary reached provider")])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     expected_manifest = []
     for manifest_source_id in (source_id, "src_matrix_2"):
         source = store.sources[manifest_source_id]
@@ -2209,31 +2258,20 @@ def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monke
     encoded_bytes = len(json.dumps(expected_manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
     monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BLOCKS", 2)
     monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BYTES", encoded_bytes)
-    constructed: list[bool] = []
-
-    def reached_gateway(*_args: Any, **_kwargs: Any) -> Any:
-        constructed.append(True)
-        raise ProviderUnavailable("boundary reached provider")
-
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", reached_gateway)
     try:
         runtime._execute(approved["id"], "approver")
         failed = store.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_PROVIDER_UNAVAILABLE"
-        assert constructed == [True]
+        assert [kind for kind, _request in provider.calls] == ["count_tokens"]
     finally:
         runtime.close()
 
 
 def test_cpdr_unexpected_post_provider_failure_is_sanitized_and_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     final = _approved_final(store, approved, source_id)
-    client = _Client([
-        _Response("tool_use", [_Block("tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})]),
-        _Response("tool_use", [_Block("tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_matrix_2", "block_ids": ["b00002"]})]),
-        _Response("end_turn", [_Block("text", text=json.dumps(final))]),
-    ])
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test", "claude-sonnet-4-6", client=client))
+    _queue_cpdr_success(provider, final, source_id)
     monkeypatch.setattr(workflow_domain, "render_cpdr_markdown", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-post-provider")))
     try:
         runtime._execute(approved["id"], "approver")
@@ -2247,20 +2285,13 @@ def test_cpdr_unexpected_post_provider_failure_is_sanitized_and_terminal(monkeyp
 
 
 def test_cpdr_prior_179_seconds_caps_next_operation_to_one_second(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _source_id = _approved_cpdr_case()
+    provider = _FakeProvider([], counts=[ProviderUnavailable("captured")])
+    store, runtime, approved, _source_id = _approved_cpdr_case(provider=provider)
     store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: 1_000.0)
-    remaining: list[float] = []
-
-    class CaptureGateway:
-        def run(self, **kwargs: Any) -> Any:
-            remaining.append(kwargs["remaining_time"]())
-            raise ProviderUnavailable("captured")
-
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: CaptureGateway())
     try:
         runtime._execute(approved["id"], "approver")
-        assert remaining and 0 < remaining[0] <= 1.0
+        assert provider.calls and 0 < provider.calls[0][1].timeout <= 1.0
         assert not any(item.get("module_id") == "CP-DR" for item in store.artifacts.values())
     finally:
         runtime.close()
@@ -2273,7 +2304,8 @@ def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypat
         anthropic_api_key="test-only-key", cpdr_agent_enabled=True, cpdr_pilot_subjects=("analyst",),
     )
     bundle = DeployVBundle(DEPLOY_V)
-    runtime = WorkflowRuntime(store, bundle, settings)
+    provider = _FakeProvider([], counts=[ProviderUnavailable("stop after timing check")])
+    runtime = WorkflowRuntime(store, bundle, settings, provider=provider)
     case = store.create_case("Approval time", "Issuer", "Testing", "analyst")
     source_id = "src_approval_time"
     store.sources[source_id] = {
@@ -2297,12 +2329,6 @@ def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypat
 
     monkeypatch.setattr(bundle, "plan_research", measured_plan)
 
-    class StopGateway:
-        def run(self, **kwargs: Any) -> Any:
-            kwargs["remaining_time"]()
-            raise ProviderUnavailable("stop after timing check")
-
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: StopGateway())
     try:
         run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
         runtime._execute(run["id"], "analyst")
@@ -2318,7 +2344,8 @@ def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypat
 
 
 def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
     final = _approved_final(store, approved, source_id)
 
@@ -2327,12 +2354,7 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
 
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
 
-    class LocalGateway:
-        def run(self, **kwargs: Any) -> Any:
-            kwargs["remaining_time"]()
-            kwargs["read_evidence"](source_id, ["b00001"])
-            kwargs["read_evidence"]("src_matrix_2", ["b00002"])
-            return kwargs["validate"](final)
+    _queue_cpdr_success(provider, final, source_id)
 
     original_render = workflow_domain.render_cpdr_markdown
 
@@ -2341,7 +2363,6 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
         Clock.now += 2.0
         return rendered
 
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: LocalGateway())
     monkeypatch.setattr(workflow_domain, "render_cpdr_markdown", slow_render)
     try:
         runtime._execute(approved["id"], "approver")
@@ -2354,7 +2375,8 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
 
 @pytest.mark.parametrize("operation", ["scorer", "renderer", "validator", "envelope"])
 def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     final = _approved_final(store, approved, source_id)
 
     class Clock:
@@ -2362,17 +2384,12 @@ def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
 
-    class LocalGateway:
-        def run(self, **kwargs: Any) -> Any:
-            kwargs["read_evidence"](source_id, ["b00001"])
-            kwargs["read_evidence"]("src_matrix_2", ["b00002"])
-            return kwargs["validate"](final)
+    _queue_cpdr_success(provider, final, source_id)
 
     def throwing(*_args: Any, **_kwargs: Any) -> Any:
         Clock.now += 2.0
         raise RuntimeError("host operation failed")
 
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: LocalGateway())
     if operation == "scorer":
         monkeypatch.setattr(runtime.bundle, "cpdr_confidence", throwing)
     elif operation == "renderer":
@@ -2391,7 +2408,8 @@ def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.Mo
 
 
 def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    provider = _FakeProvider([])
+    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
     final = _approved_final(store, approved, source_id)
 
@@ -2400,11 +2418,7 @@ def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypa
 
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
 
-    class LocalGateway:
-        def run(self, **kwargs: Any) -> Any:
-            kwargs["read_evidence"](source_id, ["b00001"])
-            kwargs["read_evidence"]("src_matrix_2", ["b00002"])
-            return kwargs["validate"](final)
+    _queue_cpdr_success(provider, final, source_id)
 
     original_completion = store.complete_node_fenced
 
@@ -2412,7 +2426,6 @@ def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypa
         Clock.now += 2.0
         return original_completion(*args, **kwargs)
 
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: LocalGateway())
     monkeypatch.setattr(store, "complete_node_fenced", slow_completion)
     try:
         runtime._execute(approved["id"], "approver")
@@ -3010,11 +3023,9 @@ def test_gateway_discards_result_when_lease_is_lost_during_sdk_call() -> None:
     assert records == []
 
 
-def test_cpdr_failure_metadata_does_not_persist_secret_body_prompt_or_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _ = _approved_cpdr_case()
-    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-    failure = anthropic.AuthenticationError("secret-provider-body", response=httpx2.Response(401, request=request), body={"secret": "provider-body"})
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", lambda *_args, **_kwargs: AnthropicGateway("test-only-key", "claude-sonnet-4-6", client=_Client([failure])))
+def test_cpdr_failure_metadata_does_not_persist_secret_body_prompt_or_evidence() -> None:
+    provider = _FakeProvider([], counts=[AgentError("AGENT_PROVIDER_REJECTED", "secret-provider-body provider-body")])
+    store, runtime, approved, _ = _approved_cpdr_case(provider=provider)
     try:
         runtime._execute(approved["id"], "approver")
         failed = store.get_run(approved["id"])

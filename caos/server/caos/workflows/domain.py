@@ -25,7 +25,7 @@ from ..methodology.cpdr import CPDRValidationError, confidence_inputs, render_cp
 from ..methodology.prompt import compile_cpdr_prompts
 from ..sources.domain import Vault, current_source_set
 from ..store import JobFencedError, MemoryStore, now_iso
-from .provider import AgentError, AnthropicGateway, ProviderUnavailable
+from .provider import AgentError, AgentLoop, Provider, ProviderUnavailable
 
 
 HEARTBEAT_INTERVAL_SECONDS = 20
@@ -246,7 +246,13 @@ class _PlanningPause(Exception):
 
 
 class WorkflowRuntime:
-    def __init__(self, store: MemoryStore, bundle: DeployVBundle, settings: Settings) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        bundle: DeployVBundle,
+        settings: Settings,
+        provider: Provider | None = None,
+    ) -> None:
         self.store = store
         self.bundle = bundle
         self.settings = settings
@@ -258,6 +264,7 @@ class WorkflowRuntime:
         self._provider_slots = threading.BoundedSemaphore(2)
         # ponytail: serial state updates; split per-module budgets if canonical generation throughput becomes material.
         self._canonical_generation_lock = threading.Lock()
+        self._agent_loop = AgentLoop(provider) if provider is not None else None
         self.canonical_runner = CanonicalModuleRunner(bundle) if settings.canonical_agent_enabled else None
         self._futures: dict[str, Future[Any]] = {}
         self._futures_lock = threading.Lock()
@@ -1019,12 +1026,9 @@ class WorkflowRuntime:
                     authority_digest=authority_digest,
                 )
 
-            gateway = AnthropicGateway(
-                self.settings.anthropic_api_key,
-                self.settings.anthropic_model,
-                self.settings.anthropic_timeout_seconds,
-            )
-            built = gateway.run(
+            if self._agent_loop is None:
+                fail("AGENT_PROVIDER_UNAVAILABLE", "ANTHROPIC_API_KEY is not configured")
+            built = self._agent_loop.run(
                 system=system,
                 user=user,
                 read_evidence=read_evidence,
@@ -1343,15 +1347,9 @@ class WorkflowRuntime:
 
         research["phase"] = "researching"
         persist_research()
-        try:
-            gateway = AnthropicGateway(
-                self.settings.anthropic_api_key,
-                self.settings.anthropic_model,
-                self.settings.anthropic_timeout_seconds,
-            )
-        except ProviderUnavailable:
-            raise
-        payload = gateway.run(
+        if self._agent_loop is None:
+            raise ProviderUnavailable("ANTHROPIC_API_KEY is not configured")
+        payload = self._agent_loop.run(
             system=system,
             user=user,
             read_evidence=read_evidence,

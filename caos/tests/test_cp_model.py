@@ -28,9 +28,14 @@ from caos.models.runtime import (
     _serialize_worksheet,
 )
 from caos.store import MemoryStore
-from caos.workflows import domain as workflow_domain
 from caos.workflows.domain import WorkflowRuntime
-from caos.workflows.provider import AgentError
+from caos.workflows.provider import (
+    AgentError,
+    ProviderBlock,
+    ProviderMessage,
+    ProviderRequest,
+    ProviderUsage,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -340,7 +345,45 @@ def test_canonical_turn_budget_covers_all_bounded_interactions() -> None:
     )
 
 
-def _canonical_runtime_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, object]]:
+class _CanonicalProvider:
+    def __init__(self, failure: BaseException | None = None) -> None:
+        self.runner = CanonicalModuleRunner(DeployVBundle(DEPLOY_V))
+        self.failure = failure
+        self.calls: list[ProviderRequest] = []
+
+    def count_tokens(self, request: ProviderRequest) -> int:
+        return 1
+
+    def create_message(self, request: ProviderRequest) -> ProviderMessage:
+        self.calls.append(copy.deepcopy(request))
+        if self.failure is not None:
+            raise self.failure
+        module_id = json.loads(str(request.messages[0]["content"]).split("\n", 1)[1])["host_identity"]["module_id"]
+        if len(request.messages) == 1:
+            content = [ProviderBlock(
+                type="tool_use",
+                id=f"tool-{module_id}",
+                name="read_evidence",
+                input={"source_id": "SRC-1", "block_ids": ["block-1"]},
+            )]
+            stop_reason = "tool_use"
+        else:
+            content = [ProviderBlock(type="text", text=json.dumps({
+                "markdown": _complete_provider_markdown(self.runner, module_id),
+                "evidence_refs": [{"source_id": "SRC-1", "block_id": "block-1"}],
+                "lineage_counts": {"Directly Sourced": 1},
+                "fields_present": 1,
+                "fields_total": 1,
+                "source_gate": "pass",
+                "findings": {},
+            }))]
+            stop_reason = "end_turn"
+        return ProviderMessage(content, stop_reason, ProviderUsage(1, 1))
+
+
+def _canonical_runtime_case(
+    provider: _CanonicalProvider | None = None,
+) -> tuple[MemoryStore, WorkflowRuntime, dict[str, object]]:
     store = MemoryStore()
     runtime = WorkflowRuntime(
         store,
@@ -352,6 +395,7 @@ def _canonical_runtime_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, o
             anthropic_api_key="test-only-key",
             canonical_agent_enabled=True,
         ),
+        provider=provider,
     )
     case = store.create_case("Canonical run", "Acme Credit Ltd", "Testing", "analyst")
     store.sources["SRC-1"] = {
@@ -384,48 +428,16 @@ def _canonical_runtime_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, o
     return store, runtime, case
 
 
-def _accepted_model_case(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[MemoryStore, WorkflowRuntime, dict[str, object]]:
-    store, runtime, case = _canonical_runtime_case()
-    provider_runner = CanonicalModuleRunner(runtime.bundle)
-
-    class FakeCanonicalGateway:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def run(self, **kwargs: object) -> dict[str, object]:
-            module_id = json.loads(str(kwargs["user"]).split("\n", 1)[1])[
-                "host_identity"
-            ]["module_id"]
-            request_digest = digest({"module_id": module_id})
-            kwargs["reserve"](request_digest, 1, 1, False)
-            kwargs["read_evidence"]("SRC-1", ["block-1"])
-            built = kwargs["validate"](
-                {
-                    "markdown": _complete_provider_markdown(provider_runner, module_id),
-                    "evidence_refs": [{"source_id": "SRC-1", "block_id": "block-1"}],
-                    "lineage_counts": {"Directly Sourced": 1},
-                    "fields_present": 1,
-                    "fields_total": 1,
-                    "source_gate": "pass",
-                    "findings": {},
-                }
-            )
-            kwargs["reconcile"](request_digest, 1, 1, 1, 1)
-            return built
-
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", FakeCanonicalGateway)
+def _accepted_model_case() -> tuple[MemoryStore, WorkflowRuntime, dict[str, object]]:
+    store, runtime, case = _canonical_runtime_case(_CanonicalProvider())
     run = runtime.start_run(case["id"], "analyst", "FULL_CREDIT", "full", [])
     runtime._execute(run["id"], "analyst")
     runtime.accept_run(case["id"], run["id"], "analyst")
     return store, runtime, case
 
 
-def test_accepted_full_credit_queues_and_builds_idempotent_python_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store, workflow, case = _accepted_model_case(monkeypatch)
+def test_accepted_full_credit_queues_and_builds_idempotent_python_model() -> None:
+    store, workflow, case = _accepted_model_case()
     model_bundle = CpModelBundle(DEPLOY_V)
     readiness = ModelReadinessService(store, workflow.bundle, model_bundle)
     model_runtime = ModelBuildRuntime(
@@ -450,9 +462,9 @@ def test_accepted_full_credit_queues_and_builds_idempotent_python_model(
 
 
 def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
-    store, workflow, case = _accepted_model_case(monkeypatch)
+    store, workflow, case = _accepted_model_case()
     model_bundle = CpModelBundle(DEPLOY_V)
     readiness = ModelReadinessService(store, workflow.bundle, model_bundle)
     model_runtime = ModelBuildRuntime(
@@ -598,37 +610,9 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
         workflow.close()
 
 
-def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store, runtime, case = _canonical_runtime_case()
-    provider_runner = CanonicalModuleRunner(runtime.bundle)
-
-    class FakeCanonicalGateway:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def run(self, **kwargs: object) -> dict[str, object]:
-            user = str(kwargs["user"])
-            module_id = json.loads(user.split("\n", 1)[1])["host_identity"]["module_id"]
-            request_digest = digest({"module_id": module_id})
-            kwargs["reserve"](request_digest, 1, 1, False)
-            kwargs["read_evidence"]("SRC-1", ["block-1"])
-            built = kwargs["validate"](
-                {
-                    "markdown": _complete_provider_markdown(provider_runner, module_id),
-                    "evidence_refs": [{"source_id": "SRC-1", "block_id": "block-1"}],
-                    "lineage_counts": {"Directly Sourced": 1},
-                    "fields_present": 1,
-                    "fields_total": 1,
-                    "source_gate": "pass",
-                    "findings": {},
-                }
-            )
-            kwargs["reconcile"](request_digest, 1, 1, 1, 1)
-            return built
-
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", FakeCanonicalGateway)
+def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs() -> None:
+    provider = _CanonicalProvider()
+    store, runtime, case = _canonical_runtime_case(provider)
     try:
         run = runtime.start_run(case["id"], "analyst", "FULL_CREDIT", "full", [])
         runtime._execute(run["id"], "analyst")
@@ -641,6 +625,7 @@ def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs(
         assert completed["canonical_generation"]["completed_modules"] == sorted(
             FIXTURE_BY_MODULE
         )
+        assert {json.loads(str(request.messages[0]["content"]).split("\n", 1)[1])["host_identity"]["module_id"] for request in provider.calls} == set(FIXTURE_BY_MODULE)
         cp1_node = next(
             node for node in completed["nodes"] if node["module_id"] == "CP-1"
         )
@@ -681,19 +666,10 @@ def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs(
         runtime.close()
 
 
-def test_canonical_provider_failure_uses_bounded_run_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store, runtime, case = _canonical_runtime_case()
-
-    class FailingGateway:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def run(self, **_kwargs: object) -> dict[str, object]:
-            raise RuntimeError("provider-secret-body")
-
-    monkeypatch.setattr(workflow_domain, "AnthropicGateway", FailingGateway)
+def test_canonical_provider_failure_uses_bounded_run_error() -> None:
+    store, runtime, case = _canonical_runtime_case(
+        _CanonicalProvider(RuntimeError("provider-secret-body"))
+    )
     try:
         run = runtime.start_run(case["id"], "analyst", "FULL_CREDIT", "full", [])
         runtime._execute(run["id"], "analyst")

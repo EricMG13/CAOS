@@ -115,6 +115,7 @@ from .responses import (
 from .sources.domain import current_source_set, ingest_upload, list_sources, pathway_fit
 from .store import STORE, MemoryStore, PostgresStore, now_iso
 from .workflows.domain import WorkflowError, WorkflowRuntime
+from .workflows.provider import AnthropicProvider
 
 
 def create_app(settings: Settings | None = None, store: MemoryStore | None = None) -> FastAPI:
@@ -123,7 +124,17 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         settings.validate_runtime()
     store = store or (PostgresStore(settings.database_url) if settings.environment == "production" else STORE)
     bundle = DeployVBundle(settings.deploy_v_root)
-    runtime = WorkflowRuntime(store, bundle, settings)
+    provider = (
+        AnthropicProvider(
+            settings.anthropic_api_key,
+            settings.anthropic_model,
+            settings.anthropic_timeout_seconds,
+        )
+        if settings.anthropic_api_key
+        and (settings.canonical_agent_enabled or settings.cpdr_agent_enabled)
+        else None
+    )
+    runtime = WorkflowRuntime(store, bundle, settings, provider=provider)
     model_bundle = CpModelBundle(settings.deploy_v_root)
     model_readiness = ModelReadinessService(store, bundle, model_bundle)
     model_runtime = ModelBuildRuntime(
