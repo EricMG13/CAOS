@@ -102,21 +102,36 @@ class AnthropicProvider:
         self.client = client or anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=timeout)
 
     @staticmethod
-    def _message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _message_content(
+        messages: list[dict[str, Any]],
+        *,
+        legacy_block_fields: bool = False,
+    ) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
         for message in messages:
             content = message.get("content")
             if isinstance(content, list):
-                content = [
-                    {key: value for key, value in vars(block).items() if value is not None}
-                    if isinstance(block, ProviderBlock)
-                    else block
-                    for block in content
-                ]
+                normalized_content: list[Any] = []
+                for block in content:
+                    if not isinstance(block, ProviderBlock):
+                        normalized_content.append(block)
+                        continue
+                    values = {key: value for key, value in vars(block).items() if value is not None}
+                    if legacy_block_fields and block.type == "text":
+                        values["citations"] = None
+                    elif legacy_block_fields and block.type == "tool_use":
+                        values.update(caller=None, toolset_name=None)
+                    normalized_content.append(values)
+                content = normalized_content
             normalized.append({**message, "content": content})
         return normalized
 
-    def _request_kwargs(self, request: ProviderRequest) -> dict[str, Any]:
+    def _request_kwargs(
+        self,
+        request: ProviderRequest,
+        *,
+        legacy_block_fields: bool = False,
+    ) -> dict[str, Any]:
         try:
             schema = anthropic.transform_schema(request.schema)
         except (TypeError, ValueError) as exc:
@@ -124,7 +139,7 @@ class AnthropicProvider:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "system": request.system,
-            "messages": self._message_content(request.messages),
+            "messages": self._message_content(request.messages, legacy_block_fields=legacy_block_fields),
             "output_config": {"format": {"type": "json_schema", "schema": schema}},
         }
         if request.tools_enabled:
@@ -137,6 +152,9 @@ class AnthropicProvider:
         if request.timeout is not None:
             kwargs["timeout"] = request.timeout
         return kwargs
+
+    def _request_preimage(self, request: ProviderRequest) -> dict[str, Any]:
+        return self._request_kwargs(request, legacy_block_fields=True)
 
     def _call(self, kind: str, request: ProviderRequest) -> Any:
         try:
@@ -448,7 +466,7 @@ class AnthropicGateway(AgentLoop):
         super().__init__(
             provider,
             schema_transform=anthropic.transform_schema,
-            request_preimage=provider._request_kwargs,
+            request_preimage=provider._request_preimage,
         )
         self.model = provider.model
         self.client = provider.client

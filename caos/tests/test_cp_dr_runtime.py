@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 import anthropic
 import httpx2
+from anthropic.types import TextBlock, ToolUseBlock
 from caos.config import Settings
 from caos.contracts import digest
 from caos.artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid, create_note, promote_note
@@ -1341,6 +1342,63 @@ def test_gateway_preserves_legacy_request_digest_bytes_across_retry() -> None:
     ).encode("utf-8")
     assert actual_bytes == expected_bytes
     assert [reservation[0] for reservation in reservations] == [hashlib.sha256(expected_bytes).hexdigest()] * 2
+
+
+def test_gateway_preserves_legacy_sdk_block_fields_in_continuation_digest() -> None:
+    tool_blocks = [
+        TextBlock(citations=None, text="checking", type="text"),
+        ToolUseBlock(
+            id="tool-1", caller=None, input={"source_id": "src-1", "block_ids": ["b00001"]},
+            name="read_evidence", type="tool_use", toolset_name=None,
+        ),
+    ]
+    evidence = [{"source_id": "src-1", "block_id": "b00001", "text": "evidence"}]
+    client = _Client([
+        _Response("tool_use", tool_blocks),  # type: ignore[arg-type]
+        _Response(
+            "end_turn",
+            [TextBlock(citations=None, text=json.dumps(_cpdr_payload()), type="text")],  # type: ignore[list-item]
+        ),
+    ])
+    reservations: list[tuple[Any, ...]] = []
+    remaining = iter([5.0, 4.0, 3.0, 2.0, 1.0])
+
+    AnthropicGateway("key", "claude-sonnet-4-6", client=client).run(
+        system="authority", user="brief", read_evidence=lambda *_: evidence, validate=lambda value: value,
+        lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
+        record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+        remaining_time=lambda: next(remaining), semaphore=threading.BoundedSemaphore(2),
+    )
+
+    legacy_preimage = {
+        "model": "claude-sonnet-4-6",
+        "system": "authority",
+        "messages": [
+            {"role": "user", "content": "brief"},
+            {"role": "assistant", "content": tool_blocks},
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": json.dumps(evidence, sort_keys=True),
+                }],
+            },
+        ],
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": anthropic.transform_schema(CPDRPayload.model_json_schema()),
+            }
+        },
+        "tools": [provider_module.READ_EVIDENCE_TOOL],
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+        "max_tokens": 2_000,
+    }
+    expected_bytes = json.dumps(legacy_preimage, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+    assert all(field in expected_bytes for field in (b'"citations": null', b'"caller": null', b'"toolset_name": null'))
+    assert b'"timeout"' not in expected_bytes and client.messages.create_calls[1]["timeout"] == 1.0
+    assert reservations[1][0] == hashlib.sha256(expected_bytes).hexdigest()
 
 
 def test_gateway_schema_transform_failure_is_not_a_provider_interaction(monkeypatch: pytest.MonkeyPatch) -> None:
