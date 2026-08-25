@@ -8,7 +8,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from ..artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid
 from ..config import Settings
@@ -25,7 +25,7 @@ from ..methodology.cpdr import CPDRValidationError, confidence_inputs, render_cp
 from ..methodology.prompt import compile_cpdr_prompts
 from ..sources.domain import Vault, current_source_set
 from ..store import JobFencedError, MemoryStore, now_iso
-from .provider import AgentError, AgentLoop, Provider, ProviderUnavailable
+from .provider import AgentError, AgentLoop, Provider, ProviderRequest, ProviderUnavailable
 
 
 HEARTBEAT_INTERVAL_SECONDS = 20
@@ -252,6 +252,9 @@ class WorkflowRuntime:
         bundle: DeployVBundle,
         settings: Settings,
         provider: Provider | None = None,
+        *,
+        schema_transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        request_preimage: Callable[[ProviderRequest], Any] | None = None,
     ) -> None:
         self.store = store
         self.bundle = bundle
@@ -264,7 +267,15 @@ class WorkflowRuntime:
         self._provider_slots = threading.BoundedSemaphore(2)
         # ponytail: serial state updates; split per-module budgets if canonical generation throughput becomes material.
         self._canonical_generation_lock = threading.Lock()
-        self._agent_loop = AgentLoop(provider) if provider is not None else None
+        self._agent_loop = (
+            AgentLoop(
+                provider,
+                schema_transform=schema_transform,
+                request_preimage=request_preimage,
+            )
+            if provider is not None
+            else None
+        )
         self.canonical_runner = CanonicalModuleRunner(bundle) if settings.canonical_agent_enabled else None
         self._futures: dict[str, Future[Any]] = {}
         self._futures_lock = threading.Lock()

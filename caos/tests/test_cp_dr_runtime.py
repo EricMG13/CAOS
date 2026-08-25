@@ -19,6 +19,7 @@ from anthropic.types import TextBlock, ToolUseBlock
 from caos.config import Settings
 from caos.contracts import digest
 from caos.artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid, create_note, promote_note
+from caos.http import create_app
 from caos.methodology.bundle import DeployVBundle, MethodologyError
 from caos.methodology.cpdr import CPDRPayload, CPDRValidationError, confidence_inputs, validate_cpdr_payload
 from caos.methodology.prompt import compile_cpdr_prompts
@@ -1454,6 +1455,83 @@ def test_gateway_schema_transform_failure_is_not_a_provider_interaction(monkeypa
             record=lambda kind, **details: events.append((kind, details)), active_time=charged.append,
             semaphore=threading.BoundedSemaphore(2),
         )
+
+    assert client.messages.count_calls == []
+    assert events == []
+    assert charged == []
+
+
+def _production_injected_runtime(monkeypatch: pytest.MonkeyPatch, client: _Client) -> WorkflowRuntime:
+    monkeypatch.setattr(provider_module.anthropic, "Anthropic", lambda **_kwargs: client)
+    app = create_app(
+        Settings(
+            environment="test",
+            storage_dir=Path("/tmp/caos-production-provider-hooks"),
+            deploy_v_root=DEPLOY_V,
+            anthropic_api_key="test-only-key",
+            cpdr_agent_enabled=True,
+        ),
+        MemoryStore(),
+    )
+    return app.state.runtime
+
+
+def test_production_injection_preserves_legacy_request_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _Client([_Response("end_turn", [_Block("text", text=json.dumps(_cpdr_payload()))])])
+    runtime = _production_injected_runtime(monkeypatch, client)
+    reservations: list[tuple[Any, ...]] = []
+    try:
+        runtime._agent_loop.run(
+            system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+            lease_check=lambda: None, reserve=lambda *args: reservations.append(args), reconcile=lambda *_: None,
+            record=lambda *_args, **_kwargs: None, active_time=lambda _elapsed: None,
+            semaphore=threading.BoundedSemaphore(2),
+        )
+    finally:
+        runtime.close()
+
+    legacy_preimage = {
+        "model": "claude-sonnet-4-6",
+        "system": "authority",
+        "messages": [{"role": "user", "content": "brief"}],
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": anthropic.transform_schema(CPDRPayload.model_json_schema()),
+            }
+        },
+        "tools": [provider_module.READ_EVIDENCE_TOOL],
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+        "max_tokens": 2_000,
+    }
+    expected = hashlib.sha256(
+        json.dumps(legacy_preimage, sort_keys=True, default=lambda value: vars(value)).encode("utf-8")
+    ).hexdigest()
+    assert reservations[0][0] == expected
+
+
+def test_production_injection_schema_failure_has_no_provider_contact_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client([])
+    monkeypatch.setattr(
+        provider_module.anthropic,
+        "transform_schema",
+        lambda _schema: (_ for _ in ()).throw(ValueError("invalid schema")),
+    )
+    runtime = _production_injected_runtime(monkeypatch, client)
+    events: list[tuple[str, dict[str, Any]]] = []
+    charged: list[float] = []
+    try:
+        with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+            runtime._agent_loop.run(
+                system="authority", user="brief", read_evidence=lambda *_: [], validate=lambda value: value,
+                lease_check=lambda: None, reserve=lambda *_: None, reconcile=lambda *_: None,
+                record=lambda kind, **details: events.append((kind, details)), active_time=charged.append,
+                semaphore=threading.BoundedSemaphore(2),
+            )
+    finally:
+        runtime.close()
 
     assert client.messages.count_calls == []
     assert events == []

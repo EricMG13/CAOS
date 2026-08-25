@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import anthropic
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -134,7 +135,14 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         and (settings.canonical_agent_enabled or settings.cpdr_agent_enabled)
         else None
     )
-    runtime = WorkflowRuntime(store, bundle, settings, provider=provider)
+    runtime = WorkflowRuntime(
+        store,
+        bundle,
+        settings,
+        provider=provider,
+        schema_transform=anthropic.transform_schema if provider else None,
+        request_preimage=provider._request_preimage if provider else None,
+    )
     model_bundle = CpModelBundle(settings.deploy_v_root)
     model_readiness = ModelReadinessService(store, bundle, model_bundle)
     model_runtime = ModelBuildRuntime(
