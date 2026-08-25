@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import copy
 import io
 from typing import Any
 
 from ..contracts import clean_json, digest
-from ..store import MemoryStore, now_iso
+from ..ledgers import PublicationLedger
+from ..store import now_iso
 
 
 def model_report_identity(
@@ -67,7 +67,7 @@ def report_input_fingerprint(
 
 
 def freeze_report(
-    store: MemoryStore,
+    publications: PublicationLedger,
     case_id: str,
     actor: str,
     snapshot: dict[str, Any],
@@ -108,7 +108,6 @@ def freeze_report(
     )
     preview_digest = digest(content)
     report = {
-        "id": store._id("report"),
         "case_id": case_id,
         "created_by": actor,
         "created_at": now_iso(),
@@ -118,28 +117,12 @@ def freeze_report(
         "input_fingerprint": content["input_fingerprint"],
         "snapshot_digest": content["snapshot_digest"],
         "content": content,
-        "markdown": render_markdown(
-            store, snapshot, thesis, recommendations, preview_digest, model_identity
-        ),
+        "markdown": render_markdown(snapshot, thesis, recommendations, preview_digest, model_identity),
     }
-    with store.lock:
-        previous_report = store.reports.get(case_id)
-        audit_start = len(store.audit)
-        store.reports[case_id] = report
-        store.audit_event("report.frozen", actor, case_id=case_id, report_id=report["id"])
-        try:
-            store.persist()
-        except Exception:
-            if previous_report is None:
-                store.reports.pop(case_id, None)
-            else:
-                store.reports[case_id] = previous_report
-            del store.audit[audit_start:]
-            raise
-    return copy.deepcopy(report)
+    return publications.freeze_report(case_id, actor, report)
 
 
-def render_markdown(store: MemoryStore, snapshot: dict[str, Any], thesis: dict[str, Any], recommendations: dict[str, Any], report_digest: str, model_identity: dict[str, Any] | None = None) -> str:
+def render_markdown(snapshot: dict[str, Any], thesis: dict[str, Any], recommendations: dict[str, Any], report_digest: str, model_identity: dict[str, Any] | None = None) -> str:
     lines = [
         "# CAOS Credit Snapshot",
         "",

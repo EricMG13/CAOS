@@ -3,12 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import shutil
 import threading
-import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +16,14 @@ from caos.config import Settings
 from caos.contracts import digest
 from caos.artifacts.domain import build_snapshot_payload, cpdr_artifact_is_valid, create_note, promote_note
 from caos.http import create_app
+from caos.memory_ledgers import MemoryLedgerSet
 from caos.methodology.bundle import DeployVBundle, MethodologyError
 from caos.methodology.cpdr import CPDRPayload, CPDRValidationError, confidence_inputs, validate_cpdr_payload
 from caos.methodology.prompt import compile_cpdr_prompts
-from caos.store import JobFencedError, MemoryStore, PostgresStore
+from caos.store import JobFencedError
 from caos.workflows import domain as workflow_domain
 from caos.workflows import provider as provider_module
-from caos.workflows.domain import WorkflowError, WorkflowRuntime, _LeaseFence
+from caos.workflows.domain import WorkflowError, WorkflowRuntime
 from caos.workflows.provider import (
     AgentError,
     AgentLoop,
@@ -37,748 +34,19 @@ from caos.workflows.provider import (
     ProviderUnavailable,
     ProviderUsage,
 )
+from ledger_helpers import (
+    list_artifacts,
+    mutate_node,
+    mutate_run,
+    mutate_source,
+    replace_artifact,
+    replace_current_source_set,
+    seed_source,
+)
 
 
 DEPLOY_V = Path(__file__).parents[1] / "server" / "caos" / "methodology" / "vendor" / "deploy_v"
 WORKER_EVENTS = {"run.running", "node.running", "node.succeeded", "node.failed", "run.succeeded", "run.failed"}
-
-
-def _queued_run(store: MemoryStore, *, dependencies: list[str] | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    case = store.create_case("Lease test", "Issuer", "Testing", "analyst")
-    run = store.create_run(case["id"], "analyst", {"nodes": []}, [])
-    node = store.add_node(run["id"], case["id"], "CP-TEST", dependencies, 1) if dependencies is not None else None
-    store.update_run(run["id"], node_ids=[node["id"]] if node else [], status="queued")
-    return store.runs[run["id"]], node
-
-
-def _claim(store: MemoryStore) -> tuple[str, str]:
-    run, _ = _queued_run(store)
-    token = store.claim_job(run["id"], "worker")
-    assert token is not None
-    return run["id"], token
-
-
-def _artifact(run_id: str, module_id: str = "CP-TEST") -> dict[str, Any]:
-    return {"id": f"artifact-{run_id}", "run_id": run_id, "module_id": module_id, "input_fingerprint": "fingerprint"}
-
-
-def _postgres_url() -> str:
-    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("CAOS_TEST_DATABASE_URL is required for real PostgreSQL lease tests")
-    return database_url
-
-
-def _postgres_store(application_name: str | None = None) -> PostgresStore:
-    database_url = _postgres_url()
-    if application_name:
-        database_url = f"{database_url}{'&' if '?' in database_url else '?'}application_name={application_name}"
-    return PostgresStore(database_url)
-
-
-def test_memory_lease_renewal_extends_current_token() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    prior_expiry = store.jobs[run_id]["lease_until"]
-
-    assert store.renew_job(run_id, token) is True
-    assert store.jobs[run_id]["lease_until"] > prior_expiry
-
-
-def test_memory_lease_renewal_refuses_expired_and_stale_tokens() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    store.jobs[run_id]["lease_until"] = time.monotonic() - 1
-    expired_at = store.jobs[run_id]["lease_until"]
-
-    assert store.renew_job(run_id, token) is False
-    assert store.jobs[run_id]["lease_until"] == expired_at
-    replacement = store.claim_job(run_id, "replacement")
-    assert replacement is not None
-    assert store.renew_job(run_id, token) is False
-
-
-def test_memory_finish_job_requires_current_lease() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    store.jobs[run_id]["lease_until"] = time.monotonic() - 1
-    before = copy.deepcopy(store.jobs[run_id])
-
-    store.finish_job(run_id, token)
-
-    assert store.jobs[run_id] == before
-
-
-def test_memory_finish_job_releases_current_lease_reservation() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-
-    store.finish_job(run_id, token)
-
-    assert store.jobs[run_id]["status"] == "finished"
-    assert store.jobs[run_id]["budget_reserved"] == 0
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
-    assert store.job_is_current(run_id, token) is False
-    assert store.renew_job(run_id, token) is False
-    with pytest.raises(JobFencedError):
-        store.update_run_fenced(run_id, token, status="succeeded")
-    with pytest.raises(JobFencedError):
-        store.emit_fenced(run_id, token, "run.succeeded", {"run_id": run_id})
-    with pytest.raises(JobFencedError):
-        store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
-    with pytest.raises(JobFencedError):
-        store.put_artifact_fenced(run_id, token, _artifact(run_id))
-    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
-
-
-def test_memory_takeover_fences_all_worker_writes() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    store.jobs[run_id]["lease_until"] = time.monotonic() - 1
-    replacement = store.claim_job(run_id, "replacement")
-    assert replacement is not None
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
-
-    with pytest.raises(JobFencedError):
-        store.update_run_fenced(run_id, token, status="succeeded")
-    with pytest.raises(JobFencedError):
-        store.emit_fenced(run_id, token, "run.succeeded", {"run_id": run_id})
-    with pytest.raises(JobFencedError):
-        store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
-    with pytest.raises(JobFencedError):
-        store.put_artifact_fenced(run_id, token, _artifact(run_id))
-    store.finish_job(run_id, token)
-
-    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
-
-
-def test_memory_takeover_recovers_running_node_and_atomic_completion() -> None:
-    store = MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    source_set = {"id": f"set-{run['id']}", "case_id": run["case_id"], "version": 1, "source_ids": []}
-    store.register_source_set(source_set)
-    store.runs[run["id"]]["plan"]["source_set_id"] = source_set["id"]
-    store.update_run(run["id"], status="running")
-    store.update_node(node["id"], status="running", attempt=1)
-    first = store.claim_job(run["id"], "first")
-    assert first is not None
-    store.jobs[run["id"]]["lease_until"] = time.monotonic() - 1
-
-    replacement = store.claim_job(run["id"], "replacement")
-
-    assert replacement is not None
-    assert store.nodes[node["id"]]["status"] == "pending"
-    artifact = store.complete_node_fenced(run["id"], replacement, node["id"], _artifact(run["id"]), None)
-    assert store.nodes[node["id"]] == {**store.nodes[node["id"]], "status": "succeeded", "artifact_id": artifact["id"], "error": None}
-    assert store.artifacts[artifact["id"]]["input_fingerprint"] == "fingerprint"
-    retry = _artifact(run["id"])
-    retry["id"] = "art-retry"
-    assert store.complete_node_fenced(run["id"], replacement, node["id"], retry, None)["id"] == artifact["id"]
-    assert len(store.artifacts) == 1
-
-
-def test_memory_atomic_completion_rolls_back_artifact_node_and_research() -> None:
-    class FailingStore(MemoryStore):
-        fail_completion = False
-
-        def persist(self) -> None:
-            if self.fail_completion:
-                raise RuntimeError("completion persistence failed")
-
-    store = FailingStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    store.runs[run["id"]]["research"] = {"phase": "researching"}
-    token = store.claim_job(run["id"], "worker")
-    assert token is not None
-    before = copy.deepcopy((store.artifacts, store.nodes[node["id"]], store.runs[run["id"]]))
-    store.fail_completion = True
-
-    with pytest.raises(RuntimeError, match="completion persistence failed"):
-        store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), {"phase": "complete"})
-
-    assert (store.artifacts, store.nodes[node["id"]], store.runs[run["id"]]) == before
-
-
-def test_replacement_finishes_run_after_atomic_completion_preceded_terminal_events() -> None:
-    store = MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    token = store.claim_job(run["id"], "first")
-    assert token is not None
-    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
-    store.finish_job(run["id"], token)
-    runtime = WorkflowRuntime(store, object(), Settings(environment="production", storage_dir=Path("/tmp/caos-terminal-recovery"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
-    try:
-        runtime._execute(run["id"], "replacement")
-        completed = store.get_run(run["id"])
-        assert completed is not None and completed["status"] == "succeeded"
-        assert [item["event"] for item in store.events[run["id"]]][-1] == "run.succeeded"
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("forgery", ["running_node", "missing_artifact", "wrong_artifact"])
-def test_snapshot_payload_rejects_forged_succeeded_run(forgery: str) -> None:
-    store = MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    source_set = {"id": f"set-{run['id']}", "case_id": run["case_id"], "version": 1, "source_ids": []}
-    store.register_source_set(source_set)
-    store.runs[run["id"]]["plan"]["source_set_id"] = source_set["id"]
-    artifact = _artifact(run["id"])
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[run["id"]]["status"] = "succeeded"
-    if forgery == "running_node":
-        store.nodes[node["id"]]["status"] = "running"
-    elif forgery == "missing_artifact":
-        store.artifacts.pop(artifact["id"])
-    else:
-        store.artifacts[artifact["id"]]["module_id"] = "OTHER"
-
-    with pytest.raises(ValueError, match="RUN_NOT_READY"):
-        build_snapshot_payload(store, store.get_run(run["id"]) or {})
-
-
-def test_successful_fenced_event_wakes_waiter() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-    condition = store.event_conditions[run_id]
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        waiting = pool.submit(store.wait_for_events, run_id, 0, 1.0)
-        deadline = time.monotonic() + 1
-        while not condition._waiters and time.monotonic() < deadline:  # type: ignore[attr-defined]
-            time.sleep(0.001)
-        assert condition._waiters  # type: ignore[attr-defined]
-        store.emit_fenced(run_id, token, "run.running", {"run_id": run_id})
-        assert waiting.result(timeout=1)[0]["event"] == "run.running"
-
-
-def test_fenced_audit_records_the_owning_run() -> None:
-    store = MemoryStore()
-    run_id, token = _claim(store)
-
-    store.audit_event_fenced(run_id, token, "worker.checked", "worker")
-
-    assert store.audit[-1]["run_id"] == run_id
-
-
-def test_runtime_heartbeat_renews_once_and_is_joined(monkeypatch: pytest.MonkeyPatch) -> None:
-    renewed = threading.Event()
-
-    class HeartbeatStore(MemoryStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.renewals = 0
-
-        def renew_job(self, run_id: str, attempt_token: str) -> bool:
-            current = super().renew_job(run_id, attempt_token)
-            self.renewals += 1
-            renewed.set()
-            return current
-
-        def get_run(self, run_id: str) -> dict[str, Any] | None:
-            assert renewed.wait(1)
-            return super().get_run(run_id)
-
-    real_thread = threading.Thread
-    created: list["TrackingThread"] = []
-
-    class TrackingThread(real_thread):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **kwargs)
-            self.joined = False
-            created.append(self)
-
-        def join(self, timeout: float | None = None) -> None:
-            super().join(timeout)
-            self.joined = True
-
-    store = HeartbeatStore()
-    run, _ = _queued_run(store)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-heartbeat"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
-    monkeypatch.setattr(workflow_domain, "HEARTBEAT_INTERVAL_SECONDS", 0.01)
-    monkeypatch.setattr(workflow_domain.threading, "Thread", TrackingThread)
-    try:
-        runtime._execute(run["id"], "analyst")
-    finally:
-        runtime.close()
-
-    assert workflow_domain.HEARTBEAT_INTERVAL_SECONDS == 0.01
-    assert store.renewals >= 1
-    assert len(created) == 1
-    assert created[0].joined and not created[0].is_alive()
-
-
-def test_runtime_heartbeat_is_joined_when_execution_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    class ExplodingStore(MemoryStore):
-        def update_run_fenced(self, run_id: str, attempt_token: str, **changes: Any) -> None:
-            raise RuntimeError("write failed")
-
-    real_thread = threading.Thread
-    created: list["TrackingThread"] = []
-
-    class TrackingThread(real_thread):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **kwargs)
-            self.joined = False
-            created.append(self)
-
-        def join(self, timeout: float | None = None) -> None:
-            super().join(timeout)
-            self.joined = True
-
-    store = ExplodingStore()
-    run, _ = _queued_run(store)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-heartbeat-error"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
-    monkeypatch.setattr(workflow_domain.threading, "Thread", TrackingThread)
-    try:
-        with pytest.raises(RuntimeError, match="write failed"):
-            runtime._execute(run["id"], "analyst")
-    finally:
-        runtime.close()
-
-    assert len(created) == 1
-    assert created[0].joined and not created[0].is_alive()
-
-
-@pytest.mark.parametrize("renewal_error", [False, True])
-def test_runtime_fails_closed_when_heartbeat_loses_lease(monkeypatch: pytest.MonkeyPatch, renewal_error: bool) -> None:
-    renewal_attempted = threading.Event()
-
-    class LostLeaseStore(MemoryStore):
-        def renew_job(self, run_id: str, attempt_token: str) -> bool:
-            renewal_attempted.set()
-            if renewal_error:
-                raise RuntimeError("renewal failed")
-            return False
-
-        def get_run(self, run_id: str) -> dict[str, Any] | None:
-            assert renewal_attempted.wait(1)
-            return super().get_run(run_id)
-
-    store = LostLeaseStore()
-    run, _ = _queued_run(store)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-lost-lease"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
-    monkeypatch.setattr(workflow_domain, "HEARTBEAT_INTERVAL_SECONDS", 0.01)
-    try:
-        runtime._execute(run["id"], "analyst")
-    finally:
-        runtime.close()
-
-    assert store.runs[run["id"]]["status"] == "running"
-    assert [event["event"] for event in store.events[run["id"]]] == ["run.running"]
-    assert store.jobs[run["id"]]["status"] == "running"
-    assert store.jobs[run["id"]]["budget_reserved"] == 1
-
-
-def test_runtime_serializes_loss_publication_before_lifecycle_write() -> None:
-    fence = _LeaseFence()
-    write_started = threading.Event()
-    release_write = threading.Event()
-    loss_started = threading.Event()
-    writes: list[str] = []
-
-    def write(value: str) -> None:
-        write_started.set()
-        assert release_write.wait(1)
-        writes.append(value)
-
-    def lose() -> None:
-        loss_started.set()
-        fence.lose()
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        writing = pool.submit(fence.call, write, "before-loss")
-        assert write_started.wait(1)
-        losing = pool.submit(lose)
-        assert loss_started.wait(1)
-        release_write.set()
-        writing.result(timeout=1)
-        losing.result(timeout=1)
-
-    with pytest.raises(JobFencedError):
-        fence.call(writes.append, "after-loss")
-    assert writes == ["before-loss"]
-
-
-@pytest.mark.parametrize(
-    ("failure", "expected"),
-    [
-        (False, ["run.running", "node.running", "node.succeeded", "run.succeeded"]),
-        (True, ["run.running", "node.running", "node.failed", "run.failed"]),
-    ],
-)
-def test_worker_lifecycle_events_are_fenced(failure: bool, expected: list[str]) -> None:
-    class LifecycleStore(MemoryStore):
-        def emit(self, run_id: str, event: str, data: dict[str, Any]) -> None:
-            if event in WORKER_EVENTS:
-                raise AssertionError(f"worker event escaped fencing: {event}")
-            super().emit(run_id, event, data)
-
-    class Runtime(WorkflowRuntime):
-        def _build_artifact_with_slot(self, run: dict[str, Any], node: dict[str, Any], actor: str, fenced_call: Any | None = None, lease_check: Any | None = None) -> dict[str, Any]:
-            if failure:
-                raise RuntimeError("node failed")
-            return _artifact(run["id"], node["module_id"])
-
-    store = LifecycleStore()
-    run, _ = _queued_run(store, dependencies=[])
-    runtime = Runtime(store, object(), Settings(storage_dir=Path("/tmp/caos-lifecycle"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
-    try:
-        runtime._execute(run["id"], "analyst")
-    finally:
-        runtime.close()
-
-    assert [event["event"] for event in store.events[run["id"]]] == expected
-
-
-@pytest.mark.parametrize("blocked", [False, True])
-def test_expired_worker_cannot_emit_terminal_lifecycle_event(blocked: bool) -> None:
-    class ExpiringStore(MemoryStore):
-        def update_run_fenced(self, run_id: str, attempt_token: str, **changes: Any) -> None:
-            if changes.get("status") == "failed":
-                with self.lock:
-                    self.jobs[run_id]["lease_until"] = time.monotonic() - 1
-            super().update_run_fenced(run_id, attempt_token, **changes)
-
-        def finalize_run_success_fenced(
-            self, run_id: str, attempt_token: str, research: dict[str, Any] | None, event_data: dict[str, Any],
-        ) -> None:
-            with self.lock:
-                self.jobs[run_id]["lease_until"] = time.monotonic() - 1
-            super().finalize_run_success_fenced(run_id, attempt_token, research, event_data)
-
-    store = ExpiringStore()
-    run, _ = _queued_run(store, dependencies=["missing"] if blocked else None)
-    runtime = WorkflowRuntime(store, object(), Settings(storage_dir=Path("/tmp/caos-expired-worker"), deploy_v_root=DEPLOY_V))  # type: ignore[arg-type]
-    try:
-        runtime._execute(run["id"], "analyst")
-    finally:
-        runtime.close()
-
-    events = [event["event"] for event in store.events[run["id"]]]
-    assert events == ["run.running"]
-
-
-def test_postgres_lease_renewal_refuses_stale_and_expired_tokens() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-
-    assert store.renew_job(run_id, "stale-token") is False
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-        connection.commit()
-    assert store.renew_job(run_id, token) is False
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == (True,)
-
-
-def test_postgres_takeover_fences_all_worker_writes() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-        connection.commit()
-    replacement = store.claim_job(run_id, "replacement")
-    assert replacement is not None
-    before = copy.deepcopy((store.runs, store.events, store.audit, store.artifacts, store.jobs))
-
-    with pytest.raises(JobFencedError):
-        store.update_run_fenced(run_id, token, status="succeeded")
-    with pytest.raises(JobFencedError):
-        store.emit_fenced(run_id, token, "run.succeeded", {"run_id": run_id})
-    with pytest.raises(JobFencedError):
-        store.audit_event_fenced(run_id, token, "run.succeeded", "worker")
-    with pytest.raises(JobFencedError):
-        store.put_artifact_fenced(run_id, token, _artifact(run_id))
-    store.finish_job(run_id, token)
-
-    assert (store.runs, store.events, store.audit, store.artifacts, store.jobs) == before
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT state, budget_reserved, attempt_token FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == ("claimed", 1, replacement)
-
-
-def test_postgres_takeover_recovers_running_node_and_completion_is_durable() -> None:
-    store = _postgres_store()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    store.update_run(run["id"], status="running")
-    store.update_node(node["id"], status="running", attempt=1)
-    first = store.claim_job(run["id"], "first")
-    assert first is not None
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
-        connection.commit()
-
-    replacement = store.claim_job(run["id"], "replacement")
-    assert replacement is not None
-    assert store.nodes[node["id"]]["status"] == "pending"
-    artifact = store.complete_node_fenced(run["id"], replacement, node["id"], _artifact(run["id"]), None)
-    retry = _artifact(run["id"])
-    retry["id"] = "art-retry"
-    assert store.complete_node_fenced(run["id"], replacement, node["id"], retry, None)["id"] == artifact["id"]
-
-    reloaded = PostgresStore(store._dsn)
-    restored = reloaded.get_run(run["id"])
-    assert restored is not None
-    restored_node = next(item for item in restored["nodes"] if item["id"] == node["id"])
-    assert restored_node["status"] == "succeeded" and restored_node["artifact_id"] == artifact["id"]
-    assert reloaded.get_artifact(artifact["id"]) is not None
-    assert len([item for item in reloaded.artifacts.values() if item.get("run_id") == run["id"]]) == 1
-
-
-def test_postgres_cross_process_takeover_adopts_authoritative_state_before_recovery() -> None:
-    first = _postgres_store()
-    run, node = _queued_run(first, dependencies=[])
-    assert node is not None
-    replacement_process = PostgresStore(first._dsn)
-    token = first.claim_job(run["id"], "first-process")
-    assert token is not None
-    authoritative_plan = {"nodes": [], "authority_marker": "current-database-state"}
-    authoritative_error = {"code": "AUTHORITY_SENTINEL", "message": "current error"}
-    first.update_run_fenced(
-        run["id"], token, status="running", plan=authoritative_plan,
-        accepted_snapshot_id="snap-authoritative", error=authoritative_error,
-    )
-    first.update_node_fenced(run["id"], token, node["id"], status="running", attempt=1)
-    with first._psycopg.connect(first._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
-        connection.commit()
-
-    replacement = replacement_process.claim_job(run["id"], "replacement-process")
-
-    assert replacement is not None
-    recovered = replacement_process.get_run(run["id"])
-    recovered_node = next(item for item in recovered["nodes"] if item["id"] == node["id"]) if recovered else None
-    assert recovered_node is not None and recovered_node["status"] == "pending"
-    with replacement_process._psycopg.connect(replacement_process._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT status, error, plan, accepted_snapshot_id FROM runs WHERE id = %s", (run["id"],))
-            normalized = cursor.fetchone()
-    assert normalized == ("running", authoritative_error, authoritative_plan, "snap-authoritative")
-    artifact = replacement_process.complete_node_fenced(run["id"], replacement, node["id"], _artifact(run["id"]), None)
-    durable = PostgresStore(first._dsn).get_run(run["id"])
-    durable_node = next(item for item in durable["nodes"] if item["id"] == node["id"]) if durable else None
-    assert durable_node is not None and durable_node["status"] == "succeeded" and durable_node["artifact_id"] == artifact["id"]
-    with replacement_process._psycopg.connect(replacement_process._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT status, error, plan, accepted_snapshot_id FROM runs WHERE id = %s", (run["id"],))
-            normalized_after_completion = cursor.fetchone()
-    assert normalized_after_completion == normalized
-
-
-def _assert_normalized_run_matches_authoritative(store: PostgresStore, run_id: str) -> None:
-    authoritative = store.get_run(run_id)
-    assert authoritative is not None
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT case_id, status, error, plan, accepted_snapshot_id, created_by, created_at "
-                "FROM runs WHERE id = %s",
-                (run_id,),
-            )
-            row = cursor.fetchone()
-    assert row is not None
-    assert row[:6] == (
-        authoritative["case_id"],
-        authoritative["status"],
-        authoritative.get("error"),
-        authoritative["plan"],
-        authoritative.get("accepted_snapshot_id"),
-        authoritative["created_by"],
-    )
-    assert row[6].isoformat() == authoritative["created_at"]
-
-
-def test_postgres_normalized_run_tracks_takeover_completion_updates_finalization_and_acceptance() -> None:
-    first = _postgres_store()
-    run, node = _queued_run(first, dependencies=[])
-    assert node is not None
-    source_set = {
-        "id": f"set-{run['id']}", "case_id": run["case_id"], "version": 1, "source_ids": [],
-        "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00",
-    }
-    first.register_source_set(source_set)
-    initial_plan = {"nodes": [], "source_set_id": source_set["id"], "marker": "initial"}
-    first.update_run(run["id"], plan=initial_plan, status="queued", error=None)
-    replacement_process = PostgresStore(first._dsn)
-    token = first.claim_job(run["id"], "first-normalized")
-    assert token is not None
-    first.update_run_fenced(
-        run["id"], token, status="running", plan={**initial_plan, "marker": "authoritative"},
-        error={"code": "RUNNING_SENTINEL", "message": "current"},
-    )
-    first.update_node_fenced(run["id"], token, node["id"], status="running", attempt=1)
-    with first._psycopg.connect(first._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run["id"],))
-        connection.commit()
-
-    replacement = replacement_process.claim_job(run["id"], "replacement-normalized")
-    assert replacement is not None
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    payload = {"result": "durable"}
-    artifact = {
-        **_artifact(run["id"]), "case_id": run["case_id"], "payload": payload, "digest": digest(payload),
-    }
-    replacement_process.complete_node_fenced(run["id"], replacement, node["id"], artifact, None)
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    final_plan = {**initial_plan, "marker": "final-authoritative"}
-    replacement_process.update_run_fenced(
-        run["id"], replacement, status="running", plan=final_plan,
-        error={"code": "FINAL_SENTINEL", "message": "bounded"},
-    )
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    replacement_process.finalize_run_success_fenced(
-        run["id"], replacement, None, {"run_id": run["id"]},
-    )
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-    runtime = WorkflowRuntime(
-        replacement_process, object(),
-        Settings(environment="production", storage_dir=Path("/tmp/caos-normalized-run"), deploy_v_root=DEPLOY_V),
-    )  # type: ignore[arg-type]
-    try:
-        snapshot = runtime.accept_run(run["case_id"], run["id"], "analyst")
-    finally:
-        runtime.close()
-    assert snapshot["run_id"] == run["id"]
-    _assert_normalized_run_matches_authoritative(replacement_process, run["id"])
-
-
-def test_postgres_atomic_completion_rolls_back_artifact_node_and_research(monkeypatch: pytest.MonkeyPatch) -> None:
-    store = _postgres_store()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    store.update_run(run["id"], research={"phase": "researching"})
-    token = store.claim_job(run["id"], "worker")
-    assert token is not None
-
-    def fail_persist(_connection: Any) -> Any:
-        raise RuntimeError("completion transaction failed")
-
-    monkeypatch.setattr(store, "_persist_connection", fail_persist)
-    with pytest.raises(RuntimeError, match="completion transaction failed"):
-        store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), {"phase": "complete"})
-
-    reloaded = PostgresStore(store._dsn)
-    restored = reloaded.get_run(run["id"])
-    assert restored is not None and restored["research"]["phase"] == "researching"
-    restored_node = next(item for item in restored["nodes"] if item["id"] == node["id"])
-    assert restored_node["status"] != "succeeded" and restored_node.get("artifact_id") is None
-    assert not any(item.get("run_id") == run["id"] for item in reloaded.artifacts.values())
-
-
-def test_postgres_finish_job_requires_current_lease() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-        connection.commit()
-
-    store.finish_job(run_id, token)
-
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT state, budget_reserved, lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == ("claimed", 1, True)
-    assert store.jobs[run_id]["status"] == "running"
-
-
-def test_postgres_finish_job_releases_current_lease_reservation() -> None:
-    store = _postgres_store()
-    run_id, token = _claim(store)
-
-    store.finish_job(run_id, token)
-
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT state, budget_reserved, lease_until FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == ("succeeded", 0, None)
-    assert store.jobs[run_id]["status"] == "finished"
-
-
-def test_postgres_lease_renewal_uses_database_time_after_row_lock() -> None:
-    database_url = _postgres_url()
-    application_name = f"caos-lease-renew-{uuid.uuid4().hex}"
-    store = _postgres_store(application_name)
-    run_id, token = _claim(store)
-    started = threading.Event()
-
-    with store._psycopg.connect(database_url) as locking_connection:
-        with locking_connection.cursor() as cursor:
-            cursor.execute("SELECT id FROM jobs WHERE run_id = %s FOR UPDATE", (run_id,))
-
-            def renew() -> bool:
-                started.set()
-                return store.renew_job(run_id, token)
-
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                waiting = pool.submit(renew)
-                assert started.wait(1)
-                observed: tuple[str, str, str, str] | None = None
-                deadline = time.monotonic() + 1
-                with store._psycopg.connect(database_url, autocommit=True) as observer:
-                    while observed is None and time.monotonic() < deadline:
-                        with observer.cursor() as observer_cursor:
-                            observer_cursor.execute(
-                                "SELECT state, wait_event_type, wait_event, query FROM pg_stat_activity WHERE application_name = %s AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE %s AND query LIKE %s AND query LIKE %s",
-                                (application_name, "UPDATE jobs SET lease_until = now() + interval '60 seconds'%", "%attempt_token%", "%lease_until > now()%"),
-                            )
-                            observed = observer_cursor.fetchone()
-                        if observed is None:
-                            time.sleep(0.01)
-                if observed is None:
-                    locking_connection.rollback()
-                    waiting.result(timeout=1)
-                    pytest.fail("renewal UPDATE was not observed waiting on the locked job row")
-                assert observed[0:2] == ("active", "Lock")
-                assert "UPDATE jobs SET lease_until = now() + interval '60 seconds'" in observed[3]
-                assert "attempt_token" in observed[3] and "lease_until > now()" in observed[3]
-                with pytest.raises(TimeoutError):
-                    waiting.result(timeout=0.1)
-                cursor.execute("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s", (run_id,))
-                locking_connection.commit()
-                assert waiting.result(timeout=1) is False
-
-    with store._psycopg.connect(store._dsn) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT lease_until <= now() FROM jobs WHERE run_id = %s", (run_id,))
-            assert cursor.fetchone() == (True,)
-
-
-def test_memory_research_plan_pause_and_exact_approval_smoke() -> None:
-    store = MemoryStore()
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), Settings(environment="production", storage_dir=Path("/tmp/caos-plan-smoke"), deploy_v_root=DEPLOY_V))
-    case = store.create_case("Plan smoke", "Issuer", "Testing", "analyst")
-    store.sources["src_plan"] = {"id": "src_plan", "case_id": case["id"], "withdrawn": False}
-    store.register_source_set({"id": "set_plan", "case_id": case["id"], "version": 1, "source_ids": ["src_plan"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
-    brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite first-lien risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
-    try:
-        run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
-        runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
-        assert paused is not None and paused["status"] == "paused"
-        assert paused["research"]["phase"] == "awaiting_approval"
-        approved = runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
-        assert approved["id"] == run["id"] and approved["research"]["phase"] == "approved"
-    finally:
-        runtime.close()
 
 
 def _cpdr_payload(**overrides: Any) -> dict[str, Any]:
@@ -929,11 +197,16 @@ def test_material_source_characterisation_cannot_forge_host_provenance_or_comple
 
 
 def test_promoted_note_origin_digest_is_exact_canonical_content_bytes() -> None:
-    store = MemoryStore()
-    case = store.create_case("Origin", "Issuer", "Testing", "analyst")
-    note = create_note(store, case["id"], "analyst", "canonical note bytes")
-    promoted = promote_note(store, case["id"], note["id"], "analyst")
-    source = store.sources[promoted["promoted_source_id"]]
+    ledger_set = MemoryLedgerSet()
+    case = ledger_set.runs.create_case("Origin", "Issuer", "Testing", "analyst")
+    note = create_note(
+        ledger_set.publications, case["id"], "analyst", "canonical note bytes"
+    )
+    promoted = promote_note(
+        ledger_set.publications, case["id"], note["id"], "analyst"
+    )
+    source = ledger_set.sources.get_source(promoted["promoted_source_id"])
+    assert source is not None
     assert source["sha256"] == hashlib.sha256(b"canonical note bytes").hexdigest()
 
 
@@ -1077,6 +350,7 @@ class _FakeProvider:
 
 
 def _queue_cpdr_success(provider: _FakeProvider, final: dict[str, Any], source_id: str) -> None:
+    secondary_source_id = final["evidence"][1]["source_id"]
     responses = [
         ProviderMessage(
             content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
@@ -1084,7 +358,7 @@ def _queue_cpdr_success(provider: _FakeProvider, final: dict[str, Any], source_i
             usage=ProviderUsage(20, 30),
         ),
         ProviderMessage(
-            content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_matrix_2", "block_ids": ["b00002"]})],
+            content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": secondary_source_id, "block_ids": ["b00002"]})],
             stop_reason="tool_use",
             usage=ProviderUsage(20, 30),
         ),
@@ -1100,8 +374,10 @@ def _queue_cpdr_success(provider: _FakeProvider, final: dict[str, Any], source_i
 
 def test_workflow_runtime_uses_one_agent_loop_for_injected_provider() -> None:
     provider = _FakeProvider([])
+    ledger_set = MemoryLedgerSet()
     runtime = WorkflowRuntime(
-        MemoryStore(),
+        ledger_set.runs,
+        ledger_set.sources,
         DeployVBundle(DEPLOY_V),
         Settings(storage_dir=Path("/tmp/caos-injected-provider"), deploy_v_root=DEPLOY_V),
         provider=provider,
@@ -1471,7 +747,7 @@ def _production_injected_runtime(monkeypatch: pytest.MonkeyPatch, client: _Clien
             anthropic_api_key="test-only-key",
             cpdr_agent_enabled=True,
         ),
-        MemoryStore(),
+        MemoryLedgerSet(),
     )
     return app.state.runtime
 
@@ -1714,7 +990,7 @@ def test_gateway_uses_one_repair_without_evidence_tools() -> None:
 
 
 def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() -> None:
-    store = MemoryStore()
+    ledger_set = MemoryLedgerSet()
     provider = _FakeProvider([])
     settings = Settings(
         environment="production",
@@ -1724,41 +1000,51 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
         cpdr_agent_enabled=True,
         cpdr_pilot_subjects=("analyst",),
     )
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings, provider=provider)
-    case = store.create_case("CP-DR", "Issuer", "Testing", "analyst")
-    source_id = "src_cpdr"
-    store.sources[source_id] = {
-        "id": source_id,
-        "case_id": case["id"],
-        "filename": "issuer.txt",
-        "media_type": "text/plain",
-        "sha256": "e" * 64,
-        "withdrawn": False,
-        "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
-    }
-    store.sources["src_cpdr_2"] = {
-        "id": "src_cpdr_2", "case_id": case["id"], "filename": "facility.txt", "media_type": "text/plain",
-        "sha256": "f" * 64, "withdrawn": False,
-        "blocks": [{"block_id": "b00002", "locator": {"line": 2}, "text": "Facility availability extends through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
-    }
-    store.register_source_set({"id": "set_cpdr", "case_id": case["id"], "version": 1, "source_ids": [source_id, "src_cpdr_2"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
+    runtime = WorkflowRuntime(
+        ledger_set.runs,
+        ledger_set.sources,
+        DeployVBundle(DEPLOY_V),
+        settings,
+        provider=provider,
+    )
+    case = ledger_set.runs.create_case("CP-DR", "Issuer", "Testing", "analyst")
+    first = seed_source(
+        ledger_set,
+        case["id"],
+        "analyst",
+        filename="issuer.txt",
+        sha256="e" * 64,
+        blocks=[{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    )
+    source_id = first["id"]
+    second = seed_source(
+        ledger_set,
+        case["id"],
+        "analyst",
+        filename="facility.txt",
+        sha256="f" * 64,
+        blocks=[{"block_id": "b00002", "locator": {"line": 2}, "text": "Facility availability extends through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    )
+    second_source_id = second["id"]
+    source_set = second["source_set"]
     brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite first-lien risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
     try:
         run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
         runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
+        paused = ledger_set.runs.get_run(run["id"])
         assert paused is not None and paused["status"] == "paused"
         runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
-        approved = store.get_run(run["id"])
+        approved = ledger_set.runs.get_run(run["id"])
         assert approved is not None
         cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-        cp0 = store.get_artifact(cp0_node["artifact_id"])
+        cp0 = ledger_set.runs.get_artifact(cp0_node["artifact_id"])
         assert cp0 is not None
         workstreams = approved["research"]["proposed_plan"]["workstreams"]
         final = _cpdr_payload(
             run_id=run["id"],
             case_id=case["id"],
-            source_set_id="set_cpdr",
+            source_set_id=source_set["id"],
+            source_set_version=source_set["version"],
             approved_plan_hash=approved["research"]["approved_plan_hash"],
             upstream_digests=[cp0["digest"]],
             scope_key=case["id"].replace("_", "-"),
@@ -1766,10 +1052,10 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
                 {"workstream_id": item["id"], "finding": "The supplied evidence resolves this approved lane." if index == 0 else "No additional material claim was required for this lane.", "claim_ids": ["C-1"] if index == 0 else [], "status": "complete"}
                 for index, item in enumerate(workstreams)
             ],
-            material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": "src_cpdr_2", "block_id": "b00002"}]}],
+            material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": second_source_id, "block_id": "b00002"}]}],
             evidence=[
                 {**_cpdr_payload()["evidence"][0], "source_id": source_id, "block_id": "b00001"},
-                {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_cpdr_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
+                {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": second_source_id, "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
             ],
         )
         provider.responses.extend([
@@ -1779,7 +1065,7 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
                 stop_reason="tool_use", usage=ProviderUsage(20, 30),
             ),
             ProviderMessage(
-                content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": "src_cpdr_2", "block_ids": ["b00002"]})],
+                content=[ProviderBlock(type="tool_use", id="tool-2", name="read_evidence", input={"source_id": second_source_id, "block_ids": ["b00002"]})],
                 stop_reason="tool_use", usage=ProviderUsage(20, 30),
             ),
             ProviderMessage(
@@ -1795,10 +1081,10 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
 
         runtime._execute(run["id"], "approver")
 
-        completed = store.get_run(run["id"])
+        completed = ledger_set.runs.get_run(run["id"])
         assert completed is not None and completed["status"] == "succeeded", completed and completed.get("error")
         cpdr_node = next(node for node in completed["nodes"] if node["module_id"] == "CP-DR")
-        artifact = store.get_artifact(cpdr_node["artifact_id"])
+        artifact = ledger_set.runs.get_artifact(cpdr_node["artifact_id"])
         # The CP-DR filename is dated by the run's creation date
         # (workflows/domain.py passes run["created_at"][:10]), so derive the
         # expectation instead of hardcoding a day that rots overnight.
@@ -1819,11 +1105,11 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
         assert (rerendered_filename, rerendered_markdown) == (artifact["filename"], artifact["markdown"])
         assert [line[3:] for line in artifact["markdown"].splitlines() if line.startswith("## ")] == ["Audit Summary", "Analysis", "Evidence Trace", "Source Registry", "Gaps & Conflicts", "QA Validation"]
         assert artifact["markdown"].split("## Analysis", 1)[1].lstrip().startswith("### Executive answer")
-        assert len([item for item in store.artifacts.values() if item["run_id"] == run["id"] and item["module_id"] == "CP-DR"]) == 1
+        assert len(list_artifacts(ledger_set, run_id=run["id"], module_id="CP-DR")) == 1
         assert completed["research"]["budget_used"]["provider_retries"] == 1
         assert completed["research"]["budget_used"]["repairs"] == 1
         assert completed["research"]["budget_used"]["turns"] == 5
-        original_artifact = copy.deepcopy(store.artifacts[artifact["id"]])
+        original_artifact = copy.deepcopy(artifact)
         mutations = [
             lambda item: item["payload"]["host_confidence"].update(confidence_score=99),
             lambda item: item["payload"]["canonical_output"].update(filename="forged.md"),
@@ -1833,14 +1119,20 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
             lambda item: item["payload"].update(upstream_artifacts=[]),
         ]
         for mutate in mutations:
-            store.artifacts[artifact["id"]] = copy.deepcopy(original_artifact)
-            mutate(store.artifacts[artifact["id"]])
+            forged = copy.deepcopy(original_artifact)
+            mutate(forged)
+            replace_artifact(ledger_set, artifact["id"], forged)
             with pytest.raises(ValueError, match="RUN_NOT_READY"):
-                build_snapshot_payload(store, store.get_run(run["id"]) or {}, runtime.bundle)
-        store.artifacts[artifact["id"]] = original_artifact
+                build_snapshot_payload(
+                    ledger_set.runs,
+                    ledger_set.sources,
+                    ledger_set.runs.get_run(run["id"]) or {},
+                    runtime.bundle,
+                )
+        replace_artifact(ledger_set, artifact["id"], original_artifact)
         snapshot = runtime.accept_run(case["id"], run["id"], "analyst")
         assert any(item["module_id"] == "CP-DR" for item in snapshot["artifacts"])
-        persisted = json.dumps({"run": completed, "events": store.events[run["id"]], "audit": store.audit})
+        persisted = json.dumps({"run": completed, "events": ledger_set.runs.events_after(run["id"]), "audit": ledger_set.publications.list_audit()})
         for secret in ("test-only-key", "Issuer liquidity was USD 100m", "CAOS CP-DR RESEARCH AUTHORITY", "VALIDATION ERRORS"):
             assert secret not in persisted
     finally:
@@ -1855,31 +1147,38 @@ def test_cpdr_fake_provider_end_to_end_produces_one_canonical_fenced_artifact() 
     ],
 )
 def test_approved_cpdr_disabled_or_missing_key_fails_explicitly(settings: Settings, expected: str) -> None:
-    store = MemoryStore()
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings)
-    case = store.create_case("CP-DR", "Issuer", "Testing", "analyst")
-    store.sources["src"] = {"id": "src", "case_id": case["id"], "withdrawn": False, "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}]}
-    store.register_source_set({"id": "set", "case_id": case["id"], "version": 1, "source_ids": ["src"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
+    ledger_set = MemoryLedgerSet()
+    runtime = WorkflowRuntime(
+        ledger_set.runs, ledger_set.sources, DeployVBundle(DEPLOY_V), settings
+    )
+    case = ledger_set.runs.create_case("CP-DR", "Issuer", "Testing", "analyst")
+    seed_source(
+        ledger_set,
+        case["id"],
+        "analyst",
+        sha256="e" * 64,
+        blocks=[{"block_id": "b00001", "locator": {"line": 1}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    )
     brief = {"research_question": "Question", "decision_context": "Context", "as_of_date": "2026-08-23", "time_horizon": "2029", "must_answer": [], "exclusions": []}
     try:
         run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
         runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
+        paused = ledger_set.runs.get_run(run["id"])
         assert paused is not None
         runtime.approve_research_plan(run["id"], "analyst", paused["research"]["proposed_plan_hash"])
         runtime._execute(run["id"], "analyst")
-        failed = store.get_run(run["id"])
+        failed = ledger_set.runs.get_run(run["id"])
         assert failed is not None and failed["error"]["code"] == expected
-        assert not any(item["module_id"] == "CP-DR" for item in store.artifacts.values())
+        assert not list_artifacts(ledger_set, run_id=run["id"], module_id="CP-DR")
     finally:
         runtime.close()
 
 
 def _approved_cpdr_case(
-    store: MemoryStore | None = None,
+    ledger_set: MemoryLedgerSet | None = None,
     provider: _FakeProvider | None = None,
-) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], str]:
-    store = store or MemoryStore()
+) -> tuple[MemoryLedgerSet, WorkflowRuntime, dict[str, Any], str]:
+    ledger_set = ledger_set or MemoryLedgerSet()
     settings = Settings(
         environment="production",
         storage_dir=Path("/tmp/caos-cpdr-matrix"),
@@ -1888,48 +1187,57 @@ def _approved_cpdr_case(
         cpdr_agent_enabled=True,
         cpdr_pilot_subjects=("analyst",),
     )
-    runtime = WorkflowRuntime(store, DeployVBundle(DEPLOY_V), settings, provider=provider)
-    case = store.create_case("CP-DR matrix", "Issuer", "Testing", "analyst")
-    source_id = "src_matrix"
-    store.sources[source_id] = {
-        "id": source_id,
-        "case_id": case["id"],
-        "filename": "issuer.txt",
-        "media_type": "text/plain",
-        "sha256": "e" * 64,
-        "withdrawn": False,
-        "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
-    }
-    store.sources["src_matrix_2"] = {
-        "id": "src_matrix_2",
-        "case_id": case["id"],
-        "filename": "facility.txt",
-        "media_type": "text/plain",
-        "sha256": "f" * 64,
-        "withdrawn": False,
-        "blocks": [{"block_id": "b00002", "locator": {"line": 2}, "text": "The facility remains available through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
-    }
-    store.register_source_set({"id": "set_matrix", "case_id": case["id"], "version": 1, "source_ids": [source_id, "src_matrix_2"], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
+    runtime = WorkflowRuntime(
+        ledger_set.runs,
+        ledger_set.sources,
+        DeployVBundle(DEPLOY_V),
+        settings,
+        provider=provider,
+    )
+    case = ledger_set.runs.create_case(
+        "CP-DR matrix", "Issuer", "Testing", "analyst"
+    )
+    source = seed_source(
+        ledger_set,
+        case["id"],
+        "analyst",
+        filename="issuer.txt",
+        sha256="e" * 64,
+        blocks=[{"block_id": "b00001", "locator": {"line": 1}, "text": "Issuer liquidity was USD 100m at 2026-08-23.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    )
+    source_id = source["id"]
+    seed_source(
+        ledger_set,
+        case["id"],
+        "analyst",
+        filename="facility.txt",
+        sha256="f" * 64,
+        blocks=[{"block_id": "b00002", "locator": {"line": 2}, "text": "The facility remains available through 2029.", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    )
     brief = {"research_question": "Can the issuer refinance?", "decision_context": "Underwrite risk.", "as_of_date": "2026-08-23", "time_horizon": "Through 2029", "must_answer": [], "exclusions": []}
     run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
     runtime._execute(run["id"], "analyst")
-    paused = store.get_run(run["id"])
+    paused = ledger_set.runs.get_run(run["id"])
     assert paused is not None
     runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
-    approved = store.get_run(run["id"])
+    approved = ledger_set.runs.get_run(run["id"])
     assert approved is not None
-    return store, runtime, approved, source_id
+    return ledger_set, runtime, approved, source_id
 
 
-def _approved_final(store: MemoryStore, approved: dict[str, Any], source_id: str) -> dict[str, Any]:
+def _approved_final(ledger_set: MemoryLedgerSet, approved: dict[str, Any], source_id: str) -> dict[str, Any]:
     cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-    cp0 = store.get_artifact(cp0_node["artifact_id"])
+    cp0 = ledger_set.runs.get_artifact(cp0_node["artifact_id"])
     assert cp0 is not None
+    source_set = ledger_set.sources.source_set(approved["plan"]["source_set_id"])
+    assert source_set is not None
+    secondary_source_id = next(item for item in source_set["source_ids"] if item != source_id)
     workstreams = approved["research"]["proposed_plan"]["workstreams"]
     return _cpdr_payload(
         run_id=approved["id"],
         case_id=approved["case_id"],
-        source_set_id="set_matrix",
+        source_set_id=source_set["id"],
+        source_set_version=source_set["version"],
         approved_plan_hash=approved["research"]["approved_plan_hash"],
         upstream_digests=[cp0["digest"]],
         scope_key=approved["case_id"].replace("_", "-"),
@@ -1937,27 +1245,28 @@ def _approved_final(store: MemoryStore, approved: dict[str, Any], source_id: str
             {"workstream_id": item["id"], "finding": "The lane is supported." if index == 0 else "No additional material claim was required.", "claim_ids": ["C-1"] if index == 0 else [], "status": "complete"}
             for index, item in enumerate(workstreams)
         ],
-        material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": "src_matrix_2", "block_id": "b00002"}]}],
+        material_claims=[{**_cpdr_payload()["material_claims"][0], "workstream_id": workstreams[0]["id"], "evidence_refs": [{"source_id": source_id, "block_id": "b00001"}, {"source_id": secondary_source_id, "block_id": "b00002"}]}],
         evidence=[
             {**_cpdr_payload()["evidence"][0], "source_id": source_id},
-            {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": "src_matrix_2", "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
+            {**_cpdr_payload()["evidence"][0], "evidence_id": "E-2", "source_id": secondary_source_id, "source_digest": "f" * 64, "block_id": "b00002", "locator": "{\"line\":2}"},
         ],
     )
 
 
-def _canonical_cpdr_artifact(store: MemoryStore, runtime: WorkflowRuntime, approved: dict[str, Any], source_id: str) -> dict[str, Any]:
+def _canonical_cpdr_artifact(ledger_set: MemoryLedgerSet, runtime: WorkflowRuntime, approved: dict[str, Any], source_id: str) -> dict[str, Any]:
     cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-    cp0 = store.get_artifact(cp0_node["artifact_id"])
-    source_set = store.source_set_by_id(approved["plan"]["source_set_id"])
+    cp0 = ledger_set.runs.get_artifact(cp0_node["artifact_id"])
+    source_set = ledger_set.sources.source_set(approved["plan"]["source_set_id"])
     assert cp0 is not None and source_set is not None
     upstream = [{"module_id": "CP-0", "artifact_id": cp0["id"], "digest": cp0["digest"]}]
-    raw = _approved_final(store, approved, source_id)
+    raw = _approved_final(ledger_set, approved, source_id)
+    secondary_source_id = next(item for item in source_set["source_ids"] if item != source_id)
     returned = {
         (source_id, "b00001"): {
             "source_digest": "e" * 64, "origin_family": "e" * 64, "authority_class": "unclassified",
             "locator": "{\"line\":1}", "extractor_version": "builtin-v1", "confidence": "HIGH",
         },
-        ("src_matrix_2", "b00002"): {
+        (secondary_source_id, "b00002"): {
             "source_digest": "f" * 64, "origin_family": "f" * 64, "authority_class": "unclassified",
             "locator": "{\"line\":2}", "extractor_version": "builtin-v1", "confidence": "HIGH",
         },
@@ -1989,31 +1298,46 @@ def _canonical_cpdr_artifact(store: MemoryStore, runtime: WorkflowRuntime, appro
     ["plan_hash", "model", "source_set", "cp0"],
 )
 def test_cpdr_authority_mismatches_fail_closed(mutation: str) -> None:
-    store, runtime, approved, _ = _approved_cpdr_case()
+    ledger_set, runtime, approved, _ = _approved_cpdr_case()
     try:
         if mutation == "plan_hash":
-            store.runs[approved["id"]]["research"]["approved_plan_hash"] = "sha256:" + "b" * 64
+            research = copy.deepcopy(approved["research"])
+            research["approved_plan_hash"] = "sha256:" + "b" * 64
+            mutate_run(ledger_set, approved["id"], research=research)
         elif mutation == "model":
-            store.runs[approved["id"]]["research"]["model"] = "other-model"
+            research = copy.deepcopy(approved["research"])
+            research["model"] = "other-model"
+            mutate_run(ledger_set, approved["id"], research=research)
         elif mutation == "source_set":
-            store.source_sets[approved["case_id"]] = {**store.source_sets[approved["case_id"]], "id": "changed", "version": 2}
+            source_set = ledger_set.sources.current_source_set(approved["case_id"])
+            assert source_set is not None
+            replace_current_source_set(
+                ledger_set,
+                approved["case_id"],
+                {**source_set, "id": "changed", "version": source_set["version"] + 1},
+            )
         else:
             cp0_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-0")
-            store.artifacts[cp0_node["artifact_id"]]["payload"]["status"] = "BLOCKED"
+            cp0 = ledger_set.runs.get_artifact(cp0_node["artifact_id"])
+            assert cp0 is not None
+            cp0["payload"]["status"] = "BLOCKED"
+            replace_artifact(ledger_set, cp0["id"], cp0)
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_AUTHORITY_MISMATCH"
-        assert not any(item["module_id"] == "CP-DR" for item in store.artifacts.values())
+        assert not list_artifacts(ledger_set, run_id=approved["id"], module_id="CP-DR")
     finally:
         runtime.close()
 
 
 def test_cpdr_reclaimed_unresolved_inflight_fails_closed() -> None:
-    store, runtime, approved, _ = _approved_cpdr_case()
+    ledger_set, runtime, approved, _ = _approved_cpdr_case()
     try:
-        store.runs[approved["id"]]["research"]["inflight_request_digest"] = "unknown-spend"
+        research = copy.deepcopy(approved["research"])
+        research["inflight_request_digest"] = "unknown-spend"
+        mutate_run(ledger_set, approved["id"], research=research)
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
     finally:
         runtime.close()
@@ -2021,14 +1345,15 @@ def test_cpdr_reclaimed_unresolved_inflight_fails_closed() -> None:
 
 def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget() -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["phase"] = "researching"
-    store.runs[approved["id"]]["research"]["inflight_request_digest"] = None
-    final = _approved_final(store, approved, source_id)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    research = copy.deepcopy(approved["research"])
+    research.update(phase="researching", inflight_request_digest=None)
+    mutate_run(ledger_set, approved["id"], research=research)
+    final = _approved_final(ledger_set, approved, source_id)
     _queue_cpdr_success(provider, final, source_id)
     try:
         runtime._execute(approved["id"], "replacement")
-        completed = store.get_run(approved["id"])
+        completed = ledger_set.runs.get_run(approved["id"])
         assert completed is not None and completed["status"] == "succeeded"
         assert completed["research"]["phase"] == "complete"
     finally:
@@ -2037,19 +1362,21 @@ def test_cpdr_reconciled_attempt_without_artifact_restarts_with_remaining_budget
 
 def test_cpdr_existing_fingerprint_is_relinked_without_provider_call() -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    recovered = _canonical_cpdr_artifact(store, runtime, approved, source_id)
-    assert cpdr_artifact_is_valid(store, approved, cpdr_node, recovered, runtime.bundle)
-    store.artifacts[recovered["id"]] = recovered
-    store.runs[approved["id"]]["research"]["phase"] = "researching"
+    recovered = _canonical_cpdr_artifact(ledger_set, runtime, approved, source_id)
+    assert cpdr_artifact_is_valid(ledger_set.runs, ledger_set.sources, approved, cpdr_node, recovered, runtime.bundle)
+    replace_artifact(ledger_set, recovered["id"], recovered)
+    research = copy.deepcopy(approved["research"])
+    research["phase"] = "researching"
+    mutate_run(ledger_set, approved["id"], research=research)
     try:
         runtime._execute(approved["id"], "replacement")
-        completed = store.get_run(approved["id"])
+        completed = ledger_set.runs.get_run(approved["id"])
         linked = next(node for node in completed["nodes"] if node["id"] == cpdr_node["id"]) if completed else None
         assert completed is not None and completed["status"] == "succeeded"
         assert linked is not None and linked["artifact_id"] == recovered["id"]
-        assert len([item for item in store.artifacts.values() if item.get("module_id") == "CP-DR"]) == 1
+        assert len(list_artifacts(ledger_set, module_id="CP-DR")) == 1
         assert provider.calls == []
     finally:
         runtime.close()
@@ -2059,9 +1386,9 @@ def test_cpdr_existing_fingerprint_is_relinked_without_provider_call() -> None:
     "mutation", ["markdown", "transport", "confidence", "filename", "digest", "fingerprint", "plan_hash", "withdrawn"]
 )
 def test_strict_cpdr_artifact_validator_rejects_noncanonical_artifacts(mutation: str) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case()
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    canonical = _canonical_cpdr_artifact(ledger_set, runtime, approved, source_id)
     invalid = copy.deepcopy(canonical)
     if mutation == "markdown":
         invalid["markdown"] += "forged\n"
@@ -2078,32 +1405,37 @@ def test_strict_cpdr_artifact_validator_rejects_noncanonical_artifacts(mutation:
     elif mutation == "fingerprint":
         invalid["input_fingerprint"] = "forged"
     elif mutation == "plan_hash":
-        store.runs[approved["id"]]["research"]["approved_plan_hash"] = "sha256:" + "0" * 64
-        approved = store.get_run(approved["id"]) or approved
+        research = copy.deepcopy(approved["research"])
+        research["approved_plan_hash"] = "sha256:" + "0" * 64
+        mutate_run(ledger_set, approved["id"], research=research)
+        approved = ledger_set.runs.get_run(approved["id"]) or approved
     else:
-        store.sources["src_matrix_2"]["withdrawn"] = True
+        source_set = ledger_set.sources.source_set(approved["plan"]["source_set_id"])
+        assert source_set is not None
+        secondary_source_id = next(item for item in source_set["source_ids"] if item != source_id)
+        mutate_source(ledger_set, secondary_source_id, withdrawn=True)
     try:
-        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, invalid, runtime.bundle)
-        store.artifacts[invalid["id"]] = invalid
-        store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=invalid["id"])
-        store.runs[approved["id"]]["status"] = "succeeded"
+        assert not cpdr_artifact_is_valid(ledger_set.runs, ledger_set.sources, approved, cpdr_node, invalid, runtime.bundle)
+        replace_artifact(ledger_set, invalid["id"], invalid)
+        mutate_node(ledger_set, cpdr_node["id"], status="succeeded", artifact_id=invalid["id"])
+        mutate_run(ledger_set, approved["id"], status="succeeded")
         with pytest.raises(ValueError, match="RUN_NOT_READY"):
-            build_snapshot_payload(store, store.get_run(approved["id"]) or {}, runtime.bundle)
+            build_snapshot_payload(ledger_set.runs, ledger_set.sources, ledger_set.runs.get_run(approved["id"]) or {}, runtime.bundle)
     finally:
         runtime.close()
 
 
 def test_strict_cpdr_artifact_validator_requires_real_vendored_handoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case()
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    canonical = _canonical_cpdr_artifact(ledger_set, runtime, approved, source_id)
     monkeypatch.setattr(
         runtime.bundle,
         "validate_cpdr_handoff",
         lambda *_args, **_kwargs: type("InvalidHandoff", (), {"identity_mismatches": [], "errors": ["invalid"], "exit_code": 1})(),
     )
     try:
-        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, canonical, runtime.bundle)
+        assert not cpdr_artifact_is_valid(ledger_set.runs, ledger_set.sources, approved, cpdr_node, canonical, runtime.bundle)
     finally:
         runtime.close()
 
@@ -2112,67 +1444,36 @@ def test_strict_cpdr_artifact_validator_requires_real_vendored_handoff(monkeypat
 def test_strict_cpdr_artifact_entrypoints_require_current_bundle_integrity(
     monkeypatch: pytest.MonkeyPatch, entrypoint: str,
 ) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case()
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    canonical = _canonical_cpdr_artifact(store, runtime, approved, source_id)
-    store.artifacts[canonical["id"]] = canonical
+    canonical = _canonical_cpdr_artifact(ledger_set, runtime, approved, source_id)
+    replace_artifact(ledger_set, canonical["id"], canonical)
 
     def fail_integrity() -> Any:
         raise MethodologyError("forced current integrity failure")
 
     monkeypatch.setattr(runtime.bundle, "verify", fail_integrity)
     try:
-        assert not cpdr_artifact_is_valid(store, approved, cpdr_node, canonical, runtime.bundle)
+        assert not cpdr_artifact_is_valid(ledger_set.runs, ledger_set.sources, approved, cpdr_node, canonical, runtime.bundle)
         if entrypoint == "reuse":
-            store.runs[approved["id"]]["research"]["phase"] = "researching"
+            research = copy.deepcopy(approved["research"])
+            research["phase"] = "researching"
+            mutate_run(ledger_set, approved["id"], research=research)
             runtime._execute(approved["id"], "replacement")
-            failed = store.get_run(approved["id"])
+            failed = ledger_set.runs.get_run(approved["id"])
             assert failed is not None and failed["status"] == "failed"
             assert failed["error"]["code"] == "AGENT_AUTHORITY_MISMATCH"
         elif entrypoint == "run_success":
-            store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=canonical["id"])
+            mutate_node(ledger_set, cpdr_node["id"], status="succeeded", artifact_id=canonical["id"])
             runtime._execute(approved["id"], "final-validator")
-            failed = store.get_run(approved["id"])
+            failed = ledger_set.runs.get_run(approved["id"])
             assert failed is not None and failed["status"] == "failed"
             assert failed["error"]["code"] == "DAG_BLOCKED"
         else:
-            store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=canonical["id"])
-            store.runs[approved["id"]]["status"] = "succeeded"
+            mutate_node(ledger_set, cpdr_node["id"], status="succeeded", artifact_id=canonical["id"])
+            mutate_run(ledger_set, approved["id"], status="succeeded")
             with pytest.raises(ValueError, match="RUN_NOT_READY"):
-                build_snapshot_payload(store, store.get_run(approved["id"]) or {}, runtime.bundle)
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("backend", ["memory", "postgres"])
-def test_atomic_completion_replaces_invalid_same_fingerprint_artifact(backend: str) -> None:
-    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    store, runtime, approved, source_id = _approved_cpdr_case(store)
-    cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    valid = _canonical_cpdr_artifact(store, runtime, approved, source_id)
-    valid["id"] = f"art-valid-{backend}"
-    invalid = copy.deepcopy(valid)
-    invalid["id"] = f"art-invalid-{backend}"
-    invalid["markdown"] += "forged\n"
-    store.artifacts[invalid["id"]] = invalid
-    store.persist()
-    token = store.claim_job(approved["id"], "collision-worker")
-    assert token is not None
-    full_run = store.get_run(approved["id"])
-    assert full_run is not None
-    def validator(candidate: dict[str, Any]) -> bool:
-        return cpdr_artifact_is_valid(store, full_run, cpdr_node, candidate, runtime.bundle)
-    try:
-        completed = store.complete_node_fenced(
-            approved["id"], token, cpdr_node["id"], valid, {**approved["research"], "phase": "complete"}, validator
-        )
-        assert completed["id"] == valid["id"]
-        assert invalid["id"] not in store.artifacts
-        durable = PostgresStore(store._dsn) if isinstance(store, PostgresStore) else store
-        durable_run = durable.get_run(approved["id"])
-        durable_node = next(node for node in durable_run["nodes"] if node["id"] == cpdr_node["id"]) if durable_run else None
-        assert durable_node is not None and durable_node["artifact_id"] == valid["id"]
-        assert cpdr_artifact_is_valid(durable, durable_run or {}, durable_node, completed, runtime.bundle)
+                build_snapshot_payload(ledger_set.runs, ledger_set.sources, ledger_set.runs.get_run(approved["id"]) or {}, runtime.bundle)
     finally:
         runtime.close()
 
@@ -2189,16 +1490,21 @@ def test_atomic_completion_replaces_invalid_same_fingerprint_artifact(backend: s
 )
 def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(mode: str, expected: str) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     tool_source = source_id
     tool_block = "b00001"
     if mode == "cross_case":
-        store.sources[source_id]["case_id"] = "other-case"
+        mutate_source(ledger_set, source_id, case_id="other-case")
     elif mode == "unpinned":
-        tool_source = "src_unpinned"
-        store.sources[tool_source] = {**store.sources[source_id], "id": tool_source}
+        tool_source = seed_source(
+            ledger_set,
+            approved["case_id"],
+            "analyst",
+            sha256="9" * 64,
+            blocks=[{"block_id": "b00001", "locator": {"line": 1}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+        )["id"]
     elif mode == "withdrawn":
-        store.sources[source_id]["withdrawn"] = True
+        mutate_source(ledger_set, source_id, withdrawn=True)
     elif mode == "absent_block":
         tool_block = "missing"
     block_ids = [tool_block, tool_block] if mode == "duplicate_block" else [tool_block]
@@ -2210,7 +1516,7 @@ def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(mode
     provider.counts.append(20)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == expected
     finally:
         runtime.close()
@@ -2219,8 +1525,10 @@ def test_cpdr_evidence_reads_enforce_case_pin_withdrawal_and_block_identity(mode
 @pytest.mark.parametrize("budget", ["turns", "input_tokens", "output_tokens", "active_minutes", "evidence_reads", "evidence_bytes"])
 def test_cpdr_runwide_budget_ceilings_fail_before_overspend(budget: str) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_limits"][budget] = 0 if budget != "evidence_bytes" else 1
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    research = copy.deepcopy(approved["research"])
+    research["budget_limits"][budget] = 0 if budget != "evidence_bytes" else 1
+    mutate_run(ledger_set, approved["id"], research=research)
     if budget in {"evidence_reads", "evidence_bytes"}:
         response = ProviderMessage(
             content=[ProviderBlock(type="tool_use", id="tool-1", name="read_evidence", input={"source_id": source_id, "block_ids": ["b00001"]})],
@@ -2237,9 +1545,9 @@ def test_cpdr_runwide_budget_ceilings_fail_before_overspend(budget: str) -> None
     provider.counts.append(20)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert not any(item["module_id"] == "CP-DR" for item in store.artifacts.values())
+        assert not list_artifacts(ledger_set, run_id=approved["id"], module_id="CP-DR")
     finally:
         runtime.close()
 
@@ -2247,17 +1555,21 @@ def test_cpdr_runwide_budget_ceilings_fail_before_overspend(budget: str) -> None
 @pytest.mark.parametrize("limit", ["blocks", "bytes"])
 def test_cpdr_manifest_ceiling_fails_before_provider_construction(limit: str) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    source = ledger_set.sources.get_source(source_id)
+    assert source is not None
     if limit == "blocks":
-        store.sources[source_id]["blocks"] = [
+        blocks = [
             {"block_id": f"b{index:05d}", "locator": {"line": index}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}
             for index in range(2_001)
         ]
     else:
-        store.sources[source_id]["blocks"][0]["locator"] = {"section": "x" * (256 * 1_024)}
+        blocks = copy.deepcopy(source["blocks"])
+        blocks[0]["locator"] = {"section": "x" * (256 * 1_024)}
+    mutate_source(ledger_set, source_id, blocks=blocks)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert provider.calls == []
     finally:
@@ -2267,8 +1579,9 @@ def test_cpdr_manifest_ceiling_fails_before_provider_construction(limit: str) ->
 @pytest.mark.parametrize("field", ["filename", "media_type", "locator", "extractor_version", "confidence"])
 def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    source = store.sources[source_id]
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    source = ledger_set.sources.get_source(source_id)
+    assert source is not None
     sentinel = "manifest-sentinel-" + "x" * (512 * 1_024)
     if field in {"filename", "media_type"}:
         source[field] = sentinel
@@ -2276,6 +1589,13 @@ def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pyt
         source["blocks"][0][field] = {"nested": sentinel}
     else:
         source["blocks"][0][field] = sentinel
+    mutate_source(
+        ledger_set,
+        source_id,
+        filename=source["filename"],
+        media_type=source["media_type"],
+        blocks=source["blocks"],
+    )
     original_dumps = workflow_domain.json.dumps
 
     def guarded_dumps(value: Any, *args: Any, **kwargs: Any) -> str:
@@ -2288,7 +1608,7 @@ def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pyt
     monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert provider.calls == []
     finally:
@@ -2297,9 +1617,13 @@ def test_cpdr_manifest_rejects_oversized_fields_before_encoding(monkeypatch: pyt
 
 def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     locator = {"groups": [list(range(100)) for _ in range(6)]}
-    store.sources[source_id]["blocks"][0]["locator"] = locator
+    source = ledger_set.sources.get_source(source_id)
+    assert source is not None
+    blocks = copy.deepcopy(source["blocks"])
+    blocks[0]["locator"] = locator
+    mutate_source(ledger_set, source_id, blocks=blocks)
     original_dumps = workflow_domain.json.dumps
 
     def guarded_dumps(value: Any, *args: Any, **kwargs: Any) -> str:
@@ -2309,7 +1633,7 @@ def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypa
     monkeypatch.setattr(workflow_domain.json, "dumps", guarded_dumps)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert provider.calls == []
     finally:
@@ -2318,10 +1642,13 @@ def test_cpdr_manifest_rejects_many_short_locator_nodes_before_encoding(monkeypa
 
 def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _FakeProvider([], counts=[ProviderUnavailable("boundary reached provider")])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
     expected_manifest = []
-    for manifest_source_id in (source_id, "src_matrix_2"):
-        source = store.sources[manifest_source_id]
+    source_set = ledger_set.sources.source_set(approved["plan"]["source_set_id"])
+    assert source_set is not None
+    for manifest_source_id in source_set["source_ids"]:
+        source = ledger_set.sources.get_source(manifest_source_id)
+        assert source is not None
         block = source["blocks"][0]
         expected_manifest.append({
             "source_id": manifest_source_id,
@@ -2338,7 +1665,7 @@ def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monke
     monkeypatch.setattr(workflow_domain, "MAX_CPDR_MANIFEST_BYTES", encoded_bytes)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_PROVIDER_UNAVAILABLE"
         assert [kind for kind, _request in provider.calls] == ["count_tokens"]
     finally:
@@ -2347,51 +1674,53 @@ def test_cpdr_manifest_exact_block_and_encoded_byte_boundaries_are_allowed(monke
 
 def test_cpdr_unexpected_post_provider_failure_is_sanitized_and_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    final = _approved_final(store, approved, source_id)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    final = _approved_final(ledger_set, approved, source_id)
     _queue_cpdr_success(provider, final, source_id)
     monkeypatch.setattr(workflow_domain, "render_cpdr_markdown", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-post-provider")))
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
         assert failed["research"]["phase"] == "failed"
         assert any(item.get("terminal_code") == "AGENT_OUTPUT_INVALID" for item in failed["research"]["attempts"])
-        assert "secret-post-provider" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
+        assert "secret-post-provider" not in json.dumps({"run": failed, "events": ledger_set.runs.events_after(approved["id"])})
     finally:
         runtime.close()
 
 
 def test_cpdr_prior_179_seconds_caps_next_operation_to_one_second(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _FakeProvider([], counts=[ProviderUnavailable("captured")])
-    store, runtime, approved, _source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    ledger_set, runtime, approved, _source_id = _approved_cpdr_case(provider=provider)
+    research = copy.deepcopy(approved["research"])
+    research["budget_used"]["active_minutes"] = 179 / 60
+    mutate_run(ledger_set, approved["id"], research=research)
     monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: 1_000.0)
     try:
         runtime._execute(approved["id"], "approver")
         assert provider.calls and 0 < provider.calls[0][1].timeout <= 1.0
-        assert not any(item.get("module_id") == "CP-DR" for item in store.artifacts.values())
+        assert not list_artifacts(ledger_set, run_id=approved["id"], module_id="CP-DR")
     finally:
         runtime.close()
 
 
 def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypatch: pytest.MonkeyPatch) -> None:
-    store = MemoryStore()
+    ledger_set = MemoryLedgerSet()
     settings = Settings(
         environment="production", storage_dir=Path("/tmp/caos-cpdr-approval-time"), deploy_v_root=DEPLOY_V,
         anthropic_api_key="test-only-key", cpdr_agent_enabled=True, cpdr_pilot_subjects=("analyst",),
     )
     bundle = DeployVBundle(DEPLOY_V)
     provider = _FakeProvider([], counts=[ProviderUnavailable("stop after timing check")])
-    runtime = WorkflowRuntime(store, bundle, settings, provider=provider)
-    case = store.create_case("Approval time", "Issuer", "Testing", "analyst")
-    source_id = "src_approval_time"
-    store.sources[source_id] = {
-        "id": source_id, "case_id": case["id"], "filename": "issuer.txt", "media_type": "text/plain",
-        "sha256": "a" * 64, "withdrawn": False,
-        "blocks": [{"block_id": "b00001", "locator": {"line": 1}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
-    }
-    store.register_source_set({"id": "set_approval_time", "case_id": case["id"], "version": 1, "source_ids": [source_id], "created_by": "analyst", "created_at": "2026-08-23T00:00:00+00:00"})
+    runtime = WorkflowRuntime(ledger_set.runs, ledger_set.sources, bundle, settings, provider=provider)
+    case = ledger_set.runs.create_case("Approval time", "Issuer", "Testing", "analyst")
+    seed_source(
+        ledger_set,
+        case["id"],
+        "analyst",
+        sha256="a" * 64,
+        blocks=[{"block_id": "b00001", "locator": {"line": 1}, "text": "x", "extractor_version": "builtin-v1", "confidence": "HIGH"}],
+    )
     brief = {"research_question": "Question", "decision_context": "Context", "as_of_date": "2026-08-23", "time_horizon": "2029", "must_answer": [], "exclusions": []}
 
     class Clock:
@@ -2410,12 +1739,12 @@ def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypat
     try:
         run = runtime.start_run(case["id"], "analyst", "DEEP_RESEARCH", "full", [], brief)
         runtime._execute(run["id"], "analyst")
-        paused = store.get_run(run["id"])
+        paused = ledger_set.runs.get_run(run["id"])
         assert paused is not None and paused["research"]["budget_used"]["active_minutes"] == pytest.approx(2 / 60)
         Clock.now += 10_000
         runtime.approve_research_plan(run["id"], "approver", paused["research"]["proposed_plan_hash"])
         runtime._execute(run["id"], "approver")
-        failed = store.get_run(run["id"])
+        failed = ledger_set.runs.get_run(run["id"])
         assert failed is not None and failed["research"]["budget_used"]["active_minutes"] == pytest.approx(2 / 60)
     finally:
         runtime.close()
@@ -2423,9 +1752,11 @@ def test_cpdr_approval_wait_is_excluded_while_planning_time_is_charged(monkeypat
 
 def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
-    final = _approved_final(store, approved, source_id)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    research = copy.deepcopy(approved["research"])
+    research["budget_used"]["active_minutes"] = 179 / 60
+    mutate_run(ledger_set, approved["id"], research=research)
+    final = _approved_final(ledger_set, approved, source_id)
 
     class Clock:
         now = 1_000.0
@@ -2444,9 +1775,9 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
     monkeypatch.setattr(workflow_domain, "render_cpdr_markdown", slow_render)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert not any(item.get("module_id") == "CP-DR" for item in store.artifacts.values())
+        assert not list_artifacts(ledger_set, run_id=approved["id"], module_id="CP-DR")
     finally:
         runtime.close()
 
@@ -2454,8 +1785,8 @@ def test_cpdr_slow_render_is_charged_before_artifact_completion(monkeypatch: pyt
 @pytest.mark.parametrize("operation", ["scorer", "renderer", "validator", "envelope"])
 def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
     provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    final = _approved_final(store, approved, source_id)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
+    final = _approved_final(ledger_set, approved, source_id)
 
     class Clock:
         now = 1_000.0
@@ -2478,53 +1809,23 @@ def test_cpdr_throwing_host_operations_charge_active_time(monkeypatch: pytest.Mo
         monkeypatch.setattr(workflow_domain, "_build_cpdr_envelope", throwing)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
         assert failed["research"]["budget_used"]["active_minutes"] >= 2 / 60
     finally:
         runtime.close()
 
 
-def test_cpdr_slow_atomic_completion_crosses_ceiling_and_cannot_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = _FakeProvider([])
-    store, runtime, approved, source_id = _approved_cpdr_case(provider=provider)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
-    final = _approved_final(store, approved, source_id)
-
-    class Clock:
-        now = 1_000.0
-
-    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-
-    _queue_cpdr_success(provider, final, source_id)
-
-    original_completion = store.complete_node_fenced
-
-    def slow_completion(*args: Any, **kwargs: Any) -> Any:
-        Clock.now += 2.0
-        return original_completion(*args, **kwargs)
-
-    monkeypatch.setattr(store, "complete_node_fenced", slow_completion)
-    try:
-        runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
-        cpdr_node = next(node for node in failed["nodes"] if node["module_id"] == "CP-DR") if failed else None
-        assert failed is not None and failed["status"] == "failed"
-        assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert failed["research"]["budget_used"]["active_minutes"] >= 181 / 60
-        assert cpdr_node is not None and cpdr_node["status"] == "failed"
-    finally:
-        runtime.close()
-
-
 def test_cpdr_no_pending_final_validation_is_charged_before_run_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, source_id = _approved_cpdr_case()
-    artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case()
+    artifact = _canonical_cpdr_artifact(ledger_set, runtime, approved, source_id)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[approved["id"]]["research"].update(phase="complete")
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    replace_artifact(ledger_set, artifact["id"], artifact)
+    mutate_node(ledger_set, cpdr_node["id"], status="succeeded", artifact_id=artifact["id"])
+    research = copy.deepcopy(approved["research"])
+    research["phase"] = "complete"
+    research["budget_used"]["active_minutes"] = 179 / 60
+    mutate_run(ledger_set, approved["id"], research=research)
 
     class Clock:
         now = 1_000.0
@@ -2540,23 +1841,25 @@ def test_cpdr_no_pending_final_validation_is_charged_before_run_success(monkeypa
     monkeypatch.setattr(runtime.bundle, "cpdr_confidence", slow_score)
     try:
         runtime._execute(approved["id"], "final-validator")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert failed["research"]["budget_used"]["active_minutes"] >= 181 / 60
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        assert not any(item["event"] == "run.succeeded" for item in ledger_set.runs.events_after(approved["id"]))
     finally:
         runtime.close()
 
 
-def _ready_cpdr_finalization() -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]]:
-    store, runtime, approved, source_id = _approved_cpdr_case()
-    artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
+def _ready_cpdr_finalization() -> tuple[MemoryLedgerSet, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    ledger_set, runtime, approved, source_id = _approved_cpdr_case()
+    artifact = _canonical_cpdr_artifact(ledger_set, runtime, approved, source_id)
     cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[approved["id"]]["research"].update(phase="complete")
-    return store, runtime, approved, cpdr_node, artifact
+    replace_artifact(ledger_set, artifact["id"], artifact)
+    mutate_node(ledger_set, cpdr_node["id"], status="succeeded", artifact_id=artifact["id"])
+    research = copy.deepcopy(approved["research"])
+    research["phase"] = "complete"
+    mutate_run(ledger_set, approved["id"], research=research)
+    return ledger_set, runtime, approved, cpdr_node, artifact
 
 
 def _assert_run_cannot_be_accepted(runtime: WorkflowRuntime, run: dict[str, Any]) -> None:
@@ -2569,343 +1872,22 @@ def test_cpdr_finalization_allowance_is_fixed_and_ponytail_bounded() -> None:
 
 
 def test_cpdr_179_seconds_cannot_enter_atomic_success_finalization() -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 179 / 60
+    ledger_set, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
+    research = copy.deepcopy(approved["research"])
+    research["phase"] = "complete"
+    research["budget_used"]["active_minutes"] = 179 / 60
+    mutate_run(ledger_set, approved["id"], research=research)
     try:
         runtime._execute(approved["id"], "final-reserve")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["status"] == "failed"
         assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
         assert failed["research"]["budget_used"]["active_minutes"] >= 180 / 60
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
+        assert not any(item["event"] == "run.succeeded" for item in ledger_set.runs.events_after(approved["id"]))
         _assert_run_cannot_be_accepted(runtime, failed)
     finally:
         runtime.close()
 
-
-def test_cpdr_finalization_reservation_failure_is_sanitized_before_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    original_update = store.update_run_fenced
-    research_writes = 0
-
-    def fail_reservation(run_id: str, attempt_token: str, **changes: Any) -> None:
-        nonlocal research_writes
-        if set(changes) == {"research"}:
-            research_writes += 1
-            if research_writes == 2:
-                raise RuntimeError("secret-final-reservation")
-        original_update(run_id, attempt_token, **changes)
-
-    monkeypatch.setattr(store, "update_run_fenced", fail_reservation)
-    try:
-        runtime._execute(approved["id"], "reservation-failure")
-        failed = store.get_run(approved["id"])
-        assert failed is not None and failed["status"] == "failed"
-        assert failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
-        assert "secret-final-reservation" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
-        _assert_run_cannot_be_accepted(runtime, failed)
-    finally:
-        runtime.close()
-
-
-def test_cpdr_atomic_success_persistence_failure_rolls_back_and_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    original_persist = store.persist
-    fail_once = True
-
-    def fail_terminal_persist() -> None:
-        nonlocal fail_once
-        if (
-            fail_once
-            and store.runs[approved["id"]]["status"] == "succeeded"
-            and any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
-        ):
-            fail_once = False
-            raise RuntimeError("secret-atomic-finalization")
-        original_persist()
-
-    monkeypatch.setattr(store, "persist", fail_terminal_persist)
-    try:
-        runtime._execute(approved["id"], "atomic-failure")
-        failed = store.get_run(approved["id"])
-        assert failed is not None and failed["status"] == "failed"
-        assert failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
-        assert not any(item["event"] == "run.succeeded" for item in store.events[approved["id"]])
-        assert "secret-atomic-finalization" not in json.dumps({"run": failed, "events": store.events[approved["id"]]})
-        _assert_run_cannot_be_accepted(runtime, failed)
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("backend", ["memory", "postgres"])
-def test_atomic_success_store_operation_rolls_back_run_and_event(
-    monkeypatch: pytest.MonkeyPatch, backend: str,
-) -> None:
-    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    token = store.claim_job(run["id"], "atomic-worker")
-    assert token is not None
-    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
-    original_persist = store._persist_connection if isinstance(store, PostgresStore) else store.persist
-
-    if isinstance(store, PostgresStore):
-        def fail_terminal_connection(connection: Any) -> Any:
-            if store.runs[run["id"]]["status"] == "succeeded":
-                raise RuntimeError("terminal transaction failed")
-            return original_persist(connection)
-
-        monkeypatch.setattr(store, "_persist_connection", fail_terminal_connection)
-    else:
-        def fail_terminal_memory() -> None:
-            if store.runs[run["id"]]["status"] == "succeeded":
-                raise RuntimeError("terminal persistence failed")
-            original_persist()
-
-        monkeypatch.setattr(store, "persist", fail_terminal_memory)
-
-    with pytest.raises(RuntimeError, match="terminal"):
-        store.finalize_run_success_fenced(run["id"], token, None, {"run_id": run["id"]})
-
-    assert store.runs[run["id"]]["status"] != "succeeded"
-    assert not any(item["event"] == "run.succeeded" for item in store.events[run["id"]])
-    if isinstance(store, PostgresStore):
-        restored = PostgresStore(store._dsn).get_run(run["id"])
-        assert restored is not None and restored["status"] != "succeeded"
-        assert not any(item["event"] == "run.succeeded" for item in restored["events"])
-
-
-def test_cpdr_success_finalization_is_single_terminal_run_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, cpdr_node, artifact = _ready_cpdr_finalization()
-    finalized = False
-    post_final_updates: list[dict[str, Any]] = []
-    original_finalize = store.finalize_run_success_fenced
-    original_update = store.update_run_fenced
-
-    def track_finalize(*args: Any, **kwargs: Any) -> None:
-        nonlocal finalized
-        original_finalize(*args, **kwargs)
-        finalized = True
-
-    def track_update(run_id: str, attempt_token: str, **changes: Any) -> None:
-        if finalized:
-            post_final_updates.append(copy.deepcopy(changes))
-        original_update(run_id, attempt_token, **changes)
-
-    monkeypatch.setattr(store, "finalize_run_success_fenced", track_finalize)
-    monkeypatch.setattr(store, "update_run_fenced", track_update)
-    try:
-        runtime._execute(approved["id"], "atomic-success")
-        completed = store.get_run(approved["id"])
-        assert completed is not None and completed["status"] == "succeeded"
-        assert completed["research"]["budget_used"]["active_minutes"] >= (
-            workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS / 60
-        )
-        completed_node = next(item for item in completed["nodes"] if item["id"] == cpdr_node["id"])
-        assert completed_node["status"] == "succeeded" and completed_node["artifact_id"] == artifact["id"]
-        assert store.get_artifact(artifact["id"])["digest"] == artifact["digest"]  # type: ignore[index]
-        assert [item["event"] for item in completed["events"]].count("run.succeeded") == 1
-        assert post_final_updates == []
-    finally:
-        runtime.close()
-
-
-def test_cpdr_two_second_atomic_finalization_is_covered_by_fixed_reserve(monkeypatch: pytest.MonkeyPatch) -> None:
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization()
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 170 / 60
-
-    class Clock:
-        now = 1_000.0
-
-    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-    original_finalize = store.finalize_run_success_fenced
-    finalization_seconds: list[float] = []
-
-    def slow_finalize(*args: Any, **kwargs: Any) -> None:
-        started = Clock.now
-        Clock.now += 2.0
-        original_finalize(*args, **kwargs)
-        finalization_seconds.append(Clock.now - started)
-
-    monkeypatch.setattr(store, "finalize_run_success_fenced", slow_finalize)
-    try:
-        runtime._execute(approved["id"], "slow-atomic-success")
-        completed = store.get_run(approved["id"])
-        assert completed is not None and completed["status"] == "succeeded"
-        assert finalization_seconds == [2.0]
-        assert finalization_seconds[0] <= workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS
-        assert completed["research"]["budget_used"]["active_minutes"] >= (
-            (170 + workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS) / 60
-        )
-    finally:
-        runtime.close()
-
-
-def _ready_cpdr_finalization_on(
-    store: MemoryStore,
-) -> tuple[MemoryStore, WorkflowRuntime, dict[str, Any], dict[str, Any], dict[str, Any]]:
-    store, runtime, approved, source_id = _approved_cpdr_case(store)
-    artifact = _canonical_cpdr_artifact(store, runtime, approved, source_id)
-    cpdr_node = next(node for node in approved["nodes"] if node["module_id"] == "CP-DR")
-    store.artifacts[artifact["id"]] = artifact
-    store.nodes[cpdr_node["id"]].update(status="succeeded", artifact_id=artifact["id"])
-    store.runs[approved["id"]]["research"].update(phase="complete")
-    store.persist()
-    return store, runtime, approved, cpdr_node, artifact
-
-
-@pytest.mark.parametrize("backend", ["memory", "postgres"])
-@pytest.mark.parametrize("delay_site", ["before_entry", "during_persistence"])
-def test_cpdr_174_plus_ten_second_finalization_never_commits_success(
-    monkeypatch: pytest.MonkeyPatch, backend: str, delay_site: str,
-) -> None:
-    selected_store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(selected_store)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 174 / 60
-    store.persist()
-
-    class Clock:
-        now = 1_000.0
-
-    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-    if delay_site == "before_entry":
-        original_finalize = store.finalize_run_success_fenced
-
-        def delayed_finalize(*args: Any, **kwargs: Any) -> None:
-            Clock.now += 10.0
-            original_finalize(*args, **kwargs)
-
-        monkeypatch.setattr(store, "finalize_run_success_fenced", delayed_finalize)
-    elif isinstance(store, PostgresStore):
-        original_persist_connection = store._persist_connection
-
-        def delayed_persist_connection(connection: Any) -> Any:
-            if store.runs[approved["id"]]["status"] == "succeeded":
-                Clock.now += 10.0
-            return original_persist_connection(connection)
-
-        monkeypatch.setattr(store, "_persist_connection", delayed_persist_connection)
-    else:
-        original_persist = store.persist
-
-        def delayed_persist() -> None:
-            if store.runs[approved["id"]]["status"] == "succeeded":
-                Clock.now += 10.0
-            original_persist()
-
-        monkeypatch.setattr(store, "persist", delayed_persist)
-
-    try:
-        runtime._execute(approved["id"], f"deadline-{backend}-{delay_site}")
-        failed = store.get_run(approved["id"])
-        assert failed is not None and failed["status"] == "failed"
-        assert failed["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
-        assert failed["research"]["budget_used"]["active_minutes"] >= 179 / 60
-        assert not any(item["event"] == "run.succeeded" for item in failed["events"])
-        _assert_run_cannot_be_accepted(runtime, failed)
-        if isinstance(store, PostgresStore):
-            restored = PostgresStore(store._dsn).get_run(approved["id"])
-            assert restored is not None and restored["status"] == "failed"
-            assert not any(item["event"] == "run.succeeded" for item in restored["events"])
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("backend", ["memory", "postgres"])
-def test_cpdr_two_second_finalization_commits_inside_absolute_deadline(
-    monkeypatch: pytest.MonkeyPatch, backend: str,
-) -> None:
-    selected_store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    store, runtime, approved, _cpdr_node, _artifact_row = _ready_cpdr_finalization_on(selected_store)
-    store.runs[approved["id"]]["research"]["budget_used"]["active_minutes"] = 170 / 60
-    store.persist()
-
-    class Clock:
-        now = 1_000.0
-
-    monkeypatch.setattr(workflow_domain.time, "monotonic", lambda: Clock.now)
-    original_finalize = store.finalize_run_success_fenced
-
-    def delayed_finalize(*args: Any, **kwargs: Any) -> None:
-        Clock.now += 2.0
-        original_finalize(*args, **kwargs)
-
-    monkeypatch.setattr(store, "finalize_run_success_fenced", delayed_finalize)
-    try:
-        runtime._execute(approved["id"], f"within-deadline-{backend}")
-        completed = store.get_run(approved["id"])
-        assert completed is not None and completed["status"] == "succeeded"
-        assert [item["event"] for item in completed["events"]].count("run.succeeded") == 1
-        if isinstance(store, PostgresStore):
-            restored = PostgresStore(store._dsn).get_run(approved["id"])
-            assert restored is not None and restored["status"] == "succeeded"
-            assert [item["event"] for item in restored["events"]].count("run.succeeded") == 1
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("backend", ["memory", "postgres"])
-def test_expired_finalization_deadline_does_not_mask_job_fencing(backend: str) -> None:
-    store: MemoryStore = _postgres_store() if backend == "postgres" else MemoryStore()
-    run, node = _queued_run(store, dependencies=[])
-    assert node is not None
-    token = store.claim_job(run["id"], f"fenced-deadline-{backend}")
-    assert token is not None
-    store.complete_node_fenced(run["id"], token, node["id"], _artifact(run["id"]), None)
-    if isinstance(store, PostgresStore):
-        with store._psycopg.connect(store._dsn) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE jobs SET lease_until = now() - interval '1 second' WHERE run_id = %s",
-                    (run["id"],),
-                )
-            connection.commit()
-    else:
-        store.jobs[run["id"]]["lease_until"] = time.monotonic() - 1
-
-    with pytest.raises(JobFencedError):
-        store.finalize_run_success_fenced(
-            run["id"], token, None, {"run_id": run["id"]}, deadline=time.monotonic() - 1,
-        )
-
-
-def test_open_postgres_event_stream_refreshes_worker_events_without_reconnect() -> None:
-    api_store = _postgres_store("cpdr-sse-api")
-    worker_store = _postgres_store("cpdr-sse-worker")
-    run, node = _queued_run(worker_store, dependencies=[])
-    assert node is not None
-    runtime = WorkflowRuntime(
-        api_store,
-        object(),
-        Settings(environment="production", storage_dir=Path("/tmp/caos-sse-refresh"), deploy_v_root=DEPLOY_V),
-    )  # type: ignore[arg-type]
-    stream = runtime.stream_events(run["id"])
-    try:
-        assert next(stream) == ": keepalive\n\n"
-        token = worker_store.claim_job(run["id"], "sse-worker")
-        assert token is not None
-        worker_store.update_run_fenced(run["id"], token, status="running")
-        worker_store.emit_fenced(run["id"], token, "run.running", {"run_id": run["id"]})
-        artifact = worker_store.complete_node_fenced(
-            run["id"], token, node["id"], _artifact(run["id"]), None,
-        )
-        worker_store.emit_fenced(
-            run["id"], token, "node.succeeded",
-            {"node_id": node["id"], "module_id": node["module_id"], "artifact_id": artifact["id"]},
-        )
-        worker_store.finalize_run_success_fenced(
-            run["id"], token, None, {"run_id": run["id"]},
-            deadline=time.monotonic() + workflow_domain.CPDR_FINALIZATION_ALLOWANCE_SECONDS,
-        )
-
-        delivered = [next(stream), *list(stream)]
-        assert [item.split("\n", 2)[0] for item in delivered] == ["id: 1", "id: 2", "id: 3"]
-        assert [item.split("\n", 2)[1] for item in delivered] == [
-            "event: run.running", "event: node.succeeded", "event: run.succeeded",
-        ]
-    finally:
-        runtime.close()
 
 
 def test_gateway_fake_clock_charges_slow_validation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3103,12 +2085,12 @@ def test_gateway_discards_result_when_lease_is_lost_during_sdk_call() -> None:
 
 def test_cpdr_failure_metadata_does_not_persist_secret_body_prompt_or_evidence() -> None:
     provider = _FakeProvider([], counts=[AgentError("AGENT_PROVIDER_REJECTED", "secret-provider-body provider-body")])
-    store, runtime, approved, _ = _approved_cpdr_case(provider=provider)
+    ledger_set, runtime, approved, _ = _approved_cpdr_case(provider=provider)
     try:
         runtime._execute(approved["id"], "approver")
-        failed = store.get_run(approved["id"])
+        failed = ledger_set.runs.get_run(approved["id"])
         assert failed is not None and failed["error"]["code"] == "AGENT_PROVIDER_REJECTED"
-        persisted = json.dumps({"run": failed, "events": store.events[approved["id"]], "audit": store.audit})
+        persisted = json.dumps({"run": failed, "events": ledger_set.runs.events_after(approved["id"]), "audit": ledger_set.publications.list_audit()})
         for forbidden in ("test-only-key", "secret-provider-body", "provider-body", "Issuer liquidity was USD 100m", "CAOS CP-DR RESEARCH AUTHORITY"):
             assert forbidden not in persisted
     finally:

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import caos.http as http_module
+from caos.memory_ledgers import MemoryLedgerSet
 from caos.config import Settings
 from caos.http import create_app
 from caos.responses import (
@@ -32,7 +33,7 @@ from caos.responses import (
     SourceResponse,
     SourceSetResponse,
 )
-from caos.store import MemoryStore
+from ledger_helpers import append_audit_event, mutate_model_build
 
 
 DEPLOY_V = (
@@ -78,7 +79,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         storage_dir=tmp_path / "vault",
         deploy_v_root=DEPLOY_V,
     )
-    with TestClient(create_app(settings, MemoryStore())) as test_client:
+    with TestClient(create_app(settings, MemoryLedgerSet())) as test_client:
         yield test_client
 
 
@@ -109,39 +110,33 @@ def response_payloads(client: TestClient) -> dict[str, Any]:
         json={"pathway": "EARNINGS_UPDATE", "depth": "screen"},
     ).json()
     run = _succeeded_run(client, run["id"])
-    artifact = next(
-        item
-        for item in client.app.state.store.artifacts.values()
-        if item["run_id"] == run["id"]
-    )
+    artifact_id = next(node["artifact_id"] for node in run["nodes"] if node["artifact_id"])
+    artifact = client.app.state.ledger_set.runs.get_artifact(artifact_id)
+    assert artifact is not None
     artifact = client.get(f"/api/cases/{case_id}/artifacts/{artifact['id']}").json()
     snapshot = client.post(f"/api/runs/{run['id']}/accept").json()
-    store = client.app.state.store
-    build, _ = store.queue_model_build(
-        {
-            "id": store._id("model"),
-            "case_id": case_id,
-            "accepted_run_id": run["id"],
-            "accepted_snapshot_id": snapshot["id"],
-            "source_set_id": snapshot["source_set_id"],
-            "input_fingerprint": "0" * 64,
-            "worksheet_schema_version": "caos.model.worksheet.v1",
-            "calculation_runtime": client.app.state.model_readiness.model.calculation_runtime,
-        },
-        "local-analyst",
-    )
+    ledger_set = client.app.state.ledger_set
+    build_proposal = {
+        "case_id": case_id,
+        "accepted_run_id": run["id"],
+        "accepted_snapshot_id": snapshot["id"],
+        "source_set_id": snapshot["source_set_id"],
+        "input_fingerprint": "0" * 64,
+        "worksheet_schema_version": "caos.model.worksheet.v1",
+        "calculation_runtime": client.app.state.model_readiness.model.calculation_runtime,
+    }
+    build, _ = ledger_set.models.queue_build(build_proposal, "local-analyst")
     model_build = client.get(f"/api/cases/{case_id}/models/{build['id']}").json()
-    failed_build, _ = store.queue_model_build(
+    failed_build, _ = ledger_set.models.queue_build(
         {
-            **build,
-            "id": store._id("model"),
+            **build_proposal,
             "input_fingerprint": "1" * 64,
         },
         "local-analyst",
     )
-    failed_token = store.claim_model_job(failed_build["id"], "contract-test")
+    failed_token = ledger_set.models.claim(failed_build["id"], "contract-test")
     assert failed_token is not None
-    store.fail_model_job(
+    ledger_set.models.fail(
         failed_build["id"],
         failed_token,
         {"code": "MODEL_CALCULATION_FAILED", "detail": "Contract failure."},
@@ -150,15 +145,16 @@ def response_payloads(client: TestClient) -> dict[str, Any]:
     failed_model_build = client.get(
         f"/api/cases/{case_id}/models/{failed_build['id']}"
     ).json()
-    ready_build, _ = store.queue_model_build(
+    ready_build, _ = ledger_set.models.queue_build(
         {
-            **build,
-            "id": store._id("model"),
+            **build_proposal,
             "input_fingerprint": "2" * 64,
         },
         "local-analyst",
     )
-    store.model_builds[ready_build["id"]].update(
+    mutate_model_build(
+        ledger_set,
+        ready_build["id"],
         status="READY",
         completed_at="2026-08-25T00:00:00+00:00",
         error=None,
@@ -250,7 +246,7 @@ def response_payloads(client: TestClient) -> dict[str, Any]:
         f"/api/cases/{case_id}/sources/{promoted['promoted_source_id']}"
     ).json()
     for action, details in AUDIT_ACTION_DETAILS.items():
-        store.audit_event(action, "contract-test", **details)
+        append_audit_event(ledger_set, action, "contract-test", **details)
     audit_events = client.get("/api/admin/audit", headers=admin_headers).json()
     return {
         "identity": identity,

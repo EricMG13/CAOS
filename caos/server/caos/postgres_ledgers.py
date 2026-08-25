@@ -324,8 +324,10 @@ class _PostgresSourceCatalog(_Adapter):
                 (source_id, case_id),
             )
             row = cursor.fetchone()
-            if row is None or row["withdrawn"]:
+            if row is None:
                 return None
+            if row["withdrawn"]:
+                return _source_record(row)
             withdrawn_at = now_iso()
             stored = _source_record(row, public=False)
             stored.update(withdrawn=True, withdrawn_at=withdrawn_at)
@@ -694,6 +696,8 @@ def _run_record(cursor: Any, row: Record) -> Record:
     }
     if row.get("research") is not None:
         record["research"] = copy.deepcopy(row["research"])
+    if row.get("canonical_generation") is not None:
+        record["canonical_generation"] = copy.deepcopy(row["canonical_generation"])
     return record
 
 
@@ -829,9 +833,22 @@ class _PostgresRunLedger(_Adapter):
         plan: Record,
         nodes: list[Record],
         upgraded_from_run_id: str | None = None,
+        *,
+        initial_status: str = "queued",
+        initial_error: Record | None = None,
+        initial_research: Record | None = None,
+        canonical_generation: Record | None = None,
     ) -> Record:
+        if initial_status not in {"queued", "paused"}:
+            raise ValueError("invalid initial run status")
         run_id = _id("run")
         created_at = now_iso()
+        stored_plan = copy.deepcopy(plan)
+        stored_error = copy.deepcopy(initial_error)
+        stored_research = copy.deepcopy(initial_research)
+        stored_generation = copy.deepcopy(canonical_generation)
+        if stored_generation is not None and "reporting_period" in stored_generation:
+            stored_generation["reporting_period"] = created_at[:10]
         node_records = [
             {
                 "id": _id("node"),
@@ -853,15 +870,20 @@ class _PostgresRunLedger(_Adapter):
                 raise ValueError("CASE_NOT_FOUND")
             cursor.execute(
                 "INSERT INTO runs(id, case_id, status, plan, current_node_id, "
-                "accepted_snapshot_id, upgraded_from_run_id, created_by, created_at, error) "
-                "VALUES (%s, %s, 'queued', %s, NULL, NULL, %s, %s, %s, NULL)",
+                "accepted_snapshot_id, upgraded_from_run_id, created_by, created_at, "
+                "error, research, canonical_generation) "
+                "VALUES (%s, %s, %s, %s, NULL, NULL, %s, %s, %s, %s, %s, %s)",
                 (
                     run_id,
                     case_id,
-                    self._db.j(plan),
+                    initial_status,
+                    self._db.j(stored_plan),
                     upgraded_from_run_id,
                     actor,
                     created_at,
+                    self._db.j(stored_error) if stored_error is not None else None,
+                    self._db.j(stored_research) if stored_research is not None else None,
+                    self._db.j(stored_generation) if stored_generation is not None else None,
                 ),
             )
             for position, node in enumerate(node_records):
@@ -879,10 +901,12 @@ class _PostgresRunLedger(_Adapter):
                         position,
                     ),
                 )
-            cursor.execute(
-                "INSERT INTO jobs(run_id, state, budget_reserved) VALUES (%s, 'queued', 0)",
-                (run_id,),
-            )
+            if initial_status == "queued":
+                cursor.execute(
+                    "INSERT INTO jobs(run_id, state, budget_reserved) "
+                    "VALUES (%s, 'queued', 0)",
+                    (run_id,),
+                )
             cursor.execute(
                 "UPDATE cases SET current_execution_id=%s WHERE id=%s",
                 (run_id, case_id),
@@ -1125,6 +1149,13 @@ class _PostgresRunLedger(_Adapter):
             cursor.execute(
                 "UPDATE runs SET status='queued', error=NULL, research=%s WHERE id=%s",
                 (self._db.j(research), run_id),
+            )
+            cursor.execute(
+                "INSERT INTO jobs(run_id, state, worker_id, attempt_token, lease_until, "
+                "budget_reserved) VALUES (%s, 'queued', NULL, NULL, NULL, 0) "
+                "ON CONFLICT (run_id) DO UPDATE SET state='queued', worker_id=NULL, "
+                "attempt_token=NULL, lease_until=NULL, budget_reserved=0",
+                (run_id,),
             )
             self._audit(
                 cursor,
@@ -1372,20 +1403,11 @@ class _PostgresRunLedger(_Adapter):
                 (proposal.get("source_set_id"),),
             )
             source_set = cursor.fetchone()
-            cursor.execute(
-                "SELECT source_set.* FROM cases AS c LEFT JOIN source_sets AS source_set "
-                "ON source_set.id=c.current_source_set_id WHERE c.id=%s",
-                (case_id,),
-            )
-            current = cursor.fetchone()
             if (
                 not source_set
                 or source_set["case_id"] != case_id
                 or source_set["id"] != run["plan"].get("source_set_id")
                 or proposal.get("source_set_version") != source_set["version"]
-                or not current
-                or current.get("id") != source_set["id"]
-                or current.get("version") != source_set["version"]
             ):
                 raise ValueError("SOURCE_SET_CHANGED")
             artifact_refs = proposal.get("artifacts")
@@ -2110,7 +2132,7 @@ class _PostgresPublicationLedger(_Adapter):
             saved.update(
                 id=_id("rv"),
                 case_id=case_id,
-                author=actor,
+                created_by=actor,
                 version=version,
                 created_at=now_iso(),
             )

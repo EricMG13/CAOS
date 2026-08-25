@@ -194,12 +194,10 @@ class _MemorySourceCatalog(_Adapter):
         state = self._state
         with state.lock:
             source = state.sources.get(source_id)
-            if (
-                not source
-                or source.get("case_id") != case_id
-                or source.get("withdrawn")
-            ):
+            if not source or source.get("case_id") != case_id:
                 return None
+            if source.get("withdrawn"):
+                return _public_source(source)
             current = state.source_sets.get(case_id)
             source["withdrawn"] = True
             source["withdrawn_at"] = now_iso()
@@ -349,12 +347,25 @@ class _MemoryRunLedger(_Adapter):
         plan: Record,
         nodes: list[Record],
         upgraded_from_run_id: str | None = None,
+        *,
+        initial_status: str = "queued",
+        initial_error: Record | None = None,
+        initial_research: Record | None = None,
+        canonical_generation: Record | None = None,
     ) -> Record:
+        if initial_status not in {"queued", "paused"}:
+            raise ValueError("invalid initial run status")
+        stored_plan = copy.deepcopy(plan)
+        stored_error = copy.deepcopy(initial_error)
+        stored_research = copy.deepcopy(initial_research)
+        stored_generation = copy.deepcopy(canonical_generation)
         state = self._state
         with state.lock:
             if case_id not in state.cases:
                 raise ValueError("CASE_NOT_FOUND")
             created_at = now_iso()
+            if stored_generation is not None and "reporting_period" in stored_generation:
+                stored_generation["reporting_period"] = created_at[:10]
             run_id = state.new_id("run")
             node_records = [
                 {
@@ -376,14 +387,18 @@ class _MemoryRunLedger(_Adapter):
                 "case_id": case_id,
                 "created_by": actor,
                 "created_at": created_at,
-                "status": "queued",
-                "plan": copy.deepcopy(plan),
+                "status": initial_status,
+                "plan": stored_plan,
                 "node_ids": [node["id"] for node in node_records],
                 "current_node_id": None,
                 "accepted_snapshot_id": None,
                 "upgraded_from_run_id": upgraded_from_run_id,
-                "error": None,
+                "error": stored_error,
             }
+            if stored_research is not None:
+                run["research"] = stored_research
+            if stored_generation is not None:
+                run["canonical_generation"] = stored_generation
             state.runs[run_id] = run
             state.nodes.update({node["id"]: node for node in node_records})
             state.events[run_id] = []
@@ -503,6 +518,23 @@ class _MemoryRunLedger(_Adapter):
                 pinned["version"],
             ):
                 raise ValueError("SOURCE_SET_CHANGED")
+            job = state.jobs.get(run_id)
+            if job is None:
+                state.jobs[run_id] = {
+                    "status": "queued",
+                    "worker": None,
+                    "attempt_token": None,
+                    "lease_until": 0.0,
+                    "budget_reserved": 0,
+                }
+            else:
+                job.update(
+                    status="queued",
+                    worker=None,
+                    attempt_token=None,
+                    lease_until=0.0,
+                    budget_reserved=0,
+                )
             research.update(
                 approved_plan_hash=plan_hash,
                 approved_by=actor,
@@ -703,15 +735,11 @@ class _MemoryRunLedger(_Adapter):
 
             source_set_id = proposal.get("source_set_id")
             source_set = state.source_set_history.get(source_set_id)
-            current = state.source_sets.get(case_id)
             if (
                 not source_set
                 or source_set.get("case_id") != case_id
                 or source_set_id != run.get("plan", {}).get("source_set_id")
                 or proposal.get("source_set_version") != source_set.get("version")
-                or not current
-                or current.get("id") != source_set.get("id")
-                or current.get("version") != source_set.get("version")
             ):
                 raise ValueError("SOURCE_SET_CHANGED")
 
@@ -1225,7 +1253,7 @@ class _MemoryPublicationLedger(_Adapter):
             saved.update(
                 id=state.new_id("rv"),
                 case_id=case_id,
-                author=actor,
+                created_by=actor,
                 version=current.get("version", 0) + 1 if current else 1,
                 created_at=now_iso(),
             )

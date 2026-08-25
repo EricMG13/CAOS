@@ -394,6 +394,8 @@ def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
         "contract-importer-v1",
     )
     assert withdrawn_loan is not None and withdrawn_loan["status"] == "WITHDRAWN"
+    assert ledger_set.sources.withdraw(case["id"], source_id, ACTOR) == withdrawn
+    assert ledger_set.sources.current_source_set(case["id"]) == withdrawn_set
     replacement = ledger_set.sources.ingest(source, ACTOR)
     assert replacement["source_set"]["version"] == withdrawn_set["version"] + 1
     assert ledger_set.sources.source_set(historical_set["id"]) == historical_set
@@ -455,6 +457,43 @@ def test_run_and_nodes_are_created_as_one_pending_transition(
     assert ledger_set.runs.pending_runs() == [(run["id"], ACTOR)]
 
 
+def test_run_creation_persists_initial_state_and_only_queues_schedulable_runs(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    error = {
+        "code": "SOURCE_SET_EMPTY",
+        "message": "Upload and version source material before execution.",
+    }
+    research = {"phase": "planning", "budget_used": {"turns": 0}}
+    canonical_generation = {
+        "phase": "generating",
+        "completed_modules": [],
+        "reporting_period": "1900-01-01",
+    }
+
+    run = ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "DEEP_RESEARCH", "source_set_id": None},
+        [{"module_id": "CP-DR", "dependencies": [], "stage": 1}],
+        initial_status="paused",
+        initial_error=error,
+        initial_research=research,
+        canonical_generation=canonical_generation,
+    )
+
+    assert run["status"] == "paused"
+    assert run["error"] == error
+    assert run["research"] == research
+    assert run["canonical_generation"] == {
+        **canonical_generation,
+        "reporting_period": run["created_at"][:10],
+    }
+    assert ledger_set.runs.get_run(run["id"]) == run
+    assert ledger_set.runs.pending_runs() == []
+
+
 def test_run_claim_has_one_winner(ledger_set: Any) -> None:
     _, run = _queued_run(ledger_set)
 
@@ -467,6 +506,42 @@ def test_run_claim_has_one_winner(ledger_set: Any) -> None:
         )
 
     assert sum(token is not None for token in tokens) == 1
+
+
+def test_research_approval_requeues_the_finished_planning_job(ledger_set: Any) -> None:
+    case = _case(ledger_set)
+    source_set = ledger_set.sources.ingest(_source(case["id"]), ACTOR)["source_set"]
+    proposed_plan = {
+        "source_set": {"id": source_set["id"], "version": source_set["version"]},
+        "workstreams": [],
+    }
+    plan_hash = f"sha256:{digest(proposed_plan)}"
+    run = ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "DEEP_RESEARCH", "source_set_id": source_set["id"]},
+        [{"module_id": "CP-DR", "dependencies": [], "stage": 1}],
+        initial_research={"phase": "planning"},
+    )
+    token = ledger_set.runs.claim(run["id"], "planning-worker")
+    assert token is not None
+    ledger_set.runs.pause_research_plan(
+        run["id"],
+        token,
+        run["nodes"][0]["id"],
+        {
+            "phase": "awaiting_approval",
+            "proposed_plan": proposed_plan,
+            "proposed_plan_hash": plan_hash,
+        },
+    )
+    ledger_set.runs.finish(run["id"], token)
+
+    approved = ledger_set.runs.approve_research_plan(run["id"], ACTOR, plan_hash)
+
+    assert approved["status"] == "queued"
+    assert ledger_set.runs.pending_runs() == [(run["id"], ACTOR)]
+    assert ledger_set.runs.claim(run["id"], "research-worker") is not None
 
 
 def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
@@ -1080,6 +1155,8 @@ def test_publication_methodology_rv_and_audit_contracts(ledger_set: Any) -> None
         case["id"], ACTOR, {"market_snapshot_id": "market-1", "rows": []}
     )
     assert universe["version"] == 1
+    assert universe["created_by"] == ACTOR
+    assert "author" not in universe
     assert ledger_set.publications.get_rv_universe(case["id"]) == universe
     assert ledger_set.publications.get_rv_universe("case_missing") is None
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 
 from ..config import Settings
-from ..store import MemoryStore
+from ..ledgers import RunLedger
 
 
 @dataclass(frozen=True)
@@ -40,12 +40,12 @@ def identity_from_request(request: Request, settings: Settings) -> Identity:
     return Identity(subject=subject, email=email, role=role, groups=groups)
 
 
-def require_case(store: MemoryStore, case_id: str, identity: Identity, write: bool = False) -> dict:
-    case = store.get_case(case_id)
-    if not case or not store.is_member(case_id, identity.subject):
+def require_case(runs: RunLedger, case_id: str, identity: Identity, write: bool = False) -> dict:
+    case = runs.get_case(case_id)
+    if not case or not runs.is_member(case_id, identity.subject):
         raise HTTPException(status_code=404, detail="case not found")
     writer_roles = {"ANALYST", "APPROVER", "ADMIN"}
-    if write and (identity.role not in writer_roles or not store.is_member(case_id, identity.subject, roles=writer_roles)):
+    if write and (identity.role not in writer_roles or not runs.is_member(case_id, identity.subject, roles=writer_roles)):
         raise HTTPException(status_code=403, detail="analyst authority required")
     return case
 

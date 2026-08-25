@@ -78,6 +78,11 @@ class RunLedger(Protocol):
         plan: Record,
         nodes: list[Record],
         upgraded_from_run_id: str | None = None,
+        *,
+        initial_status: str = "queued",
+        initial_error: Record | None = None,
+        initial_research: Record | None = None,
+        canonical_generation: Record | None = None,
     ) -> Record: ...
 
     def list_runs(self, case_id: str) -> list[Record]: ...

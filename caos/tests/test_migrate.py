@@ -22,10 +22,10 @@ def test_migrate_rejects_non_postgresql_database_url(
         migrate()
 
 
-def test_normalized_authority_migration_is_next_and_non_destructive() -> None:
+def test_run_generation_migration_is_next_and_non_destructive() -> None:
     paths = migration_files(MIGRATIONS)
 
-    assert paths[-1].name == "005_normalized_authority.sql"
+    assert paths[-1].name == "006_run_canonical_generation.sql"
     sql = paths[-1].read_text(encoding="utf-8").lower()
     assert "caos_state" not in sql
     assert "drop table" not in sql
@@ -33,7 +33,7 @@ def test_normalized_authority_migration_is_next_and_non_destructive() -> None:
     assert "legacy" not in sql
 
 
-def test_normalized_authority_migration_applies_once() -> None:
+def test_run_generation_migration_applies_once() -> None:
     database_url = os.getenv("CAOS_TEST_DATABASE_URL")
     if not database_url:
         pytest.skip("CAOS_TEST_DATABASE_URL is not set")
@@ -57,7 +57,7 @@ def test_normalized_authority_migration_applies_once() -> None:
             first = apply_migrations(connection, MIGRATIONS)
             second = apply_migrations(connection, MIGRATIONS)
             connection.commit()
-            assert first[-1] == "005_normalized_authority"
+            assert first[-1] == "006_run_canonical_generation"
             assert second == ()
         finally:
             connection.rollback()
