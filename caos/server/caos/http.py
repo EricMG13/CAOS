@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -509,12 +509,18 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
         rows = active.pop("rows")
         return {"status": "ACTIVE", "universe": active, "rows": rows}
 
-    @app.post("/api/cases/{case_id}/rv/loan-universes", status_code=201, response_model=LoanUniverseResponse)
+    @app.post(
+        "/api/cases/{case_id}/rv/loan-universes",
+        status_code=201,
+        response_model=LoanUniverseResponse,
+        responses={200: {"model": LoanUniverseResponse}},
+    )
     def import_case_loan_universe(
         case_id: str,
         payload: LoanUniverseImportRequest,
         request: Request,
-    ) -> Any:
+        response: Response,
+    ) -> dict[str, Any]:
         who = identity(request)
         require_case(store, case_id, who, write=True)
         try:
@@ -537,7 +543,9 @@ def create_app(settings: Settings | None = None, store: MemoryStore | None = Non
                 "RV_SOURCE_BYTES_UNAVAILABLE": 409,
             }.get(exc.code, 422)
             raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.detail}) from exc
-        return record if created else JSONResponse(status_code=200, content=record)
+        if not created:
+            response.status_code = 200
+        return record
 
     @app.get("/api/cases/{case_id}/model", response_model=ModelReadinessRouteResponse)
     def model(case_id: str, request: Request) -> dict[str, Any]:

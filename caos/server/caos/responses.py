@@ -73,7 +73,9 @@ class PromotedNoteSourceResponse(SourceBaseResponse):
 
 
 class SourceResponse(
-    RootModel[UploadedSourceResponse | PromotedNoteSourceResponse | StoredSourceResponse]
+    RootModel[
+        UploadedSourceResponse | PromotedNoteSourceResponse | StoredSourceResponse
+    ]
 ):
     pass
 
@@ -258,7 +260,9 @@ class ReadyModelBuildResponse(ModelBuildBaseResponse):
 
 
 class ModelBuildResponse(
-    RootModel[QueuedModelBuildResponse | FailedModelBuildResponse | ReadyModelBuildResponse]
+    RootModel[
+        QueuedModelBuildResponse | FailedModelBuildResponse | ReadyModelBuildResponse
+    ]
 ):
     pass
 
@@ -524,12 +528,331 @@ class PathwayFitResponse(WireModel):
     message: str
 
 
+class AgentBudgetResponse(WireModel):
+    turns: int
+    evidence_reads: int
+    evidence_bytes: int
+    input_tokens: int
+    output_tokens: int
+    active_minutes: float | int
+    provider_retries: int
+    repairs: int
+
+
+class CanonicalModuleOutputTokensResponse(WireModel):
+    model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
+
+    cp_1: int = Field(alias="CP-1")
+    cp_1a: int = Field(alias="CP-1A")
+    cp_1b: int = Field(alias="CP-1B")
+    cp_2: int = Field(alias="CP-2")
+    cp_2a: int = Field(alias="CP-2A")
+
+
+class CanonicalAttemptBaseResponse(WireModel):
+    run_id: str
+    node_id: str
+    module_id: str
+    attempt: int
+    model: str
+    authority_digest: str
+    prompt_digest: str
+    source_set_digest: str
+    upstream_digest: str
+
+
+class CanonicalProviderAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["count_tokens", "create"]
+    retry: int
+    latency_ms: float | int
+
+
+class CanonicalProviderSuccessAttemptResponse(CanonicalProviderAttemptResponse):
+    request_id: str | None
+
+
+class CanonicalProviderTerminalAttemptResponse(CanonicalProviderAttemptResponse):
+    terminal_code: str
+
+
+class CanonicalProviderRetryAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["provider_retry"]
+    operation: str
+
+
+class CanonicalEvidenceAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["evidence"]
+    tool_name: Literal["read_evidence"]
+    source_id: str
+    block_ids: list[str]
+
+
+class CanonicalGenerationAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["generation"]
+    request_digest: str
+    request_id: str | None
+    input_tokens: int
+    output_tokens: int
+    stop_reason: str | None
+
+
+class CanonicalRepairAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["repair_reserve"]
+
+
+class CanonicalTerminalAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["terminal"]
+    terminal_code: str
+
+
+class CanonicalHandoffAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["handoff"]
+    output_digest: str
+    filename: str
+    confidence_score: float | int
+
+
+CanonicalAttemptResponse = (
+    CanonicalProviderSuccessAttemptResponse
+    | CanonicalProviderTerminalAttemptResponse
+    | CanonicalProviderAttemptResponse
+    | CanonicalProviderRetryAttemptResponse
+    | CanonicalEvidenceAttemptResponse
+    | CanonicalGenerationAttemptResponse
+    | CanonicalRepairAttemptResponse
+    | CanonicalTerminalAttemptResponse
+    | CanonicalHandoffAttemptResponse
+)
+
+
+class CanonicalGenerationResponse(WireModel):
+    phase: Literal["generating", "complete"]
+    model: str
+    reporting_period: str
+    module_output_tokens: CanonicalModuleOutputTokensResponse
+    budget_limits: AgentBudgetResponse
+    budget_used: AgentBudgetResponse
+    inflight_request_digest: str | None
+    attempts: list[CanonicalAttemptResponse]
+
+
+class CanonicalGenerationProgressResponse(CanonicalGenerationResponse):
+    completed_modules: list[str]
+
+
 class CanonicalRunResponse(RunResponse):
-    canonical_generation: dict[str, Any]
+    canonical_generation: (
+        CanonicalGenerationResponse | CanonicalGenerationProgressResponse
+    )
+
+
+class ResearchBriefResponse(WireModel):
+    research_question: str
+    decision_context: str
+    as_of_date: str
+    time_horizon: str
+    must_answer: list[str]
+    exclusions: list[str]
+    scope_type: Literal["issuer"]
+    scope_key: str
+    subject_name: str
+    source_mode: Literal["supplied_only"]
+    research_budget: Literal["standard"]
+    plan_approval: Literal["required"]
+
+
+class ResearchPlanSourceSetResponse(WireModel):
+    id: str
+    version: int
+
+
+class ResearchPlanArtifactResponse(WireModel):
+    module_id: str
+    artifact_id: str
+    digest: str
+
+
+class ResearchPlanScopeResponse(WireModel):
+    type: Literal["issuer"]
+    key: str
+    source_mode: Literal["supplied_only"]
+
+
+class ResearchWorkstreamBaseResponse(WireModel):
+    id: str
+    question: str
+    perspective: str
+    hypothesis: str
+    evidence_needs: list[str]
+    source_classes: list[Literal["supplied_case_sources"]]
+    disconfirming_test: str
+    completion_test: str
+    effort_cap: str
+
+
+class TopicalResearchWorkstreamResponse(ResearchWorkstreamBaseResponse):
+    kind: Literal["topical"]
+    assigned_questions: list[str]
+
+
+class SynthesisResearchWorkstreamResponse(ResearchWorkstreamBaseResponse):
+    kind: Literal["synthesis"]
+
+
+class AdversarialResearchWorkstreamResponse(ResearchWorkstreamBaseResponse):
+    kind: Literal["adversarial"]
+
+
+ResearchWorkstreamResponse = (
+    TopicalResearchWorkstreamResponse
+    | SynthesisResearchWorkstreamResponse
+    | AdversarialResearchWorkstreamResponse
+)
+
+
+class ResearchPlanResponse(WireModel):
+    methodology_build_id: str
+    brief_digest: str
+    source_set: ResearchPlanSourceSetResponse
+    upstream_artifacts: list[ResearchPlanArtifactResponse]
+    scope: ResearchPlanScopeResponse
+    workstreams: list[ResearchWorkstreamResponse]
+
+
+class ResearchAttemptBaseResponse(WireModel):
+    run_id: str
+    node_id: str
+    attempt: int
+    model: str
+    approved_plan_hash: str
+    authority_digest: str
+    prompt_digest: str
+    source_set_digest: str
+    upstream_digest: str
+
+
+class ResearchProviderAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["count_tokens", "create"]
+    retry: int
+    latency_ms: float | int
+
+
+class ResearchProviderSuccessAttemptResponse(ResearchProviderAttemptResponse):
+    request_id: str | None
+
+
+class ResearchProviderTerminalAttemptResponse(ResearchProviderAttemptResponse):
+    terminal_code: str
+
+
+class ResearchProviderSuccessTerminalAttemptResponse(
+    ResearchProviderSuccessAttemptResponse
+):
+    terminal_code: str
+
+
+class ResearchProviderRetryAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["provider_retry"]
+    operation: str
+
+
+class ResearchProviderRetryTerminalAttemptResponse(
+    ResearchProviderRetryAttemptResponse
+):
+    terminal_code: str
+
+
+class ResearchEvidenceAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["evidence"]
+    tool_name: Literal["read_evidence"]
+    source_id: str
+    block_ids: list[str]
+
+
+class ResearchEvidenceTerminalAttemptResponse(ResearchEvidenceAttemptResponse):
+    terminal_code: str
+
+
+class ResearchGenerationAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["generation"]
+    request_digest: str
+    request_id: str | None
+    input_tokens: int
+    output_tokens: int
+    stop_reason: str | None
+
+
+class ResearchGenerationTerminalAttemptResponse(ResearchGenerationAttemptResponse):
+    terminal_code: str
+
+
+class ResearchRepairAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["repair_reserve"]
+
+
+class ResearchRepairTerminalAttemptResponse(ResearchRepairAttemptResponse):
+    terminal_code: str
+
+
+class ResearchTerminalAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["terminal"]
+    terminal_code: str
+
+
+class ResearchHandoffAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["handoff"]
+    output_digest: str
+    filename: str
+    confidence_score: float | int
+
+
+class ResearchHandoffTerminalAttemptResponse(ResearchHandoffAttemptResponse):
+    terminal_code: str
+
+
+ResearchAttemptResponse = (
+    ResearchProviderSuccessTerminalAttemptResponse
+    | ResearchProviderSuccessAttemptResponse
+    | ResearchProviderTerminalAttemptResponse
+    | ResearchProviderAttemptResponse
+    | ResearchProviderRetryTerminalAttemptResponse
+    | ResearchProviderRetryAttemptResponse
+    | ResearchEvidenceTerminalAttemptResponse
+    | ResearchEvidenceAttemptResponse
+    | ResearchGenerationTerminalAttemptResponse
+    | ResearchGenerationAttemptResponse
+    | ResearchRepairTerminalAttemptResponse
+    | ResearchRepairAttemptResponse
+    | ResearchTerminalAttemptResponse
+    | ResearchHandoffTerminalAttemptResponse
+    | ResearchHandoffAttemptResponse
+)
+
+
+class ResearchStateResponse(WireModel):
+    brief: ResearchBriefResponse
+    phase: Literal[
+        "planning",
+        "awaiting_approval",
+        "approved",
+        "researching",
+        "complete",
+        "failed",
+    ]
+    proposed_plan: ResearchPlanResponse | None
+    proposed_plan_hash: str | None
+    approved_plan_hash: str | None
+    approved_by: str | None
+    approved_at: str | None
+    model: str
+    budget_limits: AgentBudgetResponse
+    budget_used: AgentBudgetResponse
+    inflight_request_digest: str | None
+    attempts: list[ResearchAttemptResponse]
 
 
 class ResearchRunResponse(RunResponse):
-    research: dict[str, Any]
+    research: ResearchStateResponse
 
 
 RunRouteResponse = RunResponse | CanonicalRunResponse | ResearchRunResponse
@@ -763,6 +1086,14 @@ class LoanRowResponse(WireModel):
     instrument_key: str
 
 
+class LoanUniverseFindingResponse(WireModel):
+    code: str
+    detail: str
+    sheet: str | None
+    row: int | None
+    column: str | None
+
+
 class LoanUniverseResponse(WireModel):
     id: str
     case_id: str
@@ -775,7 +1106,7 @@ class LoanUniverseResponse(WireModel):
     universe_digest: str | None
     row_count: int
     status: str
-    findings: list[dict[str, Any]]
+    findings: list[LoanUniverseFindingResponse]
     created_at: str
     created_by: str
     version: int | None

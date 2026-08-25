@@ -4062,3 +4062,19 @@ success route without changing the existing wire protocol.
 Decision: accept the explicit response-model interface after full-suite
 verification. Do not add generated clients, permissive catch-all schemas, or
 models for the three non-JSON transport routes.
+
+## 2026-08-25 — HTTP response-model review remediation gate
+
+Decision under review: close the idempotent loan-import validation gap and
+replace the remaining permissive nested response payloads without changing the
+wire protocol.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-167 | Transport-contract reviewer | Returning an idempotent import as a prebuilt `JSONResponse` bypasses FastAPI response validation and leaves the real 200 success variant undocumented. | High | Resolved and verified | The route now declares the same strict loan-universe model for 201 and 200, injects the response to select 200 for an idempotent import, and returns the ordinary record through FastAPI validation. OpenAPI and a deliberately invalid idempotent result prove both paths. |
+| RT-2026-08-25-168 | Schema-boundary reviewer | Free-form canonical generation, research, and finding objects preserve unknown fields and advertise unusably broad nested schemas. | High | Resolved and verified | Concrete strict models now cover exact budgets, generation progress, research briefs/plans/workstreams, persisted attempt variants, and finding locators. Raw round-trip, omission, variant, unknown-field, and nested OpenAPI assertions pass. |
+| RT-2026-08-25-169 | Failure-lifecycle reviewer | CP-DR mutates its latest attempt with `terminal_code`; strict models that cover only ordinary attempts would reject real retry-budget or post-handoff failures. | High | Resolved and verified | Terminal-overlay variants include provider calls, provider retry, evidence, generation, repair, and handoff shapes. Adversarial retry and handoff fixtures reproduce the two least-obvious persisted variants. |
+
+Decision: accept the remediation after focused loan/API coverage and the full
+server suite. Preserve the dual 201-created/200-idempotent status contract and
+keep the nested response families strict.
