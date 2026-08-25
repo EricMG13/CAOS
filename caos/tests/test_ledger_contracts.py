@@ -439,21 +439,28 @@ def test_snapshot_acceptance_updates_case_and_run_together(
     assert token is not None
     ledger_set.runs.update_node_fenced(run["id"], token, node["id"], status="running")
     artifact_payload = {"debt": 100}
+    artifact_proposal = {
+        "case_id": case["id"],
+        "run_id": run["id"],
+        "module_id": node["module_id"],
+        "input_fingerprint": "snapshot-fingerprint",
+        "payload": artifact_payload,
+        "digest": digest(artifact_payload),
+        "markdown": "# CP-1\n\nDebt: 100\n",
+        "created_by": ACTOR,
+        "created_at": "2026-08-24T00:00:00+00:00",
+    }
+    assert "id" not in artifact_proposal
     artifact = ledger_set.runs.complete_node(
         run["id"],
         token,
         node["id"],
-        {
-            "case_id": case["id"],
-            "run_id": run["id"],
-            "module_id": node["module_id"],
-            "input_fingerprint": "snapshot-fingerprint",
-            "payload": artifact_payload,
-            "digest": digest(artifact_payload),
-        },
+        artifact_proposal,
         research=None,
         event_data={"node_id": node["id"], "module_id": node["module_id"]},
     )
+    assert artifact["payload"] == artifact_payload
+    assert artifact["digest"] == artifact_proposal["digest"]
     source_set = ledger_set.sources.source_set(run["plan"]["source_set_id"])
     assert source_set is not None
     artifact_ref = {
@@ -483,6 +490,13 @@ def test_snapshot_acceptance_updates_case_and_run_together(
 
     ledger_set.runs.finalize_success(run["id"], token, None, {"run_id": run["id"]})
 
+    foreign_case, foreign_run = _queued_run(ledger_set)
+    foreign_source_set = ledger_set.sources.source_set(
+        foreign_run["plan"]["source_set_id"]
+    )
+    assert foreign_source_set is not None
+    assert foreign_source_set["case_id"] == foreign_case["id"]
+
     invalid_payloads = [
         ("RUN_NOT_FOUND", {**base_payload, "case_id": "case_foreign"}),
         ("RUN_NOT_FOUND", {**base_payload, "run_id": "run_foreign"}),
@@ -492,7 +506,11 @@ def test_snapshot_acceptance_updates_case_and_run_together(
         ),
         (
             "SOURCE_SET_CHANGED",
-            {**base_payload, "source_set_id": "source_set_missing"},
+            {
+                **base_payload,
+                "source_set_id": foreign_source_set["id"],
+                "source_set_version": foreign_source_set["version"],
+            },
         ),
         (
             "RUN_NOT_READY",
@@ -513,7 +531,6 @@ def test_snapshot_acceptance_updates_case_and_run_together(
         assert ledger_set.runs.get_case(case["id"])["accepted_snapshot_id"] is None
         assert ledger_set.runs.get_run(run["id"])["accepted_snapshot_id"] is None
 
-    foreign_case, foreign_run = _queued_run(ledger_set)
     foreign_node = foreign_run["nodes"][0]
     foreign_token = ledger_set.runs.claim(foreign_run["id"], "foreign-worker")
     assert foreign_token is not None
@@ -521,24 +538,31 @@ def test_snapshot_acceptance_updates_case_and_run_together(
         foreign_run["id"], foreign_token, foreign_node["id"], status="running"
     )
     foreign_payload = {"debt": 200}
+    foreign_artifact_proposal = {
+        "case_id": foreign_case["id"],
+        "run_id": foreign_run["id"],
+        "module_id": foreign_node["module_id"],
+        "input_fingerprint": "foreign-fingerprint",
+        "payload": foreign_payload,
+        "digest": digest(foreign_payload),
+        "markdown": "# CP-1\n\nDebt: 200\n",
+        "created_by": ACTOR,
+        "created_at": "2026-08-24T00:00:00+00:00",
+    }
+    assert "id" not in foreign_artifact_proposal
     foreign_artifact = ledger_set.runs.complete_node(
         foreign_run["id"],
         foreign_token,
         foreign_node["id"],
-        {
-            "case_id": foreign_case["id"],
-            "run_id": foreign_run["id"],
-            "module_id": foreign_node["module_id"],
-            "input_fingerprint": "foreign-fingerprint",
-            "payload": foreign_payload,
-            "digest": digest(foreign_payload),
-        },
+        foreign_artifact_proposal,
         research=None,
         event_data={
             "node_id": foreign_node["id"],
             "module_id": foreign_node["module_id"],
         },
     )
+    assert foreign_artifact["payload"] == foreign_payload
+    assert foreign_artifact["digest"] == foreign_artifact_proposal["digest"]
     foreign_ref = {
         "id": foreign_artifact["id"],
         "module_id": foreign_artifact["module_id"],
