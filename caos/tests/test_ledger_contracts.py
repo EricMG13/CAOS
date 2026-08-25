@@ -447,6 +447,44 @@ def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
     assert ledger_set.sources.source_set(historical_set["id"]) == historical_set
 
 
+def test_assumption_creation_and_withdrawal_orders_match_portably(
+    ledger_set: Any,
+) -> None:
+    create_first_case = _case(ledger_set)
+    create_first_source = ledger_set.sources.ingest(
+        _source(create_first_case["id"]), ACTOR
+    )
+    assumption = ledger_set.publications.create_assumption(
+        create_first_case["id"],
+        ACTOR,
+        "Debt is 100",
+        [create_first_source["id"]],
+        ["CP-1"],
+    )
+    assert ledger_set.sources.withdraw(
+        create_first_case["id"], create_first_source["id"], ACTOR
+    )
+    stored = ledger_set.publications.list_assumptions(create_first_case["id"])
+    assert stored == [{**assumption, "status": "STALE", "stale": True}]
+
+    withdraw_first_case = _case(ledger_set)
+    withdraw_first_source = ledger_set.sources.ingest(
+        _source(withdraw_first_case["id"], sha256="b" * 64), ACTOR
+    )
+    assert ledger_set.sources.withdraw(
+        withdraw_first_case["id"], withdraw_first_source["id"], ACTOR
+    )
+    with pytest.raises(ValueError, match="EVIDENCE_SOURCE_WITHDRAWN"):
+        ledger_set.publications.create_assumption(
+            withdraw_first_case["id"],
+            ACTOR,
+            "Debt is 100",
+            [withdraw_first_source["id"]],
+            ["CP-1"],
+        )
+    assert ledger_set.publications.list_assumptions(withdraw_first_case["id"]) == []
+
+
 def test_loan_universe_versions_supersede_reject_and_withdraw_portably(
     ledger_set: Any,
 ) -> None:
@@ -1848,6 +1886,73 @@ def test_postgres_loan_import_and_withdrawal_serialize_without_deadlock(
         withdrawn_source = postgres_ledger_set.sources.get_source(source["id"])
         assert withdrawn_source is not None and withdrawn_source["withdrawn"] is True
         assert postgres_ledger_set.sources.active_loan_universe(case["id"]) is None
+
+
+def test_postgres_assumption_creation_and_withdrawal_serialize_by_case_lock(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    database_url = postgres_ledger_set._database_url
+    for leader_kind in ("create", "withdraw"):
+        case = _case(postgres_ledger_set)
+        source = postgres_ledger_set.sources.ingest(
+            _source(case["id"], sha256=("c" if leader_kind == "create" else "d") * 64),
+            ACTOR,
+        )
+        leader = _GatedPostgresLedgerSet(database_url)
+        follower = _ObservedPostgresLedgerSet(database_url)
+        gate = leader.gate_next_case_lock()
+
+        def create_assumption(ledgers: PostgresLedgerSet) -> str:
+            try:
+                created = ledgers.publications.create_assumption(
+                    case["id"],
+                    ACTOR,
+                    "Debt is 100",
+                    [source["id"]],
+                    ["CP-1"],
+                )
+                assert created["status"] == "PROVISIONAL"
+                assert created["stale"] is False
+                return "created"
+            except ValueError as exc:
+                assert str(exc) == "EVIDENCE_SOURCE_WITHDRAWN"
+                return "source-withdrawn"
+
+        def withdraw_source(ledgers: PostgresLedgerSet) -> str:
+            withdrawn = ledgers.sources.withdraw(case["id"], source["id"], ACTOR)
+            assert withdrawn is not None and withdrawn["withdrawn"] is True
+            return "withdrawn"
+
+        leader_operation = (
+            create_assumption if leader_kind == "create" else withdraw_source
+        )
+        follower_operation = (
+            withdraw_source if leader_kind == "create" else create_assumption
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(leader_operation, leader)
+                assert gate.acquired.wait(timeout=5)
+                follower.observe_next_connection()
+                second = executor.submit(follower_operation, follower)
+                follower_pid = follower.wait_for_observed_connection()
+                _wait_for_postgres_blocker(database_url, follower_pid)
+                gate.release.set()
+                outcomes = {first.result(timeout=15), second.result(timeout=15)}
+        finally:
+            gate.release.set()
+
+        stored = postgres_ledger_set.publications.list_assumptions(case["id"])
+        if leader_kind == "create":
+            assert outcomes == {"created", "withdrawn"}
+            assert len(stored) == 1
+            assert stored[0]["status"] == "STALE"
+            assert stored[0]["stale"] is True
+        else:
+            assert outcomes == {"source-withdrawn", "withdrawn"}
+            assert stored == []
+        withdrawn_source = postgres_ledger_set.sources.get_source(source["id"])
+        assert withdrawn_source is not None and withdrawn_source["withdrawn"] is True
 
 
 def test_postgres_concurrent_model_queue_is_idempotent_and_preserves_actor(

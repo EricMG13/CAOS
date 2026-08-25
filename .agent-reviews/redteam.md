@@ -4561,3 +4561,18 @@ Decision: accept the authority-owner correction for independent rereview. The
 initial RT-236 implementation was incomplete and is superseded for reducer
 coverage by RT-241 through RT-243; the append-only historical entry remains as
 the review record. No schema was dropped, and no file was staged or committed.
+
+## 2026-08-25 — Normalized ledger final broad-review correction
+
+Correction under review: close the remaining assumption/source authority race
+found by the final aggregate ledger review without changing the four-port
+interface or adding another storage abstraction.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-245 | Evidence-authority reviewer | PostgreSQL assumption creation could validate an active source, then commit a `PROVISIONAL`, non-stale assumption after concurrent withdrawal committed without seeing the uncommitted assumption. | Critical | Resolved and verified | PostgreSQL `create_assumption` now acquires the case row `FOR UPDATE` immediately before source validation, matching withdrawal's case→source order. A deterministic two-connection regression pauses the leader after that exact production lock, proves the follower backend PID is blocked with `pg_blocking_pids`, and forces both outcomes: creation-first commits before withdrawal marks the stored assumption `STALE`; withdrawal-first makes creation raise exact `EVIDENCE_SOURCE_WITHDRAWN` with no row. The portable contract confirms the same authority outcomes in memory and PostgreSQL. Full suites pass 361 tests with 45 environment skips and 406/406 live. |
+
+Decision: accept the final broad-review correction for independent review. The
+case lock serializes evidence validation with withdrawal, all focused and
+complete gates pass, and no interface, schema, envelope, or persistence hook
+was added.

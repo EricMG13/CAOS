@@ -1848,6 +1848,7 @@ class _PostgresPublicationLedger(_Adapter):
         }
         with self._owner._connect() as connection:
             with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM cases WHERE id=%s FOR UPDATE", (case_id,))
                 self._validate_refs(cursor, case_id, stored_evidence)
                 cursor.execute(
                     "INSERT INTO assumptions(id, case_id, status, evidence_ids, record, "
