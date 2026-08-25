@@ -253,14 +253,21 @@ class _PostgresSourceCatalog(_Adapter):
                 return _note_record(row)
 
         cursor.execute("SELECT id FROM cases WHERE id=%s FOR UPDATE", (case_id,))
-        source_id = _id("src-note")
         body = row["body"]
+        source_digest = hashlib.sha256(body.encode()).hexdigest()
+        cursor.execute(
+            "SELECT 1 FROM sources WHERE case_id=%s AND sha256=%s AND withdrawn=false",
+            (case_id, source_digest),
+        )
+        if cursor.fetchone() is not None:
+            raise ValueError("DUPLICATE_SOURCE")
+        source_id = _id("src-note")
         source = {
             "case_id": case_id,
             "filename": f"analyst-note-{note_id}.md",
             "media_type": "text/markdown",
             "bytes": len(body.encode()),
-            "sha256": hashlib.sha256(body.encode()).hexdigest(),
+            "sha256": source_digest,
             "vault_path": None,
             "blocks": [
                 {
@@ -277,7 +284,10 @@ class _PostgresSourceCatalog(_Adapter):
             "withdrawn": False,
             "source_kind": "analyst_note",
         }
-        self._insert_source(cursor, source, actor, source_id)
+        try:
+            self._insert_source(cursor, source, actor, source_id)
+        except self._db.psycopg.errors.UniqueViolation as exc:
+            raise ValueError("DUPLICATE_SOURCE") from exc
         current = self._current_set(cursor, case_id)
         source_ids = list(current["source_ids"] if current else [])
         source_ids.append(source_id)
@@ -926,9 +936,10 @@ class _PostgresRunLedger(_Adapter):
             if cursor.fetchone()["active"] >= MAX_ACTIVE_JOBS:
                 return None
             cursor.execute(
-                "SELECT id FROM jobs WHERE run_id=%s AND "
-                "(state='queued' OR (state='claimed' AND lease_until <= now())) "
-                "FOR UPDATE SKIP LOCKED",
+                "SELECT job.id FROM jobs AS job JOIN runs AS run ON run.id=job.run_id "
+                "WHERE job.run_id=%s AND run.status IN ('queued', 'running') AND "
+                "(job.state='queued' OR (job.state='claimed' AND job.lease_until <= now())) "
+                "FOR UPDATE OF job SKIP LOCKED",
                 (run_id,),
             )
             job = cursor.fetchone()
@@ -1268,9 +1279,31 @@ class _PostgresRunLedger(_Adapter):
         *,
         deadline: float | None = None,
     ) -> None:
-        _remaining_finalization_seconds(deadline)
         with self._db.connection() as connection, connection.cursor() as cursor:
-            self._assert_fenced(cursor, run_id, attempt_token)
+            cursor.execute(
+                "SELECT *, lease_until > now() AS lease_current FROM jobs "
+                "WHERE run_id=%s FOR UPDATE",
+                (run_id,),
+            )
+            job = cursor.fetchone()
+            cursor.execute("SELECT * FROM runs WHERE id=%s FOR UPDATE", (run_id,))
+            run = cursor.fetchone()
+            if (
+                run
+                and run["status"] == "succeeded"
+                and run.get("final_attempt_token") == attempt_token
+                and job
+                and job["state"] == "succeeded"
+                and job.get("attempt_token") == attempt_token
+            ):
+                return
+            if (
+                not job
+                or job["state"] != "claimed"
+                or job.get("attempt_token") != attempt_token
+                or not job["lease_current"]
+            ):
+                raise JobFencedError("stale workflow attempt")
             _remaining_finalization_seconds(deadline)
             cursor.execute(
                 "SELECT node.id FROM workflow_nodes AS node "
@@ -1291,6 +1324,11 @@ class _PostgresRunLedger(_Adapter):
                     run_id,
                 ),
             )
+            cursor.execute(
+                "UPDATE jobs SET state='succeeded', lease_until=NULL, budget_reserved=0 "
+                "WHERE run_id=%s AND state='claimed' AND attempt_token=%s",
+                (run_id, attempt_token),
+            )
             self._append_event(
                 cursor, run_id, "run.succeeded", event_data, attempt_token
             )
@@ -1306,20 +1344,31 @@ class _PostgresRunLedger(_Adapter):
         self, case_id: str, run_id: str, actor: str, snapshot: Record
     ) -> Record:
         with self._db.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT state, attempt_token FROM jobs WHERE run_id=%s FOR UPDATE",
+                (run_id,),
+            )
+            final_job = cursor.fetchone()
             cursor.execute("SELECT * FROM cases WHERE id=%s FOR UPDATE", (case_id,))
             case = cursor.fetchone()
             cursor.execute("SELECT * FROM runs WHERE id=%s FOR UPDATE", (run_id,))
             run = cursor.fetchone()
             if not run or run["case_id"] != case_id or case is None:
                 raise ValueError("RUN_NOT_FOUND")
+            if (
+                run["status"] != "succeeded"
+                or not run.get("final_attempt_token")
+                or not final_job
+                or final_job["state"] != "succeeded"
+                or final_job.get("attempt_token") != run["final_attempt_token"]
+            ):
+                raise ValueError("RUN_NOT_READY")
             if run.get("accepted_snapshot_id"):
                 cursor.execute(
                     "SELECT * FROM accepted_snapshots WHERE id=%s",
                     (run["accepted_snapshot_id"],),
                 )
                 return _snapshot_record(cursor.fetchone())
-            if run["status"] != "succeeded" or not run.get("final_attempt_token"):
-                raise ValueError("RUN_NOT_READY")
             proposal = copy.deepcopy(snapshot)
             if proposal.get("case_id") != case_id or proposal.get("run_id") != run_id:
                 raise ValueError("RUN_NOT_FOUND")
@@ -2397,14 +2446,18 @@ class _PostgresModelLedger(_Adapter):
 
     def queue_export(self, build_id: str, actor: str) -> tuple[Record, bool]:
         with self._db.connection() as connection, connection.cursor() as cursor:
-            build = self._build(cursor, build_id, lock=True)
-            if not build or build.get("status") != "READY":
-                raise ValueError("MODEL_EXPORT_NOT_READY")
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"caos:model-build:{build_id}",),
+            )
             cursor.execute(
                 "SELECT state FROM model_build_jobs WHERE build_id=%s AND kind='export' FOR UPDATE",
                 (build_id,),
             )
             job = cursor.fetchone()
+            build = self._build(cursor, build_id, lock=True)
+            if not build or build.get("status") != "READY":
+                raise ValueError("MODEL_EXPORT_NOT_READY")
             if job and job["state"] in {"queued", "claimed", "succeeded"}:
                 return build, False
             build["export"] = {"status": "QUEUED", "error": None}
@@ -2445,6 +2498,10 @@ class _PostgresModelLedger(_Adapter):
         with self._db.connection() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtext('caos:workflow-budget'))"
+            )
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"caos:model-build:{build_id}",),
             )
             cursor.execute(
                 "SELECT (SELECT count(*) FROM jobs WHERE state='claimed' AND lease_until > now()) + "

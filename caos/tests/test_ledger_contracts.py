@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -18,6 +20,7 @@ from caos.store import JobFencedError
 ACTOR = "analyst"
 LEASE_SECONDS = 0.2
 POSTGRES_URL = os.getenv("CAOS_TEST_DATABASE_URL")
+PROTOCOL_METHOD_COUNT = 72
 
 
 class CopyFailure(RuntimeError):
@@ -148,6 +151,21 @@ def _model_result() -> dict[str, Any]:
     }
 
 
+def _export_result(build: dict[str, Any]) -> dict[str, Any]:
+    sha256 = "e" * 64
+    return {
+        "vault_key": f"models/{build['case_id']}/{build['id']}/{sha256}.xlsx",
+        "filename": "credit-model.xlsx",
+        "sha256": sha256,
+        "size": 1024,
+        "formulas_validated": 0,
+        "semantic_checks": 0,
+        "renderer_version": "contract-v1",
+        "renderer_sha256": "f" * 64,
+        "calculation_engine": "LibreOffice",
+    }
+
+
 def _accept_empty_run(
     ledger_set: Any, case_id: str, source_set: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -237,18 +255,23 @@ def test_protocol_inventory_is_exact(ledger_set: Any) -> None:
         if getattr(value, "_is_protocol", False)
         and getattr(value, "__module__", None) == ledgers.__name__
     } == {"SourceCatalog", "RunLedger", "PublicationLedger", "ModelLedger"}
-    for port_name, protocol in (
+    ports = (
         ("sources", ledgers.SourceCatalog),
         ("runs", ledgers.RunLedger),
         ("publications", ledgers.PublicationLedger),
         ("models", ledgers.ModelLedger),
-    ):
+    )
+    method_count = 0
+    for port_name, protocol in ports:
         adapter = getattr(ledger_set, port_name)
-        assert all(
-            callable(getattr(adapter, name, None))
+        methods = {
+            name
             for name, value in vars(protocol).items()
             if callable(value) and not name.startswith("_")
-        )
+        }
+        method_count += len(methods)
+        assert all(callable(getattr(adapter, name, None)) for name in methods)
+    assert method_count == PROTOCOL_METHOD_COUNT
 
 
 def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
@@ -475,6 +498,7 @@ def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
     assert completed["id"] == completed_run["nodes"][0]["artifact_id"]
     assert completed["payload"] == artifact_payload
     assert completed["digest"] == artifact_digest
+    assert ledger_set.runs.get_artifact(completed["id"]) == completed
     assert completed_run["nodes"][0]["status"] == "succeeded"
     events = ledger_set.runs.events_after(run["id"])
     assert events[:-1] == before_events
@@ -597,6 +621,15 @@ def test_snapshot_acceptance_updates_case_and_run_together(
     assert ledger_set.runs.get_run(run["id"])["accepted_snapshot_id"] is None
 
     ledger_set.runs.update_run_fenced(run["id"], token, status="succeeded")
+    with pytest.raises(ValueError, match="RUN_NOT_READY"):
+        ledger_set.runs.accept_snapshot(
+            case["id"],
+            run["id"],
+            ACTOR,
+            {**base_payload, "digest": digest(base_payload)},
+        )
+
+    ledger_set.runs.finalize_success(run["id"], token, None, {"run_id": run["id"]})
 
     invalid_payloads = [
         ("RUN_NOT_FOUND", {**base_payload, "case_id": "case_foreign"}),
@@ -696,6 +729,134 @@ def test_snapshot_acceptance_updates_case_and_run_together(
     assert ledger_set.runs.get_run(run["id"])["accepted_snapshot_id"] == accepted["id"]
 
 
+def test_success_finalization_retires_claim_before_finish_and_fences_snapshot(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    source_set = ledger_set.sources.ingest(_source(case["id"]), ACTOR)["source_set"]
+    run = ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "EARNINGS_UPDATE", "source_set_id": source_set["id"]},
+        [],
+    )
+    token = ledger_set.runs.claim(run["id"], "final-worker")
+    assert token is not None
+    assert ledger_set.runs.renew(run["id"], token) is True
+
+    ledger_set.runs.finalize_success(run["id"], token, None, {"run_id": run["id"]})
+    ledger_set.runs.finalize_success(
+        run["id"],
+        token,
+        None,
+        {"ignored": "retry"},
+        deadline=time.monotonic() - 1,
+    )
+
+    assert ledger_set.runs.is_current(run["id"], token) is False
+    assert ledger_set.runs.pending_runs() == []
+    time.sleep(LEASE_SECONDS + 0.1)
+    assert ledger_set.runs.claim(run["id"], "takeover-worker") is None
+    ledger_set.runs.finish(run["id"], token)
+    ledger_set.runs.finish(run["id"], token)
+
+    snapshot_payload = {
+        "case_id": case["id"],
+        "run_id": run["id"],
+        "source_set_id": source_set["id"],
+        "source_set_version": source_set["version"],
+        "artifacts": [],
+        "accepted_at": "2026-08-24T00:00:00+00:00",
+    }
+    snapshot = ledger_set.runs.accept_snapshot(
+        case["id"],
+        run["id"],
+        ACTOR,
+        {**snapshot_payload, "digest": digest(snapshot_payload)},
+    )
+    assert snapshot["run_id"] == run["id"]
+    assert [event["event"] for event in ledger_set.runs.events_after(run["id"])] == [
+        "run.succeeded",
+        "snapshot.accepted",
+    ]
+
+
+def test_case_run_membership_research_events_and_visible_snapshot_contracts(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    assert ledger_set.runs.list_cases(ACTOR) == [case]
+    assert ledger_set.runs.list_cases("outsider") == []
+    assert ledger_set.runs.get_case("case_missing") is None
+    assert ledger_set.runs.is_member(case["id"], ACTOR) is True
+    assert ledger_set.runs.is_member(case["id"], ACTOR, {"APPROVER"}) is False
+    assert (
+        ledger_set.runs.add_member(
+            case["id"], ACTOR, "approver", "APPROVER", actor_role="ADMIN"
+        )
+        is True
+    )
+    assert ledger_set.runs.is_member(case["id"], "approver", {"APPROVER"}) is True
+    assert (
+        ledger_set.runs.add_member(case["id"], "outsider", "other", "VIEWER") is False
+    )
+
+    source_set = ledger_set.sources.ingest(_source(case["id"]), ACTOR)["source_set"]
+    run = ledger_set.runs.create_run_with_nodes(
+        case["id"],
+        ACTOR,
+        {"pathway": "DEEP_RESEARCH", "source_set_id": source_set["id"]},
+        [{"module_id": "CP-DR", "dependencies": [], "stage": 1}],
+    )
+    with pytest.raises(ValueError, match="CASE_NOT_FOUND"):
+        ledger_set.runs.create_run_with_nodes(
+            "case_missing", ACTOR, {"source_set_id": source_set["id"]}, []
+        )
+    assert ledger_set.runs.list_runs(case["id"]) == [run]
+    assert ledger_set.runs.latest_run(case["id"]) == run
+
+    ledger_set.runs.emit(run["id"], "contract.manual", {"step": 1})
+    assert ledger_set.runs.events_after(run["id"])[-1]["event"] == "contract.manual"
+    assert ledger_set.runs.wait_for_events(run["id"], 1, timeout=0.01) == []
+
+    token = ledger_set.runs.claim(run["id"], "research-worker")
+    assert token is not None
+    node = run["nodes"][0]
+    ledger_set.runs.update_run_fenced(run["id"], token, status="running")
+    proposed_plan = {
+        "source_set": {"id": source_set["id"], "version": source_set["version"]}
+    }
+    plan_hash = f"sha256:{digest(proposed_plan)}"
+    research = {
+        "phase": "awaiting_approval",
+        "proposed_plan": proposed_plan,
+        "proposed_plan_hash": plan_hash,
+    }
+    ledger_set.runs.pause_research_plan(run["id"], token, node["id"], research)
+    with pytest.raises(ValueError, match="PLAN_HASH_MISMATCH"):
+        ledger_set.runs.approve_research_plan(run["id"], ACTOR, "sha256:wrong")
+    approved = ledger_set.runs.approve_research_plan(run["id"], ACTOR, plan_hash)
+    assert approved["status"] == "queued"
+    ledger_set.runs.finish(run["id"], token)
+
+    first_run, first_snapshot = _accept_empty_run(ledger_set, case["id"], source_set)
+    second_run, second_snapshot = _accept_empty_run(ledger_set, case["id"], source_set)
+    assert ledger_set.runs.latest_run(case["id"])["id"] == second_run["id"]
+    assert ledger_set.runs.get_run(first_run["id"])["id"] == first_run["id"]
+    assert ledger_set.runs.switch_visible_snapshot(case["id"], "missing", ACTOR) is None
+    assert (
+        ledger_set.runs.switch_visible_snapshot(
+            case["id"], second_snapshot["id"], ACTOR
+        )
+        == second_snapshot
+    )
+    assert (
+        ledger_set.runs.get_case(case["id"])["visible_snapshot_id"]
+        == second_snapshot["id"]
+    )
+    assert first_snapshot["id"] != second_snapshot["id"]
+
+
 def test_publication_versions_conflict_without_partial_append(
     ledger_set: Any,
 ) -> None:
@@ -754,6 +915,82 @@ def test_note_promotion_changes_source_authority_once(ledger_set: Any) -> None:
     assert source is not None and source["source_kind"] == "analyst_note"
     assert source_set is not None and source_set["source_ids"] == [source_id]
     assert source_set["version"] == promoted_set["version"]
+
+
+def test_promoted_note_duplicate_digest_rolls_back_all_authority(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    body = "Debt remains 100"
+    ledger_set.sources.ingest(
+        _source(case["id"], sha256=hashlib.sha256(body.encode()).hexdigest()), ACTOR
+    )
+    note = ledger_set.publications.create_note(case["id"], ACTOR, body)
+    before = (
+        ledger_set.publications.list_notes(case["id"]),
+        ledger_set.sources.list_sources(case["id"]),
+        ledger_set.sources.current_source_set(case["id"]),
+    )
+
+    for promote in (
+        lambda: ledger_set.sources.ingest_promoted_note(note, ACTOR),
+        lambda: ledger_set.publications.promote_note(case["id"], note["id"], ACTOR),
+    ):
+        with pytest.raises(ValueError, match="^DUPLICATE_SOURCE$"):
+            promote()
+        assert (
+            ledger_set.publications.list_notes(case["id"]),
+            ledger_set.sources.list_sources(case["id"]),
+            ledger_set.sources.current_source_set(case["id"]),
+        ) == before
+
+
+def test_publication_methodology_rv_and_audit_contracts(ledger_set: Any) -> None:
+    case = _case(ledger_set)
+    recommendations = ledger_set.publications.append_recommendations(
+        case["id"],
+        ACTOR,
+        0,
+        {"market_snapshot_id": "market-1", "rows": [], "analytical_dependency_ids": []},
+    )
+    assert ledger_set.publications.list_recommendations(case["id"]) == [recommendations]
+
+    universe = ledger_set.publications.save_rv_universe(
+        case["id"], ACTOR, {"market_snapshot_id": "market-1", "rows": []}
+    )
+    assert universe["version"] == 1
+    assert ledger_set.publications.get_rv_universe(case["id"]) == universe
+    assert ledger_set.publications.get_rv_universe("case_missing") is None
+
+    invalid = ledger_set.publications.create_methodology_draft(
+        {"module_id": "CP-1", "before": {"x": 1}, "after": {"x": 1}}, ACTOR
+    )
+    with pytest.raises(ValueError, match="draft does not validate"):
+        ledger_set.publications.validate_methodology_draft(invalid["id"], "reviewer")
+
+    draft = ledger_set.publications.create_methodology_draft(
+        {"module_id": "CP-1", "before": {"x": 1}, "after": {"x": 2}}, ACTOR
+    )
+    drafts = ledger_set.publications.list_methodology_drafts()
+    assert len(drafts) == 2
+    assert {item["id"] for item in drafts} == {invalid["id"], draft["id"]}
+    with pytest.raises(ValueError, match="validated draft required"):
+        ledger_set.publications.confirm_methodology_draft(
+            draft["id"], "approver", "signature"
+        )
+    validated = ledger_set.publications.validate_methodology_draft(
+        draft["id"], "reviewer"
+    )
+    confirmed = ledger_set.publications.confirm_methodology_draft(
+        draft["id"], "approver", "signature"
+    )
+    assert validated["status"] == "VALIDATED"
+    assert confirmed["status"] == "CONFIRMED_PENDING_SIGNED_AUTHORITY"
+    assert confirmed["signature"] == "signature"
+    assert any(
+        event["action"] == "methodology.draft_confirmed"
+        for event in ledger_set.publications.list_audit()
+    )
 
 
 def test_memory_promoted_note_ingress_uses_canonical_state_without_aliasing() -> None:
@@ -1067,6 +1304,41 @@ def test_model_jobs_retry_renew_takeover_and_fencing(ledger_set: Any) -> None:
     assert ledger_set.models.is_current(build_id, retry_token) is False
 
 
+def test_model_export_queue_claim_completion_and_download_contracts(
+    ledger_set: Any,
+) -> None:
+    build_input = _accepted_model_input(ledger_set)
+    queued, created = ledger_set.models.queue_build(build_input, ACTOR)
+    assert created is True
+    calculate_token = ledger_set.models.claim(queued["id"], "model-worker")
+    assert calculate_token is not None
+    ready = ledger_set.models.complete(
+        queued["id"], calculate_token, _model_result(), "model-worker"
+    )
+    assert ledger_set.models.list_builds(ready["case_id"]) == [ready]
+    with pytest.raises(ValueError, match="MODEL_EXPORT_NOT_READY"):
+        ledger_set.models.queue_export("model_missing", ACTOR)
+
+    export_queued, export_created = ledger_set.models.queue_export(ready["id"], ACTOR)
+    repeated, repeated_created = ledger_set.models.queue_export(ready["id"], ACTOR)
+    assert export_created is True
+    assert repeated_created is False
+    assert repeated == export_queued
+    export_token = ledger_set.models.claim(ready["id"], "export-worker", "export")
+    assert export_token is not None
+    exported = ledger_set.models.complete(
+        ready["id"],
+        export_token,
+        _export_result(ready),
+        "export-worker",
+        "export",
+    )
+    assert exported["export"]["status"] == "READY"
+    ledger_set.models.record_export_download(ready["id"], ready["case_id"], ACTOR)
+    with pytest.raises(ValueError, match="MODEL_EXPORT_NOT_READY"):
+        ledger_set.models.record_export_download(ready["id"], "case_foreign", ACTOR)
+
+
 def test_pending_job_reads_are_authoritative(ledger_set: Any) -> None:
     _, run = _queued_run(ledger_set)
     build = _accepted_model_input(ledger_set)
@@ -1082,8 +1354,10 @@ def test_postgres_duplicate_ingest_has_one_winner(
     first, second = postgres_pair
     case = _case(first)
     source = _source(case["id"])
+    barrier = threading.Barrier(2)
 
     def ingest(ledger_set: Any) -> str:
+        barrier.wait(timeout=5)
         try:
             ledger_set.sources.ingest(source, ACTOR)
         except ValueError as exc:
@@ -1103,8 +1377,10 @@ def test_postgres_optimistic_append_has_one_winner(
     first, second = postgres_pair
     case = _case(first)
     thesis = {"core_thesis": "Defensible", "evidence_ids": []}
+    barrier = threading.Barrier(2)
 
     def append(ledger_set: Any) -> str:
+        barrier.wait(timeout=5)
         try:
             ledger_set.publications.append_thesis(case["id"], ACTOR, 0, thesis)
         except ValueError as exc:
@@ -1123,11 +1399,16 @@ def test_postgres_job_claim_has_one_winner_across_connections(
 ) -> None:
     first, second = postgres_pair
     _, run = _queued_run(first)
+    barrier = threading.Barrier(2)
+
+    def claim(item: tuple[Any, str]) -> str | None:
+        barrier.wait(timeout=5)
+        return item[0].runs.claim(run["id"], item[1])
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         tokens = list(
             executor.map(
-                lambda item: item[0].runs.claim(run["id"], item[1]),
+                claim,
                 ((first, "worker-a"), (second, "worker-b")),
             )
         )
@@ -1135,9 +1416,56 @@ def test_postgres_job_claim_has_one_winner_across_connections(
     assert sum(token is not None for token in tokens) == 1
 
 
+def test_postgres_model_export_queue_and_claim_do_not_deadlock(
+    postgres_pair: tuple[Any, Any],
+) -> None:
+    first, second = postgres_pair
+    build_input = _accepted_model_input(first)
+    queued, _ = first.models.queue_build(build_input, ACTOR)
+    calculate_token = first.models.claim(queued["id"], "model-worker")
+    assert calculate_token is not None
+    ready = first.models.complete(
+        queued["id"], calculate_token, _model_result(), "model-worker"
+    )
+    first.models.queue_export(ready["id"], ACTOR)
+    failed_token = first.models.claim(ready["id"], "failed-export", "export")
+    assert failed_token is not None
+    first.models.fail(
+        ready["id"],
+        failed_token,
+        {"code": "MODEL_EXPORT_FAILED", "detail": "retryable"},
+        "failed-export",
+        "export",
+    )
+    barrier = threading.Barrier(2)
+
+    def requeue() -> tuple[str, bool]:
+        barrier.wait(timeout=5)
+        _, created = first.models.queue_export(ready["id"], ACTOR)
+        return "queue", created
+
+    def claim() -> tuple[str, str | None]:
+        barrier.wait(timeout=5)
+        return "claim", second.models.claim(ready["id"], "racing-export", "export")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(requeue), executor.submit(claim)]
+        outcomes = [future.result(timeout=10) for future in futures]
+
+    assert outcomes[0] == ("queue", True)
+    assert outcomes[1][0] == "claim"
+    final_first = first.models.get_build(ready["id"])
+    final_second = second.models.get_build(ready["id"])
+    assert final_first == final_second
+    assert final_first is not None
+    assert final_first["export"]["status"] in {"QUEUED", "EXPORTING"}
+
+
 def test_postgres_stale_tokens_cannot_publish_any_authority(
     postgres_pair: tuple[Any, Any],
 ) -> None:
+    # Deliberately sequential: this proof targets deterministic fencing after takeover,
+    # while the three claim/uniqueness proofs above establish synchronized overlap.
     first, second = postgres_pair
     case, run = _queued_run(first)
     node = run["nodes"][0]

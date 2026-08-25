@@ -16,6 +16,7 @@ from .store import (
     JobFencedError,
     MemoryStore,
     _model_job_key,
+    _remaining_finalization_seconds,
     now_iso,
 )
 
@@ -104,15 +105,23 @@ class _MemorySourceCatalog(_Adapter):
         promoted = state.sources.get(note.get("promoted_source_id"))
         if note.get("promoted") and promoted and not promoted.get("withdrawn"):
             return copy.deepcopy(note)
-        source_id = state.new_id("src-note")
         body = note["body"]
+        source_digest = hashlib.sha256(body.encode()).hexdigest()
+        if any(
+            source.get("case_id") == note.get("case_id")
+            and source.get("sha256") == source_digest
+            and not source.get("withdrawn")
+            for source in state.sources.values()
+        ):
+            raise ValueError("DUPLICATE_SOURCE")
+        source_id = state.new_id("src-note")
         source = {
             "id": source_id,
             "case_id": note["case_id"],
             "filename": f"analyst-note-{note['id']}.md",
             "media_type": "text/markdown",
             "bytes": len(body.encode()),
-            "sha256": hashlib.sha256(body.encode()).hexdigest(),
+            "sha256": source_digest,
             "vault_path": None,
             "blocks": [
                 {
@@ -403,7 +412,8 @@ class _MemoryRunLedger(_Adapter):
     def claim(self, run_id: str, worker: str) -> str | None:
         state = self._state
         with state.lock:
-            if run_id not in state.runs:
+            run = state.runs.get(run_id)
+            if not run or run.get("status") not in {"queued", "running"}:
                 return None
             now = time.monotonic()
             job = state.jobs.get(run_id)
@@ -596,13 +606,60 @@ class _MemoryRunLedger(_Adapter):
         *,
         deadline: float | None = None,
     ) -> None:
-        self._state.finalize_run_success_fenced(
-            run_id,
-            attempt_token,
-            research,
-            event_data,
-            deadline=deadline,
-        )
+        state = self._state
+        with state.lock:
+            run = state.runs.get(run_id)
+            job = state.jobs.get(run_id)
+            if (
+                run
+                and run.get("status") == "succeeded"
+                and run.get("final_attempt_token") == attempt_token
+                and job
+                and job.get("status") == "finished"
+                and job.get("attempt_token") == attempt_token
+            ):
+                return
+            state._assert_job_locked(run_id, attempt_token)
+            _remaining_finalization_seconds(deadline)
+            state._assert_run_artifacts_ready_locked(run_id)
+            stored_research = copy.deepcopy(research) if research is not None else None
+            stored_event_data = copy.deepcopy(event_data)
+            prior_run = copy.deepcopy(state.runs[run_id])
+            prior_job = copy.deepcopy(state.jobs[run_id])
+            prior_events = copy.deepcopy(state.events.get(run_id, []))
+            try:
+                _remaining_finalization_seconds(deadline)
+                run_changes: Record = {
+                    "status": "succeeded",
+                    "current_node_id": None,
+                    "error": None,
+                    "final_attempt_token": attempt_token,
+                }
+                if stored_research is not None:
+                    run_changes["research"] = stored_research
+                state.runs[run_id].update(run_changes)
+                state.jobs[run_id].update(
+                    status="finished", lease_until=0.0, budget_reserved=0
+                )
+                events = state.events.setdefault(run_id, [])
+                events.append(
+                    {
+                        "id": len(events) + 1,
+                        "event": "run.succeeded",
+                        "at": now_iso(),
+                        "data": stored_event_data,
+                    }
+                )
+                state.persist()
+                _remaining_finalization_seconds(deadline)
+            except Exception:
+                state.runs[run_id] = prior_run
+                state.jobs[run_id] = prior_job
+                state.events[run_id] = prior_events
+                raise
+            condition = state.event_conditions.get(run_id)
+            if condition:
+                condition.notify_all()
 
     def get_artifact(self, artifact_id: str) -> Record | None:
         return self._state.get_artifact(artifact_id)
@@ -617,11 +674,20 @@ class _MemoryRunLedger(_Adapter):
             if not run or run.get("case_id") != case_id or case is None:
                 raise ValueError("RUN_NOT_FOUND")
 
+            final_attempt_token = run.get("final_attempt_token")
+            final_job = state.jobs.get(run_id)
+            if (
+                run.get("status") != "succeeded"
+                or not final_attempt_token
+                or not final_job
+                or final_job.get("status") != "finished"
+                or final_job.get("attempt_token") != final_attempt_token
+            ):
+                raise ValueError("RUN_NOT_READY")
+
             accepted_id = run.get("accepted_snapshot_id")
             if accepted_id:
                 return copy.deepcopy(state.snapshots[accepted_id])
-            if run.get("status") != "succeeded":
-                raise ValueError("RUN_NOT_READY")
 
             proposal = copy.deepcopy(snapshot)
             if proposal.get("case_id") != case_id or proposal.get("run_id") != run_id:
