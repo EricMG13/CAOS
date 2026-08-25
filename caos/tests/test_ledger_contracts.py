@@ -17,6 +17,15 @@ ACTOR = "analyst"
 LEASE_SECONDS = 0.2
 
 
+class CopyFailure(RuntimeError):
+    pass
+
+
+class _Uncopyable:
+    def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        raise CopyFailure("copy failed")
+
+
 @pytest.fixture(params=[MemoryLedgerSet], ids=["memory"])
 def ledger_set(request: pytest.FixtureRequest) -> Any:
     return request.param(lease_seconds=LEASE_SECONDS)
@@ -430,6 +439,59 @@ def test_expired_run_claim_recovers_running_nodes_and_fences_old_worker(
     assert events[-1]["data"] == {**event_data, "artifact_id": completed["id"]}
 
 
+@pytest.mark.parametrize("failing_argument", ["research", "event_data"])
+def test_memory_complete_node_copy_failure_is_atomic(failing_argument: str) -> None:
+    ledger_set = MemoryLedgerSet(lease_seconds=LEASE_SECONDS)
+    _, run = _queued_run(ledger_set)
+    node = run["nodes"][0]
+    token = ledger_set.runs.claim(run["id"], "worker")
+    assert token is not None
+    ledger_set.runs.update_node_fenced(run["id"], token, node["id"], status="running")
+    artifact = {
+        "case_id": run["case_id"],
+        "run_id": run["id"],
+        "module_id": node["module_id"],
+        "payload": {"debt": 100},
+        "digest": digest({"debt": 100}),
+        "input_fingerprint": "copy-failure",
+    }
+    research: dict[str, Any] | None = {"phase": "complete"}
+    event_data: dict[str, Any] = {"node_id": node["id"]}
+    if failing_argument == "research":
+        research = {"value": _Uncopyable()}
+    else:
+        event_data["value"] = _Uncopyable()
+    before_run = ledger_set.runs.get_run(run["id"])
+    before_events = ledger_set.runs.events_after(run["id"])
+    validator_calls = 0
+
+    def accept_artifact(candidate: dict[str, Any]) -> bool:
+        nonlocal validator_calls
+        validator_calls += 1
+        return True
+
+    with pytest.raises(CopyFailure, match="copy failed"):
+        ledger_set.runs.complete_node(
+            run["id"],
+            token,
+            node["id"],
+            artifact,
+            research,
+            event_data,
+            artifact_validator=accept_artifact,
+        )
+
+    assert validator_calls == 1
+    assert ledger_set.runs.get_run(run["id"]) == before_run
+    assert ledger_set.runs.events_after(run["id"]) == before_events
+    assert (
+        ledger_set.runs.artifact_for_fingerprint(
+            run["id"], node["module_id"], artifact["input_fingerprint"]
+        )
+        is None
+    )
+
+
 def test_snapshot_acceptance_updates_case_and_run_together(
     ledger_set: Any,
 ) -> None:
@@ -639,6 +701,42 @@ def test_note_promotion_changes_source_authority_once(ledger_set: Any) -> None:
     assert source is not None and source["source_kind"] == "analyst_note"
     assert source_set is not None and source_set["source_ids"] == [source_id]
     assert source_set["version"] == promoted_set["version"]
+
+
+def test_memory_promoted_note_ingress_uses_canonical_state_without_aliasing() -> None:
+    ledger_set = MemoryLedgerSet()
+    case = _case(ledger_set)
+    foreign_case = _case(ledger_set)
+    note = ledger_set.publications.create_note(case["id"], ACTOR, "Debt remains 100")
+    caller_note = copy.deepcopy(note)
+    caller_note["body"] = "forged caller body"
+    submitted = copy.deepcopy(caller_note)
+
+    promoted = ledger_set.sources.ingest_promoted_note(caller_note, ACTOR)
+
+    assert caller_note == submitted
+    assert promoted["body"] == note["body"]
+    assert ledger_set.publications.list_notes(case["id"]) == [promoted]
+    source = ledger_set.sources.get_source(promoted["promoted_source_id"])
+    assert source is not None and source["blocks"][0]["text"] == note["body"]
+    caller_note["body"] = "caller mutation"
+    assert ledger_set.publications.list_notes(case["id"]) == [promoted]
+    before = (
+        ledger_set.publications.list_notes(case["id"]),
+        ledger_set.sources.list_sources(case["id"]),
+        ledger_set.sources.current_source_set(case["id"]),
+    )
+    for invalid in (
+        {**note, "id": "note_missing"},
+        {**note, "case_id": foreign_case["id"]},
+    ):
+        with pytest.raises(KeyError, match="NOTE_NOT_FOUND"):
+            ledger_set.sources.ingest_promoted_note(invalid, ACTOR)
+        assert (
+            ledger_set.publications.list_notes(case["id"]),
+            ledger_set.sources.list_sources(case["id"]),
+            ledger_set.sources.current_source_set(case["id"]),
+        ) == before
 
 
 def test_report_freeze_and_approval_require_exact_preview(
