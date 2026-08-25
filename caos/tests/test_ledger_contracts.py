@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -10,11 +11,13 @@ import pytest
 from caos import ledgers
 from caos.contracts import clean_json, digest
 from caos.memory_ledgers import MemoryLedgerSet
+from caos.postgres_ledgers import PostgresLedgerSet
 from caos.store import JobFencedError
 
 
 ACTOR = "analyst"
 LEASE_SECONDS = 0.2
+POSTGRES_URL = os.getenv("CAOS_TEST_DATABASE_URL")
 
 
 class CopyFailure(RuntimeError):
@@ -26,9 +29,38 @@ class _Uncopyable:
         raise CopyFailure("copy failed")
 
 
-@pytest.fixture(params=[MemoryLedgerSet], ids=["memory"])
+def _reset_postgres() -> None:
+    if not POSTGRES_URL:
+        return
+    import psycopg
+
+    dsn = POSTGRES_URL.replace("postgresql+psycopg://", "postgresql://")
+    with psycopg.connect(dsn) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "TRUNCATE TABLE cases, methodology_drafts, rv_universes, "
+            "audit_events RESTART IDENTITY CASCADE"
+        )
+
+
+@pytest.fixture(params=["memory", "postgres"])
 def ledger_set(request: pytest.FixtureRequest) -> Any:
-    return request.param(lease_seconds=LEASE_SECONDS)
+    if request.param == "memory":
+        return MemoryLedgerSet(lease_seconds=LEASE_SECONDS)
+    if not POSTGRES_URL:
+        pytest.skip("CAOS_TEST_DATABASE_URL is not set")
+    _reset_postgres()
+    return PostgresLedgerSet(POSTGRES_URL, lease_seconds=LEASE_SECONDS)
+
+
+@pytest.fixture
+def postgres_pair() -> tuple[Any, Any]:
+    if not POSTGRES_URL:
+        pytest.skip("CAOS_TEST_DATABASE_URL is not set")
+    _reset_postgres()
+    return (
+        PostgresLedgerSet(POSTGRES_URL, lease_seconds=LEASE_SECONDS),
+        PostgresLedgerSet(POSTGRES_URL, lease_seconds=LEASE_SECONDS),
+    )
 
 
 def _case(ledger_set: Any) -> dict[str, Any]:
@@ -198,13 +230,25 @@ def _report_record(
     }
 
 
-def test_protocol_inventory_is_exact() -> None:
+def test_protocol_inventory_is_exact(ledger_set: Any) -> None:
     assert {
         name
         for name, value in vars(ledgers).items()
         if getattr(value, "_is_protocol", False)
         and getattr(value, "__module__", None) == ledgers.__name__
     } == {"SourceCatalog", "RunLedger", "PublicationLedger", "ModelLedger"}
+    for port_name, protocol in (
+        ("sources", ledgers.SourceCatalog),
+        ("runs", ledgers.RunLedger),
+        ("publications", ledgers.PublicationLedger),
+        ("models", ledgers.ModelLedger),
+    ):
+        adapter = getattr(ledger_set, port_name)
+        assert all(
+            callable(getattr(adapter, name, None))
+            for name, value in vars(protocol).items()
+            if callable(value) and not name.startswith("_")
+        )
 
 
 def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
@@ -516,6 +560,15 @@ def test_snapshot_acceptance_updates_case_and_run_together(
         research=None,
         event_data={"node_id": node["id"], "module_id": node["module_id"]},
     )
+    assert set(artifact) == {
+        "id",
+        "case_id",
+        "run_id",
+        "module_id",
+        "input_fingerprint",
+        "payload",
+        "digest",
+    }
     source_set = ledger_set.sources.source_set(run["plan"]["source_set_id"])
     assert source_set is not None
     artifact_ref = {
@@ -543,7 +596,7 @@ def test_snapshot_acceptance_updates_case_and_run_together(
     assert ledger_set.runs.get_case(case["id"])["accepted_snapshot_id"] is None
     assert ledger_set.runs.get_run(run["id"])["accepted_snapshot_id"] is None
 
-    ledger_set.runs.finalize_success(run["id"], token, None, {"run_id": run["id"]})
+    ledger_set.runs.update_run_fenced(run["id"], token, status="succeeded")
 
     invalid_payloads = [
         ("RUN_NOT_FOUND", {**base_payload, "case_id": "case_foreign"}),
@@ -1021,3 +1074,169 @@ def test_pending_job_reads_are_authoritative(ledger_set: Any) -> None:
 
     assert ledger_set.runs.pending_runs() == [(run["id"], ACTOR)]
     assert ledger_set.models.pending_jobs() == [(queued["id"], ACTOR, "calculate")]
+
+
+def test_postgres_duplicate_ingest_has_one_winner(
+    postgres_pair: tuple[Any, Any],
+) -> None:
+    first, second = postgres_pair
+    case = _case(first)
+    source = _source(case["id"])
+
+    def ingest(ledger_set: Any) -> str:
+        try:
+            ledger_set.sources.ingest(source, ACTOR)
+        except ValueError as exc:
+            return str(exc)
+        return "created"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(ingest, (first, second)))
+
+    assert sorted(outcomes) == ["created", "source content already active"]
+    assert len(first.sources.list_sources(case["id"])) == 1
+
+
+def test_postgres_optimistic_append_has_one_winner(
+    postgres_pair: tuple[Any, Any],
+) -> None:
+    first, second = postgres_pair
+    case = _case(first)
+    thesis = {"core_thesis": "Defensible", "evidence_ids": []}
+
+    def append(ledger_set: Any) -> str:
+        try:
+            ledger_set.publications.append_thesis(case["id"], ACTOR, 0, thesis)
+        except ValueError as exc:
+            return str(exc)
+        return "created"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(append, (first, second)))
+
+    assert sorted(outcomes) == ["VERSION_CONFLICT", "created"]
+    assert len(first.publications.list_theses(case["id"])) == 1
+
+
+def test_postgres_job_claim_has_one_winner_across_connections(
+    postgres_pair: tuple[Any, Any],
+) -> None:
+    first, second = postgres_pair
+    _, run = _queued_run(first)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tokens = list(
+            executor.map(
+                lambda item: item[0].runs.claim(run["id"], item[1]),
+                ((first, "worker-a"), (second, "worker-b")),
+            )
+        )
+
+    assert sum(token is not None for token in tokens) == 1
+
+
+def test_postgres_stale_tokens_cannot_publish_any_authority(
+    postgres_pair: tuple[Any, Any],
+) -> None:
+    first, second = postgres_pair
+    case, run = _queued_run(first)
+    node = run["nodes"][0]
+    stale = first.runs.claim(run["id"], "stale-worker")
+    assert stale is not None
+    first.runs.update_node_fenced(run["id"], stale, node["id"], status="running")
+    time.sleep(LEASE_SECONDS + 0.1)
+    replacement = second.runs.claim(run["id"], "replacement-worker")
+    assert replacement is not None
+    payload = {"debt": 100}
+    artifact = {
+        "case_id": case["id"],
+        "run_id": run["id"],
+        "module_id": node["module_id"],
+        "input_fingerprint": "stale-race",
+        "payload": payload,
+        "digest": digest(payload),
+    }
+    before_run = first.runs.get_run(run["id"])
+    before_events = first.runs.events_after(run["id"])
+    for stale_write in (
+        lambda: first.runs.update_node_fenced(
+            run["id"], stale, node["id"], status="succeeded"
+        ),
+        lambda: first.runs.emit_fenced(run["id"], stale, "stale", {}),
+        lambda: first.runs.complete_node(
+            run["id"], stale, node["id"], artifact, None, {}
+        ),
+        lambda: first.runs.finalize_success(run["id"], stale, None, {}),
+    ):
+        with pytest.raises(JobFencedError):
+            stale_write()
+    assert first.runs.get_run(run["id"]) == before_run
+    assert first.runs.events_after(run["id"]) == before_events
+    assert (
+        first.runs.artifact_for_fingerprint(
+            run["id"], node["module_id"], artifact["input_fingerprint"]
+        )
+        is None
+    )
+
+    source_set = first.sources.source_set(run["plan"]["source_set_id"])
+    assert source_set is not None
+    snapshot_payload = {
+        "case_id": case["id"],
+        "run_id": run["id"],
+        "source_set_id": source_set["id"],
+        "source_set_version": source_set["version"],
+        "artifacts": [],
+        "accepted_at": "2026-08-24T00:00:00+00:00",
+    }
+    with pytest.raises(ValueError, match="RUN_NOT_READY"):
+        first.runs.accept_snapshot(
+            case["id"],
+            run["id"],
+            ACTOR,
+            {**snapshot_payload, "digest": digest(snapshot_payload)},
+        )
+    assert first.runs.get_case(case["id"])["accepted_snapshot_id"] is None
+
+    second.runs.update_node_fenced(run["id"], replacement, node["id"], status="running")
+    completed = second.runs.complete_node(
+        run["id"], replacement, node["id"], artifact, None, {}
+    )
+    second.runs.finalize_success(run["id"], replacement, None, {})
+    accepted_payload = {
+        **snapshot_payload,
+        "artifacts": [
+            {
+                "id": completed["id"],
+                "module_id": completed["module_id"],
+                "digest": completed["digest"],
+            }
+        ],
+    }
+    snapshot = second.runs.accept_snapshot(
+        case["id"],
+        run["id"],
+        ACTOR,
+        {**accepted_payload, "digest": digest(accepted_payload)},
+    )
+    build, created = first.models.queue_build(
+        {
+            "case_id": case["id"],
+            "accepted_run_id": run["id"],
+            "accepted_snapshot_id": snapshot["id"],
+            "source_set_id": source_set["id"],
+            "input_fingerprint": "d" * 64,
+            "worksheet_schema_version": "caos.model.worksheet.v1",
+        },
+        ACTOR,
+    )
+    assert created is True
+    stale_model = first.models.claim(build["id"], "stale-model-worker")
+    assert stale_model is not None
+    time.sleep(LEASE_SECONDS + 0.1)
+    replacement_model = second.models.claim(build["id"], "replacement-model-worker")
+    assert replacement_model is not None
+    before_build = first.models.get_build(build["id"])
+    with pytest.raises(JobFencedError):
+        first.models.complete(build["id"], stale_model, _model_result(), ACTOR)
+    assert first.models.get_build(build["id"]) == before_build
