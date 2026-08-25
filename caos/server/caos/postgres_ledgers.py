@@ -85,6 +85,7 @@ def _source_record(row: Record, *, public: bool = True) -> Record:
             record["withdrawn_at"] = _iso(row["withdrawn_at"])
         if public:
             record.pop("vault_path", None)
+            record.pop("withdrawn_at", None)
         return record
     record: Record = {
         "id": row["id"],
@@ -103,6 +104,8 @@ def _source_record(row: Record, *, public: bool = True) -> Record:
     for key in ("withdrawn_at", "source_kind", "origin_family", "authority_class"):
         if row.get(key) is not None:
             record[key] = _iso(row[key])
+    if public:
+        record.pop("withdrawn_at", None)
     return record
 
 

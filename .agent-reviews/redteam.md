@@ -4336,3 +4336,22 @@ Decision: accept the one-branch reducer correction after 30 frontend unit
 tests, lint, typecheck, webpack production build, full workbench smoke, seeded
 29-combination axe scan, rewrite tournament, confidence review, and staged graph
 detection pass. No API or component interface changed.
+
+## 2026-08-25 — Public source and empty-success boundary correction gate
+
+Decision under review: keep internal source-withdrawal metadata out of the
+strict public source schema and treat HTTP 204 as the one successful response
+that does not require JSON parsing.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-25-230 | Schema-boundary saboteur | A withdrawn source detail can leak the adapter-only `withdrawn_at` field into strict `SourceResponse`, turning a valid GET into a FastAPI response-validation failure instead of a 200. | Critical | Resolved and red/green covered | Both memory and PostgreSQL public serializers now omit `withdrawn_at` without widening the response model. A backend-neutral upload → withdraw → detail regression failed at strict validation before the patch and now requires 200 plus the exact stored-source key set. |
+| RT-2026-08-25-231 | Audit-retention reviewer | Filtering withdrawal time too early could erase the canonical timestamp needed by persistence, audit, and withdrawal cascades. | High | Resolved by boundary-specific filtering | Memory continues to retain the timestamp in its private source state. PostgreSQL continues to write both the normalized `withdrawn_at` column and private JSON record through `_source_record(..., public=False)`; only public return paths filter it. The regression probes the memory raw state and has a PostgreSQL raw column/record assertion that runs when the DSN gate is available. |
+| RT-2026-08-25-232 | HTTP semantics reviewer | Making every empty success resolve could mask malformed 200 responses or weaken existing structured error extraction. | Critical | Resolved by exact status branch | Only status 204 returns `undefined`; a successful empty 200 still raises `SyntaxError`, ordinary JSON successes still parse, and non-OK JSON detail extraction is unchanged. All four focused cases and the full frontend unit suite pass. |
+| RT-2026-08-25-233 | Persistence verifier | The local environment cannot execute the PostgreSQL half of the new backend-neutral HTTP/internal-storage regression. | High | Accepted explicit environment gap | The main-project virtualenv suite passes 334 tests with 30 DSN-gated skips. Static tracing confirms the PostgreSQL withdrawal writes the timestamp before public filtering. Rerun with `CAOS_TEST_DATABASE_URL` against a disposable fresh database to execute the normalized column and JSON record assertions. |
+
+Decision: accept the two narrow boundary corrections after red/green focused
+tests, 334-test server suite, ruff, compileall, 31 frontend unit tests, lint,
+typecheck, webpack production build, rewrite tournaments, confidence review,
+and staged graph detection. No response model, API route, or component
+interface widened.

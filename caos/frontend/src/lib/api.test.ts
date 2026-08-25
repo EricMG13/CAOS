@@ -10,10 +10,18 @@ test("api returns parsed JSON from successful responses", async (t) => {
   assert.deepEqual(await api<{ id: string }>("/api/cases/case_1"), { id: "case_1" });
 });
 
-test("api parses empty 204 responses without a special case", async (t) => {
+test("api resolves successful 204 responses without parsing JSON", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   globalThis.fetch = async () => new Response(null, { status: 204 });
+
+  assert.equal(await api<void>("/api/cases/case_1"), undefined);
+});
+
+test("api still parses non-204 successful responses as JSON", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => new Response(null, { status: 200 });
 
   await assert.rejects(api("/api/cases/case_1"), SyntaxError);
 });

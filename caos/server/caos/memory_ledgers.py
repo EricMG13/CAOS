@@ -846,7 +846,11 @@ class _Adapter:
 
 def _public_source(source: Record) -> Record:
     return copy.deepcopy(
-        {key: value for key, value in source.items() if key != "vault_path"}
+        {
+            key: value
+            for key, value in source.items()
+            if key not in {"vault_path", "withdrawn_at"}
+        }
     )
 
 

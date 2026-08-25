@@ -12,9 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from caos import ledgers
+from caos.config import Settings
 from caos.contracts import clean_json, digest
+from caos.http import create_app
 from caos.memory_ledgers import MemoryLedgerSet
 from caos.postgres_ledgers import PostgresLedgerSet
 from caos.store import JobFencedError
@@ -26,6 +29,26 @@ LEASE_SECONDS = 0.2
 POSTGRES_URL = os.getenv("CAOS_TEST_DATABASE_URL")
 PROTOCOL_METHOD_COUNT = 72
 RACE_HARNESS_TIMEOUT_SECONDS = 12
+DEPLOY_V = (
+    Path(__file__).parents[1]
+    / "server"
+    / "caos"
+    / "methodology"
+    / "vendor"
+    / "deploy_v"
+)
+PUBLIC_SOURCE_KEYS = {
+    "id",
+    "case_id",
+    "filename",
+    "media_type",
+    "bytes",
+    "sha256",
+    "created_by",
+    "created_at",
+    "blocks",
+    "withdrawn",
+}
 
 
 class CopyFailure(RuntimeError):
@@ -400,6 +423,52 @@ def test_source_duplicate_and_withdrawal_are_atomic(ledger_set: Any) -> None:
     replacement = ledger_set.sources.ingest(source, ACTOR)
     assert replacement["source_set"]["version"] == withdrawn_set["version"] + 1
     assert ledger_set.sources.source_set(historical_set["id"]) == historical_set
+
+
+def test_withdrawn_source_detail_keeps_internal_timestamp_out_of_public_shape(
+    ledger_set: Any, tmp_path: Path
+) -> None:
+    settings = Settings(
+        environment="test",
+        storage_dir=tmp_path / "vault",
+        deploy_v_root=DEPLOY_V,
+    )
+    with TestClient(create_app(settings, ledger_set)) as client:
+        case_id = client.post(
+            "/api/cases",
+            json={"name": "Source contract", "issuer": "Issuer", "sector": "Testing"},
+        ).json()["id"]
+        source = client.post(
+            f"/api/cases/{case_id}/sources",
+            files={"file": ("evidence.txt", b"Evidence", "text/plain")},
+        ).json()
+
+        withdrawn = client.post(
+            f"/api/cases/{case_id}/sources/{source['id']}/withdraw"
+        )
+        detail = client.get(f"/api/cases/{case_id}/sources/{source['id']}")
+
+    assert withdrawn.status_code == 200
+    assert detail.status_code == 200
+    assert set(detail.json()) == PUBLIC_SOURCE_KEYS
+    assert detail.json()["withdrawn"] is True
+
+    if isinstance(ledger_set, MemoryLedgerSet):
+        stored_at = ledger_set.sources._state.sources[source["id"]]["withdrawn_at"]
+        assert stored_at
+    else:
+        with (
+            ledger_set.sources._db.connection() as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "SELECT withdrawn_at, record->>'withdrawn_at' AS recorded_at "
+                "FROM sources WHERE id=%s",
+                (source["id"],),
+            )
+            stored = cursor.fetchone()
+        assert stored["withdrawn_at"] is not None
+        assert stored["recorded_at"] is not None
 
 
 def test_pinned_evidence_is_validated_in_one_catalog_read(ledger_set: Any) -> None:
