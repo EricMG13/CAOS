@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { chromium, request } from "playwright";
 
@@ -14,6 +15,7 @@ const adminUser = process.env.CAOS_ADMIN_USER || "admin.qa@local.invalid";
 const readerUser = process.env.CAOS_READER_USER || "reader.qa@local.invalid";
 const maxBurstP95Ms = Number(process.env.CAOS_MAX_BURST_P95_MS || 1500);
 const maxPostLoadMs = Number(process.env.CAOS_MAX_POST_LOAD_MS || 500);
+const loanWorkbook = Buffer.from(readFileSync(new URL("./fixtures/loan-universe.xlsx.b64", import.meta.url), "utf8").trim(), "base64");
 assert.ok(Number.isFinite(maxBurstP95Ms) && maxBurstP95Ms > 0, "CAOS_MAX_BURST_P95_MS must be positive");
 assert.ok(Number.isFinite(maxPostLoadMs) && maxPostLoadMs > 0, "CAOS_MAX_POST_LOAD_MS must be positive");
 
@@ -106,7 +108,11 @@ async function probeError(context, role, url, endpoint, expectedText = "Unable t
   });
   try {
     await page.goto(url, { waitUntil: "networkidle" });
-    await page.getByText(expectedText, { exact: true }).first().waitFor();
+    try {
+      await page.getByText(expectedText, { exact: true }).first().waitFor();
+    } catch (error) {
+      throw new Error(`${role} error probe did not render ${JSON.stringify(expectedText)} for ${endpoint}`, { cause: error });
+    }
   } finally {
     await page.unroute(predicate);
     await page.close();
@@ -333,8 +339,26 @@ try {
     assert.equal((await (await analystApi.get(`/api/cases/${journeyCase.id}/snapshot`)).json()).switch_required, false);
 
     await journeyPage.goto(`${baseURL}/rv-screener/?case=${journeyCase.id}`, { waitUntil: "networkidle" });
-    await journeyPage.getByRole("button", { name: "Upload CP-3 workbook" }).waitFor();
-    await journeyPage.getByText("Upload the fixed CP-3 workbook to activate a leveraged-loan universe.", { exact: true }).waitFor();
+    await journeyPage.getByLabel("Fixed CP-3 sector workbook (.xlsx)").setInputFiles({
+      name: "REF_CP-3_Sector_RV.xlsx",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      buffer: loanWorkbook,
+    });
+    const sourceUpload = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/sources`) && response.request().method() === "POST");
+    const loanImport = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/rv/loan-universes`) && response.request().method() === "POST");
+    await journeyPage.getByRole("button", { name: "Upload CP-3 workbook" }).click();
+    assert.equal((await sourceUpload).status(), 201);
+    assert.equal((await loanImport).status(), 201);
+    await journeyPage.getByText(/Active loan universe v1 · 2 instruments\./).waitFor();
+    await journeyPage.getByRole("cell", { name: "Access CIG LLC", exact: true }).waitFor();
+    await journeyPage.getByLabel("Issuer / ID").fill("FinThrive");
+    await journeyPage.getByRole("cell", { name: "FinThrive Inc", exact: true }).waitFor();
+    await journeyPage.getByLabel("Issuer / ID").fill("");
+    await journeyPage.getByRole("columnheader", { name: /Bid \(pts\)/ }).waitFor();
+    await journeyPage.getByRole("columnheader", { name: /Margin \(bps\)/ }).waitFor();
+    await journeyPage.getByRole("columnheader", { name: /Mid 3Y DM \(bps\)/ }).waitFor();
+    await journeyPage.getByRole("button", { name: "Margin (bps)" }).click();
+    await journeyPage.getByRole("columnheader", { name: /Margin \(bps\)/ }).getAttribute("aria-sort").then((value) => assert.equal(value, "ascending"));
 
     await journeyPage.goto(`${baseURL}/report-studio/?case=${journeyCase.id}`, { waitUntil: "networkidle" });
     await journeyPage.getByLabel("Core thesis").fill("Synthetic issuer has stable leverage and adequate liquidity.");

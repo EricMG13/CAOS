@@ -4046,3 +4046,79 @@ Decision: accept the implementation for commit and deployment packaging. Do not
 add bond fields, flexible spreadsheet mapping, a pricing engine, virtualized
 grid, or pre-CP-3 signals. Production activation remains gated on the existing
 real-PostgreSQL and Caddy/ClamAV deployment smoke in an environment with Docker.
+
+## 2026-08-24 — Leveraged-loan RV adversarial correction gate
+
+Decision under review: correct the post-implementation adversarial findings
+without widening the loan-only MVP or changing its source-reported metrics.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-163 | Workbook-edge reviewer | Openpyxl read-only blank cells do not expose `column_letter`, so an ordinary blank optional metric can escape structured validation as HTTP 500. | Critical | Required in correction | Derive locators from the fixed header start and field offset; retain finite-or-null semantics and add a real blank-cell regression. |
+| RT-2026-08-24-164 | Identifier-integrity reviewer | A Bloomberg-only row and a FIGI-plus-Bloomberg row for the same loan receive different keys and silently double-count the instrument. | Critical | Required in correction | Build the validated FIGI/Bloomberg alias map first, enrich missing aliases, then perform duplicate comparison and locator collapse. |
+| RT-2026-08-24-165 | Transaction reviewer | A stale PostgreSQL withdrawal request can merge its source change with another process's newly active universe, leaving withdrawn evidence active. | Critical | Required in correction | Move the complete source/source-set/assumption/universe mutation behind one store operation; the PostgreSQL override locks and adopts authoritative state before mutation. |
+| RT-2026-08-24-166 | Vault-integrity reviewer | Import trusts the metadata digest without rehashing stored bytes, so altered content can acquire the original source lineage. | Critical | Required in correction | Rehash immediately after the bounded vault read and fail closed with a stable integrity code before parsing. |
+| RT-2026-08-24-167 | Resource-exhaustion reviewer | Generic XLSX evidence extraction traverses and accumulates the workbook before the loan importer's limits run. | Critical | Required in correction | Lower the expanded-archive ceiling and bound generic worksheet, row, column, and accumulated-text work before loan parsing begins. |
+| RT-2026-08-24-168 | Capacity reviewer | A 25,000-row universe creates an unpaged 675,000-cell browser table and embeds the same large row set in CP-3 state. | High | Required in correction | Cap the unpaged MVP authority at 2,000 rows and render at most 250 rows per browser page; pagination is required before raising the authority ceiling. |
+| RT-2026-08-24-169 | Package-boundary reviewer | Exact byte matching misses valid relationship XML with whitespace around `TargetMode`, weakening the external-link rejection claim. | High | Required in correction | Parse relationship XML with the standard library and evaluate the `TargetMode` attribute case-insensitively. |
+| RT-2026-08-24-170 | Database-integrity reviewer | The normalized universe table has no foreign key to its source and the source mirror is not populated by loan synchronization. | High | Required in correction | Materialize referenced source rows before universe rows, backfill existing referenced sources, then validate a restrictive foreign key in migration `004`. |
+| RT-2026-08-24-171 | Browser-verification reviewer | The committed production journey stops at the empty RV state while claiming successful upload coverage. | High | Required in correction | Commit a deterministic XLSX fixture and exercise upload, activation, filtering, sorting, and loan metric headers in the combined production journey. |
+
+Decision: accept the bounded correction plan. Deployment remains blocked until
+focused regressions, the full server/frontend gates, GitNexus change detection,
+and the environment-gated PostgreSQL concurrency proof have been evaluated.
+
+## 2026-08-24 — Leveraged-loan RV adversarial correction verification
+
+Decision under review: close RT-163 through RT-171 after implementation and
+adversarial verification.
+
+| Scope | Status | Verification |
+|-------|--------|--------------|
+| Workbook locators, identifier reconciliation, package XML, bounded extraction, and vault integrity | Resolved | Focused edge regressions pass; vault reads are size-bounded and SHA-256 verified before parsing. |
+| Atomic source withdrawal and normalized source linkage | Resolved in code; production proof environment-gated | The shared mutation is serialized behind the authoritative PostgreSQL row lock, rollback tests pass, migration `004` backfills referenced sources before validating the restrictive foreign key, and the two-store race test is present. This workstation has no test DSN or Docker daemon. |
+| MVP capacity and browser verification | Resolved | Authority is capped at 2,000 rows, the browser renders 250 rows per page, and the combined static-app journey passed upload, activation, filtering, sorting, and loan-metric header checks. |
+| Full regression gates | Resolved | Server: 333 passed, 20 environment-gated skips. Frontend lint, 8 unit tests, and production build pass. |
+
+Decision: accept the correction set. Production activation remains gated only
+on the existing real-PostgreSQL concurrency/migration and Caddy/ClamAV smoke in
+an environment with Docker; no bond fields or flexible workbook mapping are in
+scope for this loan-only MVP.
+
+## 2026-08-24 — Production-scale dataset and full-inventory release gate
+
+Decision under review: freeze the sanitized production-scale dataset and accept
+the route/state/workflow rerun after the leveraged-loan and CP-MODEL changes.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-172 | Upgrade-path reviewer | Editing `001_baseline` to permit `planning` does nothing for a restored or deployed database that already recorded migration 001, so starting a run can still violate the legacy normalized constraint and return HTTP 500. | Critical | Resolved and verified | Forward migration `005_runs_planning_status` conditionally replaces only the legacy named constraint and records itself transactionally. A real-PostgreSQL regression recreates the legacy constraint, runs the production migration runner, and proves 005 is the only applied migration. The definitive dump restores with migrations 001–005. |
+| RT-2026-08-24-173 | Failure-state reviewer | Report Studio can complete a failed initial load and then render the normal editor with stale/empty state because mutation and load failures share one error variable. | High | Resolved and verified | Initial-load failures now use a distinct `loadError` boundary in both editor and filed proof, while freeze/approval errors retain the recoverable form. Exact 503 probes pass as analyst and approver; all 48 controlled states are clean. |
+| RT-2026-08-24-174 | Evidence-governance reviewer | A clean browser run is not reusable evidence if the frozen dump, vault, result JSON, and acceptance matrix refer to different transient database boundaries. | High | Resolved and verified | Both final images were rebuilt first; the inventory was rerun once more; only then were the dump, machine result, counts, vault hashes, and current acceptance inventory frozen together. Fresh restore matches revision 2627 and all cardinalities; 161 file references hash clean and Gitleaks reports zero findings. |
+| RT-2026-08-24-175 | Scope reviewer | Deterministic local identities and provider-disabled workflows could be misreported as proof of the real IdP, licensed source feeds, external research provider, or horizontal production topology. | Critical | Resolved in claim boundary | The bundle explicitly claims only the isolated production-like local topology. Real OIDC/MFA/step-up, external providers/data licensing, and multi-API-writer traffic remain named external gates. |
+
+Decision: accept the sanitized local dataset and current inventory as a clean
+local release gate. Do not promote its evidence into claims about the named
+external identity, provider, licensing, or horizontal-scale boundaries.
+
+## 2026-08-24 — Codebase deepening architecture gate
+
+Decision under review: replace the mutable whole-state persistence interface
+with deep consistency modules, typed HTTP responses, public worker scheduling,
+an injected provider port, and an explicit browser authority reducer while
+preserving all user-visible behavior.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-24-176 | Module-depth reviewer | Four ledgers can merely rename the existing mega-store and reproduce its broad interface across more files. | Critical | Resolved in interface contract | Each module owns domain transitions rather than generic buckets, exposes only behavior used by its callers, and has memory plus PostgreSQL adapters tested through the same interface. A mega-store protocol and pass-through repositories are explicitly rejected. |
+| RT-2026-08-24-177 | Transaction reviewer | Source withdrawal crosses source sets, assumptions, and active loan universes; independent ledgers could commit a partially withdrawn authority. | Critical | Resolved in ownership contract | `SourceCatalog.withdraw` owns the complete cascade and its adapter commits every affected normalized row plus audit event in one transaction. Other modules read the resulting state and do not perform follow-up writes. |
+| RT-2026-08-24-178 | Compatibility reviewer | Pydantic response models can silently drop keys, add defaults, or change null/omission behavior even when route paths remain stable. | Critical | Required in implementation | Representative before/after payload fixtures and OpenAPI assertions gate each shared response family. Response models must preserve exact keys and omission behavior before routes adopt them. |
+| RT-2026-08-24-179 | Concurrency reviewer | Removing the whole-state row lock can expose races previously serialized accidentally, especially duplicate sources, optimistic versions, job claims, and snapshot acceptance. | Critical | Required in implementation | PostgreSQL adapters use unique constraints, row locks, optimistic predicates, and fenced attempt tokens at the domain transition. The shared adapter contract suite includes concurrent claims and conflicting writes. |
+| RT-2026-08-24-180 | Provider-seam reviewer | A nominal two-method port can still leak Anthropic block objects and force tests to reproduce provider-specific behavior. | High | Required in implementation | The adapter returns normalized host records; SDK response parsing and exception mapping remain inside the Anthropic adapter. Agent-loop tests use provider-neutral records. |
+| RT-2026-08-24-181 | Browser-race reviewer | Moving case/run logic into a reducer can preserve the same races under a new abstraction or split one invariant between effects and state. | Critical | Required in implementation | Every asynchronous completion carries generation, case ID, and run ID, and only the reducer decides whether it applies. Focused transition tests and existing cross-case browser races must both pass. |
+| RT-2026-08-24-182 | Rollout reviewer | A fresh-database assumption could become an accidental destructive migration against an existing deployment. | Critical | Resolved in rollout contract | Live code stops reading `caos_state` but does not drop or rewrite it. There is no destructive migration; an old table remains inert. Production cutover requires an explicitly fresh database. |
+| RT-2026-08-24-183 | Parallel-WIP reviewer | The target store, HTTP, frontend, migrations, tests, and red-team log already contain uncommitted work; broad refactoring can overwrite or accidentally commit another actor's changes. | High | Required in implementation | Work proceeds from the current combined state, uses `apply_patch`, reviews each target diff before edits, stages explicit paths/hunks only, and never resets or replaces existing WIP. |
+
+Decision: accept the incremental deepening architecture for implementation.
+Preserve HTTP compatibility, use a fresh PostgreSQL database, and do not add a
+queue, ORM, state library, generated client dependency, or legacy state migration.

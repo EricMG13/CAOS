@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import os
 import time
 import zipfile
@@ -122,7 +123,19 @@ def _import_record(
 
 
 def _add_source(store: MemoryStore, case_id: str, source_id: str, *, withdrawn: bool = False) -> None:
-    store.sources[source_id] = {"id": source_id, "case_id": case_id, "withdrawn": withdrawn}
+    store.sources[source_id] = {
+        "id": source_id,
+        "case_id": case_id,
+        "filename": "REF_CP-3_Sector_RV.xlsx",
+        "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "sha256": hashlib.sha256(source_id.encode()).hexdigest(),
+        "vault_path": "/tmp/test-loan-source.xlsx",
+        "bytes": 1,
+        "blocks": [],
+        "created_by": "analyst",
+        "created_at": "2026-08-24T00:00:00+00:00",
+        "withdrawn": withdrawn,
+    }
 
 
 def test_cp3_workbook_maps_all_visible_sector_rows_with_source_units() -> None:
@@ -159,6 +172,39 @@ def test_duplicate_rows_collapse_and_preserve_every_locator() -> None:
 
     access = next(row for row in parsed["rows"] if row["borrower_name"] == "Access CIG LLC")
     assert access["source_locators"] == [{"sheet": "IT Services", "row": 6}, {"sheet": "IT Services", "row": 7}]
+    assert parsed["row_count"] == 2
+
+
+def test_blank_optional_cells_remain_null_and_keep_their_column_locator() -> None:
+    parsed = parse_loan_workbook(
+        _workbook_bytes(first_rows=[_row(margin=None)]),
+        source_id="src_1",
+        source_sha256="0" * 64,
+    )
+
+    access = next(row for row in parsed["rows"] if row["borrower_name"] == "Access CIG LLC")
+    assert access["margin_bps"] is None
+
+
+def test_bloomberg_alias_reconciles_a_missing_figi_before_duplicate_collapse() -> None:
+    parsed = parse_loan_workbook(
+        _workbook_bytes(
+            first_rows=[
+                _row(bloomberg="LOAN1", figi="#N/A"),
+                _row(bloomberg="LOAN1", figi="FIGI1"),
+            ]
+        ),
+        source_id="src_1",
+        source_sha256="9" * 64,
+    )
+
+    access = next(row for row in parsed["rows"] if row["bloomberg_loan_id"] == "LOAN1")
+    assert access["instrument_key"] == "FIGI:FIGI1"
+    assert access["figi"] == "FIGI1"
+    assert access["source_locators"] == [
+        {"sheet": "IT Services", "row": 6},
+        {"sheet": "IT Services", "row": 7},
+    ]
     assert parsed["row_count"] == 2
 
 
@@ -225,6 +271,23 @@ def test_unsafe_package_parts_reject_before_workbook_parsing() -> None:
         parse_loan_workbook(content.getvalue(), source_id="src", source_sha256="2" * 64)
 
     assert "RV_PACKAGE_ACTIVE_CONTENT" in _codes(raised.value)
+
+
+def test_external_relationship_with_xml_whitespace_is_rejected() -> None:
+    content = io.BytesIO(_workbook_bytes())
+    with zipfile.ZipFile(content, "a") as archive:
+        archive.writestr(
+            "xl/worksheets/_rels/sheet1.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid" TargetMode = "External"/>
+            </Relationships>""",
+        )
+
+    with pytest.raises(LoanWorkbookValidationError) as raised:
+        parse_loan_workbook(content.getvalue(), source_id="src", source_sha256="8" * 64)
+
+    assert "RV_PACKAGE_EXTERNAL_LINK" in _codes(raised.value)
 
 
 def test_workbook_sheet_limit_rejects_without_scanning_beyond_the_cap() -> None:
@@ -322,6 +385,14 @@ def test_loan_universe_migration_has_atomic_identity_and_active_constraints() ->
     assert "PRIMARY KEY (universe_id, instrument_key)" in migration
 
 
+def test_loan_universe_source_foreign_key_migration_backfills_before_validation() -> None:
+    migration = (Path(__file__).parents[1] / "server" / "migrations" / "004_rv_loan_universe_source_fk.sql").read_text()
+
+    assert "JOIN rv_loan_universes ON rv_loan_universes.source_id = source.key" in migration
+    assert "FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE RESTRICT NOT VALID" in migration
+    assert "VALIDATE CONSTRAINT rv_loan_universes_source_id_fkey" in migration
+
+
 def test_postgres_loan_import_converges_and_normalizes_rows() -> None:
     database_url = os.getenv("CAOS_TEST_DATABASE_URL")
     if not database_url:
@@ -332,7 +403,7 @@ def test_postgres_loan_import_converges_and_normalizes_rows() -> None:
     _add_source(first_store, case["id"], source_id)
     first_store.persist()
     second_store = PostgresStore(database_url)
-    parsed = parse_loan_workbook(_workbook_bytes(), source_id=source_id, source_sha256=first_store._id("sha").ljust(64, "0")[:64])
+    parsed = parse_loan_workbook(_workbook_bytes(), source_id=source_id, source_sha256=first_store.sources[source_id]["sha256"])
     first_record = _import_record(first_store, case["id"], parsed)
     second_record = _import_record(second_store, case["id"], parsed)
 
@@ -353,12 +424,49 @@ def test_postgres_loan_import_converges_and_normalizes_rows() -> None:
     with check._psycopg.connect(check._dsn) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT status, (SELECT count(*) FROM rv_loan_rows WHERE universe_id=%s) "
-                "FROM rv_loan_universes WHERE id=%s",
+                "SELECT universe.status, (SELECT count(*) FROM rv_loan_rows WHERE universe_id=%s), source.id "
+                "FROM rv_loan_universes AS universe JOIN sources AS source ON source.id=universe.source_id "
+                "WHERE universe.id=%s",
                 (universe_id, universe_id),
             )
             row = cursor.fetchone()
-    assert row == ("ACTIVE", parsed["row_count"])
+    assert row == ("ACTIVE", parsed["row_count"], source_id)
+
+
+def test_postgres_import_and_source_withdrawal_converge_without_active_residue() -> None:
+    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("CAOS_TEST_DATABASE_URL is required for durable loan-universe proof")
+    import_store = PostgresStore(database_url)
+    case = import_store.create_case("Loan withdrawal race", import_store._id("issuer"), "Services", "analyst")
+    source_id = import_store._id("src")
+    _add_source(import_store, case["id"], source_id)
+    import_store.persist()
+    withdrawal_store = PostgresStore(database_url)
+    parsed = parse_loan_workbook(
+        _workbook_bytes(),
+        source_id=source_id,
+        source_sha256=import_store.sources[source_id]["sha256"],
+    )
+    record = _import_record(import_store, case["id"], parsed)
+
+    def activate() -> str:
+        try:
+            import_store.save_loan_universe_import(record, parsed["rows"], "analyst")
+            return "activated"
+        except ValueError as exc:
+            assert str(exc) == "RV_SOURCE_NOT_ACTIVE"
+            return "withdrawn-first"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        activation = executor.submit(activate)
+        withdrawal = executor.submit(withdrawal_store.withdraw_source, case["id"], source_id, "analyst")
+        assert activation.result() in {"activated", "withdrawn-first"}
+        assert withdrawal.result() is not None
+
+    check = PostgresStore(database_url)
+    assert check.sources[source_id]["withdrawn"] is True
+    assert check.active_loan_universe(case["id"]) is None
 
 
 def _client(tmp_path: Path, store: MemoryStore | None = None) -> TestClient:
@@ -419,7 +527,21 @@ def test_invalid_import_returns_structured_findings_and_preserves_prior_active_u
         assert rejected.json()["detail"]["code"] == "RV_WORKBOOK_INVALID"
         assert {finding["code"] for finding in rejected.json()["detail"]["findings"]} >= {"RV_TEMPLATE_PARTIAL", "RV_TEMPLATE_MISSING"}
         assert repeated.json()["detail"]["universe_id"] == rejected.json()["detail"]["universe_id"]
-        assert active["universe"]["id"] == active_id
+    assert active["universe"]["id"] == active_id
+
+
+def test_import_rejects_vault_bytes_that_do_not_match_the_source_digest(tmp_path: Path) -> None:
+    store = MemoryStore()
+    with _client(tmp_path, store) as client:
+        case_id = client.post("/api/cases", json={"name": "Loan RV", "issuer": "Issuer", "sector": "Services"}).json()["id"]
+        source = _upload_workbook(client, case_id, _workbook_bytes())
+        Path(store.sources[source["id"]]["vault_path"]).write_bytes(_workbook_bytes(first_rows=[_row(margin=425)]))
+
+        rejected = client.post(f"/api/cases/{case_id}/rv/loan-universes", json={"source_id": source["id"]})
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"]["code"] == "RV_SOURCE_INTEGRITY_MISMATCH"
+        assert store.active_loan_universe(case_id) is None
 
 
 def test_loan_universe_api_is_case_scoped_and_reader_safe(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from starlette.datastructures import UploadFile
 
 from caos.config import Settings
 from caos.http import create_app
+from caos.sources import domain as source_domain
 from caos.sources.domain import Vault, ingest_upload
 from caos.store import MemoryStore
 
@@ -110,6 +111,26 @@ def test_evidence_free_text_csv_and_xlsx_are_rejected_before_source_set_creation
             assert upload.status_code == 422
             assert upload.json()["detail"] == "source contains no extractable evidence"
             assert client.get(f"/api/cases/{case_id}/pathway-fit").json()["fit"] == "NEEDS_SOURCE"
+
+
+def test_xlsx_evidence_extraction_stops_at_the_bounded_row_and_column_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "first"
+    sheet["A2"] = "second"
+    sheet["A3"] = "row-limit-sentinel"
+    sheet.cell(row=1, column=65, value="column-limit-sentinel")
+    content = io.BytesIO()
+    workbook.save(content)
+    workbook.close()
+    monkeypatch.setattr(source_domain, "MAX_XLSX_EXTRACT_ROWS", 2)
+
+    blocks = source_domain.extract_blocks("bounded.xlsx", content.getvalue())
+    text = "\n".join(block["text"] for block in blocks)
+
+    assert "first" in text and "second" in text
+    assert "row-limit-sentinel" not in text
+    assert "column-limit-sentinel" not in text
 
 
 def test_evidence_free_json_values_are_rejected_before_source_set_creation(tmp_path: Path) -> None:

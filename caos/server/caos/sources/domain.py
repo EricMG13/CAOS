@@ -21,7 +21,11 @@ from ..store import MemoryStore, now_iso
 ALLOWED_SUFFIXES = {".pdf", ".xlsx", ".json", ".txt", ".md", ".csv"}
 MAX_ZIP_ENTRIES = 2000
 MAX_ZIP_RATIO = 100
-MAX_ZIP_UNCOMPRESSED = 1_000_000_000
+MAX_ZIP_UNCOMPRESSED = 100_000_000
+MAX_SOURCE_TEXT = 2_000_000
+MAX_XLSX_EXTRACT_WORKSHEETS = 64
+MAX_XLSX_EXTRACT_ROWS = 25_000
+MAX_XLSX_EXTRACT_COLUMNS = 64
 
 
 class Vault:
@@ -140,18 +144,39 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         if not text.strip():
             text = "PDF source stored; no text layer was available for safe extraction."
     elif suffix == ".xlsx":
+        workbook = None
         try:
             from openpyxl import load_workbook
 
             workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
             lines: list[str] = []
+            text_length = 0
             has_cell_value = False
-            for sheet in workbook.worksheets:
-                lines.append(f"[sheet:{sheet.title}]")
-                for row in sheet.iter_rows(values_only=True):
+            extracted_rows = 0
+            exhausted = False
+            for sheet in workbook.worksheets[:MAX_XLSX_EXTRACT_WORKSHEETS]:
+                header = f"[sheet:{sheet.title}]"
+                lines.append(header)
+                text_length += len(header) + 1
+                for row in sheet.iter_rows(max_col=MAX_XLSX_EXTRACT_COLUMNS, values_only=True):
+                    extracted_rows += 1
+                    if extracted_rows > MAX_XLSX_EXTRACT_ROWS:
+                        exhausted = True
+                        break
                     values = ["" if value is None else str(value) for value in row]
                     has_cell_value = has_cell_value or any(value.strip() for value in values)
-                    lines.append("\t".join(values))
+                    line = "\t".join(values)
+                    remaining = MAX_SOURCE_TEXT - text_length
+                    if remaining <= 0:
+                        exhausted = True
+                        break
+                    lines.append(line[:remaining])
+                    text_length += min(len(line), remaining) + 1
+                    if len(line) > remaining:
+                        exhausted = True
+                        break
+                if exhausted:
+                    break
             if not has_cell_value:
                 raise HTTPException(status_code=422, detail="source contains no extractable evidence")
             text = "\n".join(lines)
@@ -159,6 +184,9 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
             if isinstance(exc, HTTPException):
                 raise
             raise HTTPException(status_code=422, detail="invalid XLSX source") from exc
+        finally:
+            if workbook is not None:
+                workbook.close()
     else:
         try:
             text = content.decode("utf-8")
@@ -168,7 +196,7 @@ def extract_blocks(filename: str, content: bytes) -> list[dict[str, Any]]:
         raise HTTPException(status_code=422, detail="source contains no extractable evidence")
     if suffix == ".csv" and not text.strip(" \t\r\n,\""):
         raise HTTPException(status_code=422, detail="source contains no extractable evidence")
-    text = text[:2_000_000]
+    text = text[:MAX_SOURCE_TEXT]
     blocks = []
     for index, line in enumerate(text.splitlines() or [text], start=1):
         if line.strip():

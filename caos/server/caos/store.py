@@ -1250,6 +1250,76 @@ class MemoryStore:
         )
         return universe_id
 
+    def _withdraw_source_locked(
+        self,
+        case_id: str,
+        source_id: str,
+        actor: str,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        source = self.sources.get(source_id)
+        if not source or source.get("case_id") != case_id:
+            return None, False
+
+        def public_source() -> dict[str, Any]:
+            return {key: copy.deepcopy(value) for key, value in source.items() if key != "vault_path"}
+
+        if source.get("withdrawn"):
+            return public_source(), False
+
+        source["withdrawn"] = True
+        current = self.source_sets.get(case_id)
+        if current:
+            source_set = {
+                "id": self._id("set"),
+                "case_id": case_id,
+                "version": current["version"] + 1,
+                "source_ids": [
+                    existing_id
+                    for existing_id in current["source_ids"]
+                    if not self.sources.get(existing_id, {}).get("withdrawn")
+                ],
+                "created_by": actor,
+                "created_at": now_iso(),
+            }
+            self.register_source_set(source_set)
+        for assumption in self.assumptions.get(case_id, []):
+            if source_id in assumption.get("evidence_ids", []):
+                assumption["stale"] = True
+                assumption["status"] = "STALE"
+        self._withdraw_loan_universe_for_source_locked(case_id, source_id, actor)
+        self.audit_event("source.withdrawn", actor, case_id=case_id, source_id=source_id)
+        return public_source(), True
+
+    def withdraw_source(self, case_id: str, source_id: str, actor: str) -> dict[str, Any] | None:
+        with self.lock:
+            prior = copy.deepcopy(
+                (
+                    self.sources,
+                    self.source_sets,
+                    self.source_set_history,
+                    self.assumptions,
+                    self.rv_loan_universes,
+                    self.rv_active_loan_universes,
+                    self.audit,
+                )
+            )
+            try:
+                source, changed = self._withdraw_source_locked(case_id, source_id, actor)
+                if changed:
+                    self.persist()
+                return source
+            except Exception:
+                (
+                    self.sources,
+                    self.source_sets,
+                    self.source_set_history,
+                    self.assumptions,
+                    self.rv_loan_universes,
+                    self.rv_active_loan_universes,
+                    self.audit,
+                ) = prior
+                raise
+
 
 STORE = MemoryStore()
 
@@ -1359,6 +1429,32 @@ class PostgresStore(MemoryStore):
                 raise
             self._adopt_persisted(state, revision)
             return copy.deepcopy(saved), True
+
+    def withdraw_source(self, case_id: str, source_id: str, actor: str) -> dict[str, Any] | None:
+        with self.lock:
+            database_state = copy.deepcopy(self._base_state)
+            database_revision = self._state_revision
+            try:
+                with self._psycopg.connect(self._dsn) as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT revision, state FROM caos_state WHERE id = true FOR UPDATE")
+                        row = cursor.fetchone()
+                        if row is None:
+                            raise RuntimeError("authoritative source state is unavailable")
+                        database_revision, database_state = row
+                        self._adopt_persisted(copy.deepcopy(database_state), database_revision)
+                        source, changed = self._withdraw_source_locked(case_id, source_id, actor)
+                        if changed:
+                            cursor.execute("UPDATE sources SET withdrawn = true WHERE id = %s", (source_id,))
+                            state, revision, database_state, database_revision = self._persist_connection(connection)
+                        else:
+                            state, revision = database_state, database_revision
+                    connection.commit()
+            except Exception:
+                self._adopt_persisted(database_state, database_revision)
+                raise
+            self._adopt_persisted(state, revision)
+            return source
 
     def queue_model_build(
         self,
@@ -1954,6 +2050,7 @@ class PostgresStore(MemoryStore):
         active = state.get("rv_active_loan_universes", {})
         with connection.cursor() as cursor:
             normalized_cases: set[str] = set()
+            normalized_sources: set[str] = set()
             for record in universes.values():
                 case = state.get("cases", {}).get(record["case_id"])
                 if not case:
@@ -1965,6 +2062,22 @@ class PostgresStore(MemoryStore):
                         (case["id"], case["name"], case["issuer"], case["sector"], case["created_by"], case["created_at"]),
                     )
                     normalized_cases.add(case["id"])
+                source = state.get("sources", {}).get(record["source_id"])
+                if not source or source.get("case_id") != record["case_id"]:
+                    raise ValueError("loan universe references an absent source")
+                if source["id"] not in normalized_sources:
+                    cursor.execute(
+                        "INSERT INTO sources(id, case_id, filename, media_type, sha256, vault_path, bytes, blocks, withdrawn, created_by, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                        "ON CONFLICT (id) DO UPDATE SET withdrawn=EXCLUDED.withdrawn",
+                        (
+                            source["id"], source["case_id"], source["filename"], source["media_type"],
+                            source["sha256"], source["vault_path"], source["bytes"],
+                            self._jsonb(source.get("blocks", [])), bool(source.get("withdrawn")),
+                            source["created_by"], source["created_at"],
+                        ),
+                    )
+                    normalized_sources.add(source["id"])
 
             for case_id, active_id in active.items():
                 cursor.execute(
