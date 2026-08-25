@@ -46,12 +46,16 @@ caos/frontend/private/
 # Local static-analysis databases and diagnostics
 /static_analysis_codeql_*/
 
-# Superpowers brainstorming specs / scratch (local only). The Applicable Updates
-# execution contract is the one deliberate tracked exception.
+# Superpowers brainstorming specs / scratch (local only). Accepted execution
+# contracts below are deliberate tracked exceptions.
 docs/superpowers/*
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/2026-08-25-analyst-model-and-deliverable-authoring-design.md
 !docs/superpowers/plans/
 docs/superpowers/plans/*
 !docs/superpowers/plans/2026-07-13-caos-applicable-updates.md
+!docs/superpowers/plans/2026-08-25-analyst-model-and-deliverable-authoring-implementation.md
 /ds-bundle/
 /.ds-sync/
 /.design-sync/.cache/
