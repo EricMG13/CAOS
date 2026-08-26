@@ -5,7 +5,9 @@ set -euo pipefail
 # Installer version: 3.2.0
 # Requires bash and jq. On Windows run via git-bash or WSL.
 # Blocks Claude Code commits on uncommitted changes and pushes on the full branch
-# when fallow audit returns verdict fail.
+# when fallow audit returns verdict fail. A `git -C <dir>` or leading `cd <dir> &&`
+# in the command audits <dir> instead of this hook's own $CLAUDE_PROJECT_DIR —
+# literal unquoted paths only, no variable expansion or spaces (known ceiling).
 # Runtime errors fail open with a single stderr notice so skips stay visible.
 #
 # Version floor (FALLOW_GATE_MIN_VERSION, default 2.85.0). The gate passes
@@ -25,13 +27,26 @@ fi
 INPUT="$(cat)"
 CMD="$(jq -r '.tool_input.command // empty' <<<"$INPUT")"
 
-if ! printf '%s\n' "$CMD" | grep -Eq '(^|[[:space:];|&()])git[[:space:]]+(commit|push)([[:space:]]|$)'; then
+if ! printf '%s\n' "$CMD" | grep -Eq '(^|[[:space:];|&()])git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(commit|push)([[:space:]]|$)'; then
   exit 0
 fi
 
 IS_PUSH=false
-if printf '%s\n' "$CMD" | grep -Eq '(^|[[:space:];|&()])git[[:space:]]+push([[:space:]]|$)'; then
+if printf '%s\n' "$CMD" | grep -Eq '(^|[[:space:];|&()])git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+push([[:space:]]|$)'; then
   IS_PUSH=true
+fi
+
+# Audit the repo the command actually targets, not just this hook's own cwd.
+# Handles a leading `cd <dir> &&`/`cd <dir>;` and a `git -C <dir>` flag (the
+# latter wins if both appear). Literal unquoted paths only — see header note.
+TARGET_DIR="$PWD"
+if [[ "$CMD" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:];\&]+)[[:space:]]*(&&|\;) ]]; then
+  CAND="${BASH_REMATCH[1]%\"}"; CAND="${CAND#\"}"; CAND="${CAND%\'}"; CAND="${CAND#\'}"
+  [ -d "$CAND" ] && TARGET_DIR="$CAND"
+fi
+if [[ "$CMD" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
+  CAND="${BASH_REMATCH[1]%\"}"; CAND="${CAND#\"}"; CAND="${CAND%\'}"; CAND="${CAND#\'}"
+  [ -d "$CAND" ] && TARGET_DIR="$CAND"
 fi
 
 if command -v fallow >/dev/null 2>&1; then
@@ -71,15 +86,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ "$IS_PUSH" = false ] && git diff --quiet HEAD; then
+if [ "$IS_PUSH" = false ] && (cd "$TARGET_DIR" && git diff --quiet HEAD); then
   exit 0
 elif [ "$IS_PUSH" = false ]; then
-  if "${RUNNER[@]}" audit --changed-since HEAD --format json --quiet --explain --gate-marker agent >"$TMP_JSON" 2>"$TMP_ERR"; then
+  if (cd "$TARGET_DIR" && "${RUNNER[@]}" audit --changed-since HEAD --format json --quiet --explain --gate-marker agent) >"$TMP_JSON" 2>"$TMP_ERR"; then
     STATUS=0
   else
     STATUS=$?
   fi
-elif "${RUNNER[@]}" audit --format json --quiet --explain --gate-marker agent >"$TMP_JSON" 2>"$TMP_ERR"; then
+elif (cd "$TARGET_DIR" && "${RUNNER[@]}" audit --format json --quiet --explain --gate-marker agent) >"$TMP_JSON" 2>"$TMP_ERR"; then
   STATUS=0
 else
   STATUS=$?
