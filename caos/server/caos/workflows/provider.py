@@ -281,7 +281,6 @@ class AgentLoop:
                 if not semaphore.acquire(blocking=False):
                     raise abort("AGENT_BUDGET_EXCEEDED", "provider concurrency limit reached")
                 try:
-                    lease_check()
                     try:
                         if before:
                             before(retry)
