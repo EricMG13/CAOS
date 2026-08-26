@@ -4815,3 +4815,68 @@ Decision: accept the final Phase 4 rereview corrections. Focused tests pass
 webpack build pass, and the rebuilt combined-app workbench passes the exact
 signed/default delta and single-prompt history journeys. No known Critical or
 Important Phase 4 defect remains.
+
+## 2026-08-26 — Analyst authoring Phase 5 structured Deliverable Drafts
+
+Decision under review: add one append-only shared structured draft authority per
+case/pathway, backed by stable templates, governed evidence, and exact model and
+scenario identities, without introducing Phase 6 freeze, rendering, or approval
+behavior.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-289 | Concurrency reviewer | Two writers could both observe the same draft version and create competing current revisions or orphan audit rows. | Critical | Resolved and verified | Memory performs compare-and-append under the shared state lock. PostgreSQL locks the case row, reads current version, inserts the immutable revision, and writes its audit event in one transaction. Two-writer memory and live PostgreSQL tests prove one winner, one recoverable conflict carrying current metadata, and exactly two durable revisions/audits after the initial save. |
+| RT-2026-08-26-290 | Evidence-governance reviewer | Client-supplied generated values, cross-case citations, withdrawn sources, or unknown evidence blocks could enter committee-ready content. | Critical | Resolved and verified | Strict discriminated block contracts forbid extra fields and generated values. Server allowlists generated fields/recipes and validates every citation against the exact case, live source, and normalized block IDs before persistence. Adversarial contract/domain and full HTTP tests cover each rejection. |
+| RT-2026-08-26-291 | Model-authority reviewer | A stale signed revision or acknowledged-but-old Application Build could silently anchor a new draft. | Critical | Resolved and verified | Draft save resolves the current READY build by the existing server-owned authority order, accepts only the current ACTIVE signed revision or that exact build with literal acknowledgement, and persists a stable pinned identity. Newer build/head changes fail closed. Mutable revision-export metadata is deliberately excluded from the content identity. |
+| RT-2026-08-26-292 | Calculation-integrity reviewer | A forged Scenario Exhibit could carry internally consistent client hashes while substituting fabricated outputs. | Critical | Resolved and verified | The service checks case/build/revision/registry/assumption/output identities and then re-runs the existing Phase 3 bounded Scenario service with the exact shocks, base revision, registry, and draft generation. It requires exact full-envelope and digest equality; a forged-output regression fails closed. |
+| RT-2026-08-26-293 | Routing/authorization reviewer | A generic pathway route could shadow by-ID lookup, or a reader/cross-case caller could mutate or retrieve another case's draft. | High | Resolved and verified | Phase 0's collision-safe `/deliverables/by-id/{deliverable_id}` route is registered before the pathway route. Every read requires case membership and by-ID rechecks stored case identity; every write requires the existing case-writer gate. Broad HTTP/security regressions pass. |
+| RT-2026-08-26-294 | History reviewer | A restore operation could mutate or replace historical content instead of producing an attributable new revision. | High | Resolved and verified | There is no restore endpoint or update/delete path. A focused regression reconstructs the editable request from v1, submits it against v2 through the ordinary PUT CAS, and proves v3 equals v1 while v1/v2 remain byte-for-byte present in ascending history. |
+
+Decision: accept Phase 5 for independent review. The six versioned templates,
+strict canonical blocks, append-only ledgers, and exact three-route API are in
+scope; Phase 6 tables are inert schema placeholders only. The complete live
+PostgreSQL/LibreOffice server suite passes 482 tests, focused draft tests pass,
+security/dependency/integrity/consistency gates are green, and no known Critical
+or Important defect remains. A draft may become stale immediately after a
+concurrent model-authority change; Phase 6 must revalidate current authority at
+Freeze, and Phase 5 never represents a draft as frozen or approved.
+
+## 2026-08-26 — Analyst authoring Phase 5 independent-review corrections
+
+Correction under review: close the three Important model-authority and
+template-policy findings without adding Phase 6 behavior or a second set of
+client-side composition rules.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-295 | House-model authority reviewer | Literal acknowledgement allowed an author to choose the Application Build even while the current signed Analyst Revision was ACTIVE. | Critical | Resolved and verified | The Application Build branch now fails with `DELIVERABLE_APPLICATION_BUILD_FALLBACK_NOT_ELIGIBLE` whenever current eligibility exposes an active revision. Acknowledged fallback succeeds only after the active head is absent; exact current-build and acknowledgement checks still apply. This tightens and supersedes the fallback wording in RT-291. |
+| RT-2026-08-26-296 | Model-provenance reviewer | Generated charts and Model Appendices, and potentially Scenario Exhibits, could persist with no selected model or pinned identity. | Critical | Resolved and verified | One template-owned `model_dependent` predicate covers Generated Metric, Table, Chart, Scenario Exhibit, and Model Appendix. Every such block now requires the exact selected model record and immutable identity; every generated ownership record carries its model digest and build payload digest, and Scenario Exhibit build identity must equal the selected model build. All kinds have positive and no-model regressions. |
+| RT-2026-08-26-297 | Template-governance reviewer | A bare `appendix.` prefix and global kind expansion let clients invent headings, narratives, slots, and order outside the versioned template. | Critical | Resolved and verified | Each template now exposes the sole six-entry optional-block policy: exact kind, exact slot stem, bounded item count, ordering rank, and model dependency. Validation requires zero-padded contiguous ordinals and monotonic policy order. Invented heading/narrative/kind/slot, duplicate or out-of-range ordinal, and reverse order fail closed; legitimate generated/scenario/model/limitations composition remains accepted. |
+| RT-2026-08-26-298 | Trust-seam reviewer | Eligibility could name a selected model while a racing/inconsistent ledger lookup returned no exact record, leaving a selection with null pinned identity on a narrative-only draft. | High | Resolved and verified | `_validate_model` now rechecks the fetched revision/build record's ID, case, build, and READY state before returning. Adversarial missing-record tests reproduce the old silent save and now fail with the typed stale-model error before persistence. |
+
+Decision: accept the Phase 5 independent-review corrections for rereview. The
+focused suite passes 27/27 against live PostgreSQL and the complete live
+PostgreSQL/LibreOffice server suite passes 494/494. Ruff, Bandit, diff checks,
+and GitNexus change detection are green/expected. No known Critical or Important
+Phase 5 defect remains; Phase 6 authority revalidation remains intentionally
+outside this phase.
+
+## 2026-08-26 — Analyst authoring Phase 5 final correction evidence
+
+The exact final tree, including RT-298's fetched-record consistency guard and
+its additional regression, completed the full live PostgreSQL/LibreOffice suite
+with **495 passed in 84.68 seconds**. This supersedes only the intermediate
+494-test count in the preceding correction entry; its decisions and dispositions
+are unchanged.
+
+## 2026-08-26 — Analyst authoring Phase 5 Scenario Exhibit base binding
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-299 | Scenario-authority reviewer | A Scenario Exhibit could use a null or different same-build base revision while the draft selected an Analyst Revision, or attach a historical revision while the draft selected the Application Build. Recalculation alone did not prove the exhibit was based on the model the draft claimed. | Critical | Resolved and verified | Before any build/revision lookup, Scenario service call, or Publication Ledger append, the validator now requires Analyst Revision selection to use that exact selected `revision_id` and Application Build selection to use a null base. A non-null base record is then rechecked for exact ID, case, and build. Three adversarial mismatch directions use a must-not-run Scenario service and prove zero case-scoped drafts/audits in memory and live PostgreSQL; valid selected-revision and Application-Build/null-base exhibits remain green. |
+
+Decision: accept the final Phase 5 Scenario Exhibit correction. The focused
+suite passes 29 tests without PostgreSQL (five PostgreSQL-only skips) and 34/34
+with live PostgreSQL. The complete live PostgreSQL/LibreOffice suite after the
+production guard passes 498/498 in 86.08 seconds. No known Critical or Important
+Phase 5 issue remains.

@@ -383,7 +383,7 @@ Keep block content/citations inside bounded revision JSON until a demonstrated q
 ```text
 GET /api/cases/{case_id}/deliverables/{pathway}
 PUT /api/cases/{case_id}/deliverables/{pathway}/draft
-GET /api/cases/{case_id}/deliverables/{deliverable_id}
+GET /api/cases/{case_id}/deliverables/by-id/{deliverable_id}
 ```
 
 Freeze/approval/export routes land in Phase 6.

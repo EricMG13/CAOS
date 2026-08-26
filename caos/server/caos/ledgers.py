@@ -20,6 +20,12 @@ class RevisionConflictError(ValueError):
         self.current_build = current_build
 
 
+class DeliverableConflictError(ValueError):
+    def __init__(self, current: Record | None) -> None:
+        super().__init__("DELIVERABLE_VERSION_CONFLICT")
+        self.current = current
+
+
 def _revision_conflict_build(build: Record | None) -> Record | None:
     if build is None:
         return None
@@ -277,6 +283,21 @@ class RunLedger(Protocol):
 
 
 class PublicationLedger(Protocol):
+    def append_deliverable_revision(
+        self,
+        case_id: str,
+        pathway: str,
+        actor: str,
+        expected_version: int,
+        value: Record,
+    ) -> Record: ...
+
+    def list_deliverable_revisions(
+        self, case_id: str, pathway: str
+    ) -> list[Record]: ...
+
+    def get_deliverable_revision(self, deliverable_id: str) -> Record | None: ...
+
     def append_thesis(
         self, case_id: str, actor: str, expected_version: int, thesis: Record
     ) -> Record: ...

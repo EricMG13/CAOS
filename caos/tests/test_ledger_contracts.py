@@ -1347,6 +1347,33 @@ def test_publication_versions_conflict_without_partial_append(
     ) == before
 
 
+def test_deliverable_revision_lookup_preserves_immutable_history(
+    ledger_set: Any,
+) -> None:
+    case = _case(ledger_set)
+    first_value = {
+        "template_id": "caos.full-credit.v1",
+        "template_version": "caos.deliverable-template.v1",
+        "digest": "a" * 64,
+        "content": {"blocks": []},
+    }
+    first = ledger_set.publications.append_deliverable_revision(
+        case["id"], "FULL_CREDIT", ACTOR, 0, first_value
+    )
+    first_value["content"]["blocks"].append({"forged": True})
+    second = ledger_set.publications.append_deliverable_revision(
+        case["id"],
+        "FULL_CREDIT",
+        "second-analyst",
+        1,
+        {**first_value, "digest": "b" * 64},
+    )
+
+    assert ledger_set.publications.get_deliverable_revision(first["id"]) == first
+    assert ledger_set.publications.get_deliverable_revision(second["id"]) == second
+    assert first["content"]["blocks"] == []
+
+
 def test_note_promotion_changes_source_authority_once(ledger_set: Any) -> None:
     case = _case(ledger_set)
     note = ledger_set.publications.create_note(case["id"], ACTOR, "Debt remains 100")

@@ -12,6 +12,7 @@ from typing import Any
 
 from .contracts import clean_json, digest
 from .ledgers import (
+    DeliverableConflictError,
     RevisionConflictError,
     _revision_conflict_build,
     SourceCatalog,
@@ -68,6 +69,7 @@ class _MemoryState:
         self.model_revisions: dict[str, Record] = {}
         self.model_revision_heads: dict[str, str] = {}
         self.model_revision_export_jobs: dict[str, Record] = {}
+        self.deliverable_draft_revisions: dict[tuple[str, str], list[Record]] = {}
 
     @staticmethod
     def new_id(prefix: str) -> str:
@@ -1656,6 +1658,60 @@ class _MemoryPublicationLedger(_Adapter):
                 if snapshot and snapshot.get("case_id") == case_id:
                     continue
             raise ValueError("EVIDENCE_CASE_MISMATCH")
+
+    def append_deliverable_revision(
+        self,
+        case_id: str,
+        pathway: str,
+        actor: str,
+        expected_version: int,
+        value: Record,
+    ) -> Record:
+        state = self._state
+        with state.lock:
+            if case_id not in state.cases:
+                raise ValueError("CASE_NOT_FOUND")
+            bucket = state.deliverable_draft_revisions.setdefault(
+                (case_id, pathway), []
+            )
+            current = bucket[-1] if bucket else None
+            if (current["version"] if current else 0) != expected_version:
+                raise DeliverableConflictError(copy.deepcopy(current))
+            saved = copy.deepcopy(value)
+            saved.update(
+                id=state.new_id("deliverable"),
+                case_id=case_id,
+                pathway=pathway,
+                version=expected_version + 1,
+                author=actor,
+                created_at=now_iso(),
+            )
+            bucket.append(saved)
+            state.audit_event(
+                "deliverable.draft_versioned",
+                actor,
+                case_id=case_id,
+                pathway=pathway,
+                deliverable_id=saved["id"],
+                version=saved["version"],
+            )
+            return copy.deepcopy(saved)
+
+    def list_deliverable_revisions(
+        self, case_id: str, pathway: str
+    ) -> list[Record]:
+        with self._state.lock:
+            return copy.deepcopy(
+                self._state.deliverable_draft_revisions.get((case_id, pathway), [])
+            )
+
+    def get_deliverable_revision(self, deliverable_id: str) -> Record | None:
+        with self._state.lock:
+            for revisions in self._state.deliverable_draft_revisions.values():
+                for revision in revisions:
+                    if revision["id"] == deliverable_id:
+                        return copy.deepcopy(revision)
+        return None
 
     @staticmethod
     def _current_version(bucket: dict[str, list[Record]], case_id: str) -> int:

@@ -24,6 +24,7 @@ from caos.memory_ledgers import MemoryLedgerSet
 from caos.methodology.bundle import DeployVBundle
 from caos.methodology.prompt import compile_prompt, validate_invocation_plan
 from caos.publishing.recipes import validate_recipe
+from caos.publishing.templates import DELIVERABLE_TEMPLATES
 from fastapi.testclient import TestClient
 
 DEPLOY_V = (
@@ -685,6 +686,56 @@ def test_report_inputs_version_together() -> None:
         )
     assert len(ledgers.publications.list_theses(case_id)) == 1
     assert len(ledgers.publications.list_recommendations(case_id)) == 1
+
+
+def test_clean_slate_structured_deliverable_template_and_strict_save(
+    tmp_path: Path,
+) -> None:
+    template = DELIVERABLE_TEMPLATES["RELATIVE_VALUE"]
+    blocks = [
+        (
+            {
+                "kind": "NARRATIVE",
+                "block_id": block["block_id"],
+                "slot_id": block["slot_id"],
+                "text": block["title"],
+                "content_mode": "ANALYST_JUDGMENT",
+                "citations": [],
+            }
+            if block["kind"] == "NARRATIVE"
+            else {
+                "kind": "EVIDENCE_REGISTER",
+                "block_id": block["block_id"],
+                "slot_id": block["slot_id"],
+                "citations": [],
+            }
+        )
+        for block in template["blocks"]
+    ]
+    with make_client(tmp_path) as client:
+        case_id = client.post(
+            "/api/cases",
+            json={"name": "Draft", "issuer": "Issuer", "sector": "Testing"},
+        ).json()["id"]
+        route = f"/api/cases/{case_id}/deliverables/RELATIVE_VALUE"
+        assert client.get(route).json()["template"] == template
+        saved = client.put(
+            f"{route}/draft",
+            json={
+                "expected_version": 0,
+                "template_id": template["template_id"],
+                "template_version": template["template_version"],
+                "model_selection": None,
+                "blocks": blocks,
+            },
+        )
+        assert saved.status_code == 200
+        forged = saved.request.content.replace(b'"blocks":', b'"unknown":true,"blocks":')
+        assert client.put(
+            f"{route}/draft",
+            content=forged,
+            headers={"content-type": "application/json"},
+        ).status_code == 422
 
 
 def test_financial_and_rv_guards() -> None:

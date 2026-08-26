@@ -314,6 +314,130 @@ class OneWaySensitivityRequest(StrictModel):
         return finite_or_none(value)
 
 
+class EvidenceCitation(StrictModel):
+    source_id: str = Field(min_length=1, max_length=120)
+    block_ids: list[str] = Field(min_length=1, max_length=50)
+    claim: str = Field(min_length=1, max_length=1000)
+
+
+class AnalystRevisionSelection(StrictModel):
+    kind: Literal["ANALYST_REVISION"]
+    build_id: str = Field(min_length=1, max_length=120)
+    revision_id: str = Field(min_length=1, max_length=120)
+
+
+class ApplicationBuildSelection(StrictModel):
+    kind: Literal["APPLICATION_BUILD"]
+    build_id: str = Field(min_length=1, max_length=120)
+    fallback_acknowledged: Literal[True]
+
+
+DeliverableModelSelection = Annotated[
+    AnalystRevisionSelection | ApplicationBuildSelection,
+    Field(discriminator="kind"),
+]
+
+
+class DeliverableBlock(StrictModel):
+    block_id: str = Field(min_length=1, max_length=160)
+    slot_id: str = Field(min_length=1, max_length=160)
+
+
+class HeadingBlock(DeliverableBlock):
+    kind: Literal["HEADING"]
+    text: str = Field(min_length=1, max_length=240)
+
+
+class NarrativeBlock(DeliverableBlock):
+    kind: Literal["NARRATIVE"]
+    text: str = Field(min_length=1, max_length=20_000)
+    content_mode: Literal["EVIDENCE", "ANALYST_JUDGMENT"]
+    citations: list[EvidenceCitation] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def material_claim_has_authority(self) -> NarrativeBlock:
+        if not self.text.strip():
+            raise ValueError("narrative text must not be blank")
+        if self.content_mode == "EVIDENCE" and not self.citations:
+            raise ValueError("evidence narrative requires a citation")
+        return self
+
+
+class GeneratedMetricBlock(DeliverableBlock):
+    kind: Literal["GENERATED_METRIC"]
+    metric_ids: list[str] = Field(min_length=1, max_length=40)
+
+
+class GeneratedTableBlock(DeliverableBlock):
+    kind: Literal["GENERATED_TABLE"]
+    table_id: str = Field(min_length=1, max_length=120)
+    field_ids: list[str] = Field(min_length=1, max_length=80)
+
+
+class GeneratedChartBlock(DeliverableBlock):
+    kind: Literal["GENERATED_CHART"]
+    recipe: dict[str, Any]
+
+
+class ScenarioEnvelope(StrictModel):
+    case_id: str = Field(min_length=1, max_length=120)
+    build_id: str = Field(min_length=1, max_length=120)
+    base_revision_id: str | None = Field(default=None, max_length=120)
+    registry_version: str = Field(min_length=1, max_length=160)
+    registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_generation: int = Field(ge=0, le=2_147_483_647)
+    effective_assumptions: list[dict[str, Any]] = Field(min_length=1, max_length=256)
+    assumptions_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    outputs: dict[str, Any]
+    outputs_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    deltas: dict[str, Any]
+
+
+class ScenarioExhibitBlock(DeliverableBlock):
+    kind: Literal["SCENARIO_EXHIBIT"]
+    title: str = Field(min_length=1, max_length=240)
+    shocks: list[ModelShock] = Field(min_length=1, max_length=256)
+    scenario: ScenarioEnvelope
+    scenario_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class EvidenceRegisterBlock(DeliverableBlock):
+    kind: Literal["EVIDENCE_REGISTER"]
+    citations: list[EvidenceCitation] = Field(default_factory=list, max_length=500)
+
+
+class ModelAppendixBlock(DeliverableBlock):
+    kind: Literal["MODEL_APPENDIX"]
+
+
+class LimitationsBlock(DeliverableBlock):
+    kind: Literal["LIMITATIONS"]
+    text: str = Field(min_length=1, max_length=10_000)
+    citations: list[EvidenceCitation] = Field(default_factory=list, max_length=100)
+
+
+CanonicalDeliverableBlock = Annotated[
+    HeadingBlock
+    | NarrativeBlock
+    | GeneratedMetricBlock
+    | GeneratedTableBlock
+    | GeneratedChartBlock
+    | ScenarioExhibitBlock
+    | EvidenceRegisterBlock
+    | ModelAppendixBlock
+    | LimitationsBlock,
+    Field(discriminator="kind"),
+]
+
+
+class DeliverableDraftRequest(StrictModel):
+    expected_version: int = Field(ge=0)
+    template_id: str = Field(min_length=1, max_length=160)
+    template_version: str = Field(min_length=1, max_length=160)
+    model_selection: DeliverableModelSelection | None = None
+    blocks: list[CanonicalDeliverableBlock] = Field(min_length=1, max_length=120)
+
+
 class RVRow(StrictModel):
     instrument: str = Field(min_length=1, max_length=160)
     observation_date: str = Field(min_length=10, max_length=10)

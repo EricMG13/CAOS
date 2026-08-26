@@ -1346,6 +1346,77 @@ class QueueRevisionExportResponse(WireModel):
     queued: bool
 
 
+class DeliverableTemplateBlockResponse(WireModel):
+    block_id: str
+    slot_id: str
+    kind: str
+    title: str
+    required: bool
+    order: int
+
+
+class DeliverableOptionalBlockPolicyResponse(WireModel):
+    kind: str
+    slot_stem: str
+    max_items: int
+    order: int
+    model_dependent: bool
+
+
+class DeliverableTemplateResponse(WireModel):
+    template_id: str
+    template_version: str
+    pathway: str
+    title: str
+    model_requirement: Literal["REQUIRED", "OPTIONAL"]
+    allowed_appendices: list[str]
+    optional_blocks: list[DeliverableOptionalBlockPolicyResponse]
+    blocks: list[DeliverableTemplateBlockResponse]
+
+
+class DeliverableActiveRevisionResponse(WireModel):
+    revision_id: str
+    build_id: str
+    revision_number: int
+    signed_by: str
+    signed_at: str
+
+
+class DeliverableApplicationBuildResponse(WireModel):
+    build_id: str
+    accepted_snapshot_id: str
+    input_fingerprint: str
+    payload_digest: str
+    status: Literal["READY"]
+
+
+class DeliverableModelEligibilityResponse(WireModel):
+    active_revision: DeliverableActiveRevisionResponse | None
+    application_build: DeliverableApplicationBuildResponse | None
+    fallback_acknowledgement_required: bool
+    default_model_selection: dict[str, Any] | None
+
+
+class DeliverableDraftRevisionResponse(WireModel):
+    id: str
+    case_id: str
+    pathway: str
+    version: int
+    author: str
+    created_at: str
+    template_id: str
+    template_version: str
+    digest: str
+    content: dict[str, Any]
+
+
+class DeliverableWorkspaceResponse(WireModel):
+    template: DeliverableTemplateResponse
+    current: DeliverableDraftRevisionResponse | None
+    history: list[DeliverableDraftRevisionResponse]
+    model_eligibility: DeliverableModelEligibilityResponse
+
+
 class ApprovedReportResponse(ReportResponse):
     status: Literal["APPROVED"]
     approved_by: str

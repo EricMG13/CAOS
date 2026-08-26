@@ -36,6 +36,7 @@ from .contracts import (
     AssumptionRequest,
     ConfirmDraftRequest,
     CreateCaseRequest,
+    DeliverableDraftRequest,
     Depth,
     FreezeReportRequest,
     LoanUniverseImportRequest,
@@ -72,8 +73,9 @@ from .models.runtime import (
 )
 from .memory_ledgers import MemoryLedgerSet
 from .postgres_ledgers import PostgresLedgerSet
-from .ledgers import RevisionConflictError
+from .ledgers import DeliverableConflictError, RevisionConflictError
 from .publishing.domain import (
+    DeliverableService,
     freeze_report,
     render_pdf,
     render_xlsx,
@@ -90,6 +92,8 @@ from .responses import (
     CaseMemberResponse,
     CaseLensResponse,
     CaseResponse,
+    DeliverableDraftRevisionResponse,
+    DeliverableWorkspaceResponse,
     HealthResponse,
     IdentityResponse,
     LoanUniverseResponse,
@@ -178,6 +182,9 @@ def create_app(
         runtime.executor,
         settings.storage_dir,
     )
+    deliverables = DeliverableService(
+        publications, sources, models, scenario_service=revision_service
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -202,6 +209,7 @@ def create_app(
     app.state.model_runtime = model_runtime
     app.state.revision_service = revision_service
     app.state.revision_runtime = revision_runtime
+    app.state.deliverables = deliverables
 
     def identity(request: Request) -> Identity:
         return identity_from_request(request, settings)
@@ -1174,6 +1182,57 @@ def create_app(
                 model_build,
                 include_model_export=payload.include_model_export,
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/cases/{case_id}/deliverables/by-id/{deliverable_id}",
+        response_model=DeliverableDraftRevisionResponse,
+    )
+    def deliverable_by_id(
+        case_id: str, deliverable_id: str, request: Request
+    ) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        revision = deliverables.get_by_id(case_id, deliverable_id)
+        if revision is None:
+            raise HTTPException(status_code=404, detail="deliverable draft not found")
+        return revision
+
+    @app.get(
+        "/api/cases/{case_id}/deliverables/{pathway}",
+        response_model=DeliverableWorkspaceResponse,
+    )
+    def deliverable_workspace(
+        case_id: str, pathway: str, request: Request
+    ) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        try:
+            return deliverables.read(case_id, pathway)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put(
+        "/api/cases/{case_id}/deliverables/{pathway}/draft",
+        response_model=DeliverableWorkspaceResponse,
+    )
+    def save_deliverable_draft(
+        case_id: str,
+        pathway: str,
+        payload: DeliverableDraftRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        who = identity(request)
+        require_case(runs, case_id, who, write=True)
+        try:
+            return deliverables.save(case_id, pathway, who.subject, payload)
+        except DeliverableConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DELIVERABLE_VERSION_CONFLICT",
+                    "current": exc.current,
+                },
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 
 from .contracts import clean_json, digest
 from .ledgers import (
+    DeliverableConflictError,
     RevisionConflictError,
     _revision_conflict_build,
     _validate_run_nodes,
@@ -1574,6 +1575,90 @@ class _PostgresPublicationLedger(_Adapter):
                 if cursor.fetchone():
                     continue
             raise ValueError("EVIDENCE_CASE_MISMATCH")
+
+    def append_deliverable_revision(
+        self,
+        case_id: str,
+        pathway: str,
+        actor: str,
+        expected_version: int,
+        value: Record,
+    ) -> Record:
+        if not isinstance(expected_version, int):
+            raise DeliverableConflictError(None)
+        saved = copy.deepcopy(value)
+        saved.update(
+            id=_new_id("deliverable"),
+            case_id=case_id,
+            pathway=pathway,
+            version=expected_version + 1,
+            author=actor,
+            created_at=now_iso(),
+        )
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM cases WHERE id=%s FOR UPDATE", (case_id,))
+                if cursor.fetchone() is None:
+                    raise ValueError("CASE_NOT_FOUND")
+                cursor.execute(
+                    "SELECT value FROM deliverable_draft_revisions "
+                    "WHERE case_id=%s AND pathway=%s ORDER BY version DESC LIMIT 1",
+                    (case_id, pathway),
+                )
+                row = cursor.fetchone()
+                current = copy.deepcopy(row[0]) if row else None
+                if (current["version"] if current else 0) != expected_version:
+                    raise DeliverableConflictError(current)
+                cursor.execute(
+                    "INSERT INTO deliverable_draft_revisions("
+                    "id, case_id, pathway, version, template_id, template_version, "
+                    "digest, value, author, created_at) VALUES ("
+                    "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        saved["id"],
+                        case_id,
+                        pathway,
+                        saved["version"],
+                        saved["template_id"],
+                        saved["template_version"],
+                        saved["digest"],
+                        Jsonb(saved),
+                        actor,
+                        saved["created_at"],
+                    ),
+                )
+                self._audit(
+                    cursor,
+                    "deliverable.draft_versioned",
+                    actor,
+                    case_id=case_id,
+                    pathway=pathway,
+                    deliverable_id=saved["id"],
+                    version=saved["version"],
+                )
+        return copy.deepcopy(saved)
+
+    def list_deliverable_revisions(
+        self, case_id: str, pathway: str
+    ) -> list[Record]:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT value FROM deliverable_draft_revisions "
+                    "WHERE case_id=%s AND pathway=%s ORDER BY version",
+                    (case_id, pathway),
+                )
+                return [copy.deepcopy(row[0]) for row in cursor.fetchall()]
+
+    def get_deliverable_revision(self, deliverable_id: str) -> Record | None:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT value FROM deliverable_draft_revisions WHERE id=%s",
+                    (deliverable_id,),
+                )
+                row = cursor.fetchone()
+                return copy.deepcopy(row[0]) if row else None
 
     def _append_version(
         self,
