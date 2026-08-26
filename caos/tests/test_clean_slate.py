@@ -54,7 +54,7 @@ def test_deploy_v_integrity_and_cp_parse_route_order() -> None:
     bundle = DeployVBundle(DEPLOY_V)
     report = bundle.verify()
     assert report == {
-        "build_id": "e669e5fd9b14a91dbbf0ae7d64d42a27e8057b6327e4107cd07f2f3423a01b11",
+        "build_id": "7fa967c472e8d185f6b7c0e716628de5aea9367f059f6e3fe307224fdd9ee213",
         "checked": 307,
         "mismatches": 0,
         "logical_entries": 41,
