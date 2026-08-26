@@ -191,15 +191,11 @@ async function inventoryLoadedRoute(context, role, slug, title) {
     } else if (slug === "command-center") {
       await page.getByRole("heading", { name: "Synthetic Dense Issuer" }).waitFor();
     } else if (slug === "model-builder") {
-      if (phase4ModelOnly) {
-        await page.getByText("Active Analyst Model · R1", { exact: true }).waitFor();
-        await page.getByRole("button", { name: "Application Model Build" }).waitFor();
-        await page.getByRole("tab", { name: "Assumptions", exact: true }).waitFor();
-        await page.getByRole("tab", { name: "Sensitivities", exact: true }).waitFor();
-        await page.getByRole("tab", { name: "History", exact: true }).waitFor();
-      } else {
-        await page.getByText("CANONICAL MODEL INPUTS INVALID", { exact: true }).waitFor();
-      }
+      await page.getByText("Active Analyst Model · R1", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Application Model Build" }).waitFor();
+      await page.getByRole("tab", { name: "Assumptions", exact: true }).waitFor();
+      await page.getByRole("tab", { name: "Sensitivities", exact: true }).waitFor();
+      await page.getByRole("tab", { name: "History", exact: true }).waitFor();
     } else if (slug === "report-studio") {
       await page.getByLabel("Pathway template").waitFor();
       await page.getByRole("region", { name: "Deliverable paper preview" }).waitFor();
@@ -271,17 +267,17 @@ try {
   if (phase4ModelOnly) {
     assert.deepEqual(allRunPathways, ["FULL_CREDIT"]);
     assert.deepEqual(acceptedPathways, ["FULL_CREDIT"]);
-    const modelInventory = await (await analystApi.get(`/api/cases/${denseCaseId}/models`)).json();
-    assert.equal(modelInventory.readiness.status, "READY");
-    assert.equal(modelInventory.readiness.build.status, "READY");
-    const revisionInventory = await (await analystApi.get(`/api/cases/${denseCaseId}/model-revisions`)).json();
-    assert.equal(revisionInventory.revisions.length, 1);
-    assert.equal(revisionInventory.revisions[0].state, "ACTIVE");
-    assert.equal(revisionInventory.revisions[0].export.status, "READY");
   } else {
     assert.deepEqual(allRunPathways, expectedPathways);
     assert.deepEqual(acceptedPathways, expectedPathways);
   }
+  const modelInventory = await (await analystApi.get(`/api/cases/${denseCaseId}/models`)).json();
+  assert.equal(modelInventory.readiness.status, "READY");
+  assert.equal(modelInventory.readiness.build.status, "READY");
+  const revisionInventory = await (await analystApi.get(`/api/cases/${denseCaseId}/model-revisions`)).json();
+  assert.equal(revisionInventory.revisions.length, 1);
+  assert.equal(revisionInventory.revisions[0].state, "ACTIVE");
+  assert.equal(revisionInventory.revisions[0].export.status, "READY");
   const denseRV = await (await analystApi.get(`/api/cases/${denseCaseId}/rv`)).json();
   assert.equal(denseRV.rows.length, phase4ModelOnly ? 0 : 250);
   assert.equal(denseRV.excluded.length, phase4ModelOnly ? 0 : 50);

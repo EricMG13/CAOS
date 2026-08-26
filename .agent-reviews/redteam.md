@@ -4992,3 +4992,31 @@ Studio suite passes 9/9 and the full frontend suite passes 52/52; TypeScript,
 ESLint, the 12-page webpack export, canonical static publication, and the
 current-bundle mounted workbench pass. No known Critical or Important Phase 7
 defect remains.
+
+## 2026-08-26 — Analyst authoring Phase 8 final verification and closeout
+
+Decision under review: accept the cumulative Model Builder and Report Studio
+workflow only after independently reconstructing its durable authorities on a
+fresh database, restoring them into a second database, reopening every stored
+format, and exercising the canonical combined application with real scanner and
+worker dependencies.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-320 | Migration/authority reviewer | A clean install could pass while a normalized restore, repeated migration, or two-writer CAS produced a different current model, draft, Frozen record, or filing. | Critical | Resolved and verified | Separate `caos_phase8_clean`, `caos_phase8_restart`, and `caos_phase8_suite` databases exercised the complete migration chain through 010, repeated application, deterministic 007 ordering, 008→009→010 upgrade, constraints/FKs/rollback, and inert legacy state. Nine focused memory/live two-writer Sign-Off, autosave, Freeze, and File races pass; the complete live suite passes 514/514. |
+| RT-2026-08-26-321 | Historical-byte reviewer | A database restart or current renderer/methodology code could silently rerender a signed model or Filed deliverable under substituted identities. | Critical | Resolved and verified | One ACTIVE signed revision and six pathway-specific FILED records were dumped and restored without invoking any renderer. The restored ledger reopened 19 immutable files (revision XLSX plus six each MD/PDF/XLSX), checked containment, exact size and SHA-256, and asserted case/pathway/build/revision/snapshot identity and required analytical sheets/content. The same verification reran after browser journeys and every hash remained unchanged. |
+| RT-2026-08-26-322 | Production-integration reviewer | Mock fixtures could conceal a broken combined app, scanner boundary, browser role, responsive layout, or populated Model/Report journey. | Critical | Resolved and verified | The repository's exact `build_frontend.sh` completed the 12-page static export and copied it into FastAPI's served directory. FastAPI and its worker used the isolated PostgreSQL/vault; a localhost-only proxy returned real ClamAV `PONG`, and browser uploads crossed that configured scanner seam. Default inventory proved 130 sources, all six exact accepted pathways, RV 250/50, ACTIVE R1, 16 populated role/destination combinations, state/load probes, and stored downloads. The full workbench passed and 43 populated axe combinations reported zero violations. |
+| RT-2026-08-26-323 | Release-harness reviewer | The production inventory still encoded the pre-authoring expectation that a six-pathway case must show `CANONICAL MODEL INPUTS INVALID`, so a correct ACTIVE revision made the final gate fail. | High | Resolved and verified | The first real populated run reproduced the exact 30-second obsolete-locator timeout. GitNexus rated the affected `inventoryLoadedRoute` LOW (one direct file caller, no processes). The inventory now requires READY build plus exactly one ACTIVE READY-export revision for both the exact-six default and additive Full-Credit-only fixture, and asserts the active Model Builder controls. The corrected default run passes end-to-end with zero alerts, loaders, overflows, or load failures. |
+| RT-2026-08-26-324 | Dependency reviewer | A clean environment might resolve outside the supported FastAPI range or conceal newly disclosed dependency vulnerabilities. | High | Resolved for runtime; development advisories recorded | A new Python 3.11.15 venv installed both declared requirement files; FastAPI resolved to 0.139.2 and `pip check` passed. The declared production runtime audit reports no known vulnerabilities. The broader installed-development audit reports PYSEC-2026-3721 for pip 26.1.2 (fix 26.2), PYSEC-2026-3447 for setuptools 82.0.1 (fix 83.0.0; duplicate advisory rows), and PYSEC-2026-1845 for pytest 8.4.2 (fix 9.0.3). These are bootstrap/test tools, not runtime imports; pytest's fix crosses the declared `<9` compatibility range, so no unsupported major widening was made without evidence. |
+| RT-2026-08-26-325 | Anti-pattern reviewer | A final search could reveal browser-authoritative math/drafts, editable worksheet content, unsafe HTML, imported `caos_state`, or a second report persistence boundary. | High | Resolved with bounded compatibility disposition | The exact mandated grep found no unsafe HTML, editable worksheet, client calculation, persisted browser draft, or `caos_state` occurrence. Text matches are negative tests or literal “server-calculated/calculated output” labels. `state.reports[case_id] = saved` remains solely in the explicitly documented legacy report compatibility ledger and its existing legacy contract tests; current Report Studio writes use normalized append-only deliverable revisions/Frozen/export rows and the legacy state was neither imported nor activated during closeout. |
+
+Decision: accept Phase 8 closeout. Full server gates pass with **451 passed, 63
+skipped** without PostgreSQL and **514/514 passed** with isolated live
+PostgreSQL plus LibreOffice. Frontend lint, TypeScript, 52/52 unit tests, the
+canonical build, full workbench, production inventory, and 43-combination axe
+matrix pass. Authentication audit, Ruff, compileall, high/medium Bandit, npm
+audit, runtime pip-audit, Deploy V integrity (307/0), corpus consistency (26/0),
+and diff checks are green. GitNexus branch comparison is cumulatively CRITICAL
+because it includes the accepted Phases 2–7 authority seams; task-local
+unstaged detection is LOW with no affected execution flow. No known Critical or
+Important product defect remains.
