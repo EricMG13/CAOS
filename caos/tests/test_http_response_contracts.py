@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastapi.exceptions import ResponseValidationError
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 import caos.http as http_module
 from caos.config import Settings
@@ -19,6 +19,7 @@ from caos.memory_ledgers import MemoryLedgerSet
 from caos.responses import (
     ArtifactResponse,
     AuditEventResponse,
+    CanonicalAttemptResponse,
     CanonicalRunResponse,
     CaseResponse,
     IdentityResponse,
@@ -27,6 +28,7 @@ from caos.responses import (
     ModelBuildResponse,
     ModelReadinessResponse,
     ReportResponse,
+    ResearchAttemptResponse,
     ResearchRunResponse,
     RunResponse,
     SnapshotDiffResponse,
@@ -903,6 +905,46 @@ def test_canonical_generation_is_strict_and_preserves_completed_module_omission(
         CanonicalRunResponse.model_validate(
             _run_payload({"canonical_generation": {**generation, "unexpected": True}})
         )
+
+
+def test_send_to_user_attempt_kind_validates_including_research_terminal_merge() -> (
+    None
+):
+    base = {
+        "run_id": "r1",
+        "node_id": "n1",
+        "module_id": "CP-DR",
+        "attempt": 1,
+        "model": "claude-sonnet-4-6",
+        "authority_digest": "a" * 64,
+        "prompt_digest": "b" * 64,
+        "source_set_digest": "c" * 64,
+        "upstream_digest": "d" * 64,
+    }
+    canonical = TypeAdapter(CanonicalAttemptResponse).validate_python(
+        {**base, "kind": "send_to_user", "message": "checking evidence source A"}
+    )
+    assert canonical.kind == "send_to_user" and canonical.message == "checking evidence source A"
+
+    research_base = {**base, "approved_plan_hash": "sha256:" + "a" * 64}
+    del research_base["module_id"]
+    research = TypeAdapter(ResearchAttemptResponse).validate_python(
+        {**research_base, "kind": "send_to_user", "message": "checking evidence source A"}
+    )
+    assert research.kind == "send_to_user"
+
+    # A research-path abort() merges terminal_code into whatever attempt was last
+    # recorded (see the "terminal" branch of the record() closure in domain.py),
+    # so send_to_user must also validate with terminal_code present.
+    research_terminal = TypeAdapter(ResearchAttemptResponse).validate_python(
+        {
+            **research_base,
+            "kind": "send_to_user",
+            "message": "checking evidence source A",
+            "terminal_code": "AGENT_OUTPUT_INVALID",
+        }
+    )
+    assert research_terminal.terminal_code == "AGENT_OUTPUT_INVALID"
 
 
 def test_research_state_is_strict_and_preserves_plan_variant_omissions() -> None:

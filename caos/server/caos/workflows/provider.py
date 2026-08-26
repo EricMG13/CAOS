@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Protocol
 
@@ -11,6 +12,22 @@ from pydantic import BaseModel
 
 from ..methodology.cpdr import CPDRPayload
 from ..store import JobFencedError
+
+# ponytail: shared pool for polling long provider calls (see provider_call below);
+# sized well above the provider concurrency semaphore (2), so it never queues in
+# normal operation. If lease_check() fences a job while its call is in flight, the
+# submitted future is abandoned (not cancelled) and keeps the worker thread busy
+# until the underlying HTTP call itself completes or times out — a real but bounded
+# leak (needs 8 concurrent stranded calls to exhaust the pool). Upgrade path if that
+# ever bites: cancel via the SDK's streaming response instead of a plain create().
+# ponytail: lease_check() is a real Postgres round-trip in production (a fresh,
+# unpooled psycopg.connect() per call — see PostgresRunLedger.is_current), not a
+# cheap in-memory check. Poll at the same cadence as the existing lease-renewal
+# heartbeat (HEARTBEAT_INTERVAL_SECONDS in domain.py) rather than an arbitrary
+# faster interval, so a long call doesn't multiply DB connections for no benefit:
+# fencing can't be observed any sooner than the lease's own renewal cadence.
+_CALL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="caos-anthropic-call")
+_POLL_INTERVAL_SECONDS = 20.0
 
 
 READ_EVIDENCE_TOOL = {
@@ -24,6 +41,20 @@ READ_EVIDENCE_TOOL = {
             "block_ids": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["source_id", "block_ids"],
+        "additionalProperties": False,
+    },
+}
+
+SEND_TO_USER_TOOL = {
+    "name": "send_to_user",
+    "description": "Send a short status update or interim note to the user watching this run. Does not end the turn.",
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string"},
+        },
+        "required": ["message"],
         "additionalProperties": False,
     },
 }
@@ -95,10 +126,19 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 class AnthropicProvider:
     """Anthropic Messages transport normalized behind the provider port."""
 
-    def __init__(self, api_key: str, model: str, timeout: float = 150.0, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout: float = 3600.0,
+        client: Any | None = None,
+        *,
+        fallback_model: str = "claude-opus-4-8",
+    ) -> None:
         if not api_key:
             raise ProviderUnavailable("ANTHROPIC_API_KEY is not configured")
         self.model = model
+        self.fallback_model = fallback_model
         self.client = client or anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=timeout)
 
     @staticmethod
@@ -131,20 +171,23 @@ class AnthropicProvider:
         request: ProviderRequest,
         *,
         legacy_block_fields: bool = False,
+        model: str | None = None,
     ) -> dict[str, Any]:
         try:
             schema = anthropic.transform_schema(request.schema)
         except (TypeError, ValueError) as exc:
             raise AgentError("AGENT_OUTPUT_INVALID", "cannot transform agent output schema") from exc
         kwargs: dict[str, Any] = {
-            "model": self.model,
-            "system": request.system,
+            "model": model or self.model,
+            "system": [
+                {"type": "text", "text": request.system, "cache_control": {"type": "ephemeral"}},
+            ],
             "messages": self._message_content(request.messages, legacy_block_fields=legacy_block_fields),
             "output_config": {"format": {"type": "json_schema", "schema": schema}},
         }
         if request.tools_enabled:
             kwargs.update(
-                tools=[READ_EVIDENCE_TOOL],
+                tools=[READ_EVIDENCE_TOOL, SEND_TO_USER_TOOL],
                 tool_choice={"type": "auto", "disable_parallel_tool_use": True},
             )
         if request.max_tokens is not None:
@@ -156,9 +199,9 @@ class AnthropicProvider:
     def _request_preimage(self, request: ProviderRequest) -> dict[str, Any]:
         return self._request_kwargs(request, legacy_block_fields=True)
 
-    def _call(self, kind: str, request: ProviderRequest) -> Any:
+    def _call(self, kind: str, request: ProviderRequest, *, model: str | None = None) -> Any:
         try:
-            kwargs = self._request_kwargs(request)
+            kwargs = self._request_kwargs(request, model=model)
             if kind == "count_tokens":
                 return self.client.messages.count_tokens(**kwargs)
             return self.client.messages.create(**kwargs)
@@ -180,6 +223,8 @@ class AnthropicProvider:
 
     def create_message(self, request: ProviderRequest) -> ProviderMessage:
         response = self._call("create", request)
+        if getattr(response, "stop_reason", None) == "refusal":
+            response = self._call("create", request, model=self.fallback_model)
         usage = getattr(response, "usage", None)
         content = getattr(response, "content", None)
         blocks = [
@@ -293,7 +338,16 @@ class AgentLoop:
                     started = time.monotonic()
                     provider_interacted = True
                     try:
-                        result = operation(call_request)
+                        # ponytail: poll a background future rather than blocking this
+                        # thread for the full (now up to 60-minute) call, so the job
+                        # lease is checked and renewed while the call is in flight.
+                        future = _CALL_EXECUTOR.submit(operation, call_request)
+                        while True:
+                            try:
+                                result = future.result(timeout=_POLL_INTERVAL_SECONDS)
+                                break
+                            except FutureTimeoutError:
+                                lease_check()
                     except AgentError as exc:
                         if exc.code != "AGENT_PROVIDER_TIMEOUT":
                             elapsed = time.monotonic() - started
@@ -379,6 +433,25 @@ class AgentLoop:
                     if not tools_enabled or len(tool_blocks) != 1:
                         raise abort("AGENT_OUTPUT_INVALID", "exactly one evidence tool call is allowed")
                     tool = tool_blocks[0]
+                    if tool.name == "send_to_user":
+                        arguments = tool.input
+                        if not isinstance(arguments, dict) or set(arguments) != {"message"} or not isinstance(arguments["message"], str):
+                            raise abort("AGENT_OUTPUT_INVALID", "malformed send_to_user arguments")
+                        record("send_to_user", message=arguments["message"])
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": tool.id,
+                                        "content": "delivered",
+                                    }
+                                ],
+                            }
+                        )
+                        continue
                     if tool.name != "read_evidence":
                         raise abort("AGENT_OUTPUT_INVALID", "unexpected tool")
                     arguments = tool.input
@@ -461,8 +534,16 @@ class AgentLoop:
 class AnthropicGateway(AgentLoop):
     """Compatibility facade for callers that still construct the Anthropic loop."""
 
-    def __init__(self, api_key: str, model: str, timeout: float = 150.0, client: Any | None = None) -> None:
-        provider = AnthropicProvider(api_key, model, timeout, client)
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout: float = 3600.0,
+        client: Any | None = None,
+        *,
+        fallback_model: str = "claude-opus-4-8",
+    ) -> None:
+        provider = AnthropicProvider(api_key, model, timeout, client, fallback_model=fallback_model)
         super().__init__(
             provider,
             schema_transform=anthropic.transform_schema,
