@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import html
 import io
+import re
+import zipfile
 from collections.abc import Iterable
 from copy import deepcopy
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -43,6 +46,15 @@ RENDERER_IDENTITY = {
         }
     ),
 }
+# openpyxl always stamps workbook.properties.modified with datetime.now() at save
+# time (openpyxl/writer/excel.py:save_workbook, unconditional, not overridable via
+# the property) and every ZIP entry's date_time with the wall clock too -- both make
+# "frozen" XLSX exports non-byte-reproducible across time (render_frozen_pdf already
+# avoids the equivalent reportlab issue via invariant=1). _freeze_zip_timestamps
+# rewrites both after the fact. 1980-01-01 is the floor date ZIP timestamps can
+# represent, so it's a safe fixed value rather than an arbitrary one.
+_DETERMINISTIC_TIMESTAMP = datetime(1980, 1, 1, tzinfo=timezone.utc)
+_DETERMINISTIC_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 BASE_SHEETS = (
     "Cover",
@@ -484,11 +496,33 @@ def _append_rows(sheet: Any, rows: Iterable[Iterable[Any]]) -> None:
     _style_sheet(sheet)
 
 
+_CORE_XML_MODIFIED = re.compile(rb"(<dcterms:modified[^>]*>)[^<]*(</dcterms:modified>)")
+
+
+def _freeze_zip_timestamps(data: bytes) -> bytes:
+    """Rewrite every ZIP entry's date_time and docProps/core.xml's dcterms:modified
+    to a fixed value, undoing openpyxl's unconditional wall-clock stamping so the
+    frozen export is byte-reproducible for identical input."""
+    fixed_iso = _DETERMINISTIC_TIMESTAMP.strftime(r"%Y-%m-%dT%H:%M:%SZ").encode("ascii")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as source:
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as target:
+            for item in source.infolist():
+                content = source.read(item.filename)
+                if item.filename == "docProps/core.xml":
+                    content = _CORE_XML_MODIFIED.sub(rb"\g<1>" + fixed_iso + rb"\g<2>", content)
+                item.date_time = _DETERMINISTIC_ZIP_DATE_TIME
+                target.writestr(item, content)
+    return buffer.getvalue()
+
+
 def render_frozen_xlsx(payload: dict[str, Any]) -> bytes:
     """Render a typed, formula-injection-safe workbook from frozen authority."""
 
     _validate_payload(payload)
     workbook = Workbook()
+    workbook.properties.created = _DETERMINISTIC_TIMESTAMP
+    workbook.properties.modified = _DETERMINISTIC_TIMESTAMP
     workbook.remove(workbook.active)
     cover = workbook.create_sheet("Cover")
     _append_rows(
@@ -641,7 +675,7 @@ def render_frozen_xlsx(payload: dict[str, Any]) -> bytes:
     workbook.properties.creator = "CAOS"
     output = io.BytesIO()
     workbook.save(output)
-    rendered = output.getvalue()
+    rendered = _freeze_zip_timestamps(output.getvalue())
     reopened = load_workbook(io.BytesIO(rendered), data_only=False, read_only=True)
     if not set(BASE_SHEETS).issubset(reopened.sheetnames):
         raise ValueError("DELIVERABLE_XLSX_SEMANTIC_VERIFICATION_FAILED")
