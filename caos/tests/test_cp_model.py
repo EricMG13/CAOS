@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import threading
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -1234,6 +1235,44 @@ def test_registry_workbook_inputs_formulas_checks_and_audit_match_python(
         workbook.close()
 
 
+def test_forecast_debt_schedule_discloses_and_reconciles_unallocated_movement(
+    tmp_path: Path,
+) -> None:
+    bundle = CpModelBundle(DEPLOY_V)
+    model, calculations = bundle.calculate(_forecast_paths())
+    rendered = bundle.render_workbook(
+        model, calculations, tmp_path / "forecast-debt-reconciliation.xlsx"
+    )
+    workbook = model_runtime.load_workbook(
+        tmp_path / "forecast-debt-reconciliation.xlsx",
+        data_only=False,
+        read_only=False,
+    )
+    try:
+        for case in ("BASE", "DOWNSIDE"):
+            for year in (2025, 2026, 2027):
+                column_id = f"{case}::FY{year}"
+                calculation = calculations.for_column(column_id)
+                adjustment = calculation.debt_values[
+                    "forecast::unallocated_debt_movement"
+                ]
+                assert adjustment != 0
+                assert sum(
+                    value
+                    for value in calculation.debt_values.values()
+                    if value is not None
+                ) == calculation.values["total_debt_reported"]
+                adjustment_cell = rendered.model_cells[
+                    ("forecast::unallocated_debt_movement", column_id)
+                ]
+                assert "MAX(-" in workbook["Model"][adjustment_cell].value
+                assert "security and seniority not inferred" in workbook["Model"][
+                    f"A{workbook['Model'][adjustment_cell].row}"
+                ].value
+    finally:
+        workbook.close()
+
+
 def test_python_runtime_serializes_visible_worksheets_without_libreoffice(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1747,6 +1786,22 @@ def test_scenario_and_sensitivity_are_transient_and_use_registry_guardrails() ->
                 base_revision_id=None,
                 draft_generation=6,
             )
+        with pytest.raises(ValueError, match="MODEL_SENSITIVITY_OUTPUT_INVALID"):
+            service.one_way(
+                case["id"],
+                queued["id"],
+                registry["version"],
+                registry["digest"],
+                available["assumption_id"],
+                available["case"],
+                available["period_id"],
+                minimum=float(available["value"]),
+                maximum=float(available["value"]),
+                step=float(definition["sensitivity_default"]["step"]),
+                output_id="not-a-real-output",
+                base_revision_id=None,
+                draft_generation=7,
+            )
         assert ledgers.models.list_revisions(case["id"]) == []
         assert ledgers.publications.list_audit() == before_audit
     finally:
@@ -1785,17 +1840,17 @@ def test_preview_and_one_way_share_one_aggregate_request_deadline_without_persis
         )
         before_revisions = ledgers.models.list_revisions(case["id"])
         before_audit = ledgers.publications.list_audit()
-        original_calculate = model_bundle.calculate
+        original_run_calculation = model_revisions._run_calculation
         clock = [0.0]
 
         def slow_calculate(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
-            result = original_calculate(*args, **kwargs)
+            result = original_run_calculation(*args, **kwargs)
             clock[0] += 0.6
             return result
 
         monkeypatch.setattr(model_revisions, "MAX_CALCULATION_SECONDS", 1.0)
         monkeypatch.setattr(model_revisions.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(model_bundle, "calculate", slow_calculate)
+        monkeypatch.setattr(model_revisions, "_run_calculation", slow_calculate)
         with pytest.raises(model_revisions.ModelCalculationTimeout):
             service.preview(
                 case["id"],
@@ -1848,6 +1903,97 @@ def test_preview_and_one_way_share_one_aggregate_request_deadline_without_persis
         assert ledgers.publications.list_audit() == before_audit
     finally:
         workflow.close()
+
+
+def test_process_calculation_timeout_is_enforced_during_worker_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def blocked_run_sync(*_args: Any, **_kwargs: Any) -> tuple[str, Any]:
+        await model_revisions.anyio.sleep(1)
+        return "OK", ([], {})
+
+    monkeypatch.setattr(
+        model_revisions.anyio.to_process, "run_sync", blocked_run_sync
+    )
+
+    with pytest.raises(model_revisions.ModelCalculationTimeout):
+        model_revisions._run_calculation(DEPLOY_V, {}, None, 0.01)
+
+
+def test_http_calculation_fairness_rejects_second_request_from_same_actor(
+    tmp_path: Path,
+) -> None:
+    ledgers = MemoryLedgerSet()
+    case = ledgers.runs.create_case("Fairness", "Acme", "Testing", "reader")
+    assert ledgers.runs.add_member(
+        case["id"], "reader", "other-reader", "READER", "ADMIN"
+    )
+    app = create_app(
+        Settings(environment="test", storage_dir=tmp_path, deploy_v_root=DEPLOY_V),
+        ledgers,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def blocked_registry(_case_id: str, build_id: str) -> dict[str, Any]:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return {
+            "version": "test.v1",
+            "digest": "a" * 64,
+            "definitions": [],
+            "build_id": build_id,
+            "accepted_snapshot_id": "snapshot-test",
+            "input_fingerprint": "fingerprint-test",
+            "defaults": [],
+        }
+
+    app.state.revision_service.assumption_registry = blocked_registry
+    headers = {"x-forwarded-user": "reader", "x-caos-role": "READER"}
+    responses: list[Any] = []
+    try:
+        with TestClient(app) as client:
+            first = threading.Thread(
+                target=lambda: responses.append(
+                    client.get(
+                        f"/api/cases/{case['id']}/models/assumption-registry",
+                        params={"build_id": "build-test"},
+                        headers=headers,
+                    )
+                )
+            )
+            first.start()
+            assert entered.wait(timeout=5)
+            second = client.get(
+                f"/api/cases/{case['id']}/models/assumption-registry",
+                params={"build_id": "build-test"},
+                headers=headers,
+            )
+            assert second.status_code == 429
+            assert second.json()["detail"] == "MODEL_CALCULATION_BUSY"
+            other = client.get(
+                f"/api/cases/{case['id']}/models/assumption-registry",
+                params={"build_id": "build-test"},
+                headers={
+                    "x-forwarded-user": "other-reader",
+                    "x-caos-role": "READER",
+                },
+            )
+            assert other.status_code == 200
+            release.set()
+            first.join(timeout=5)
+            assert not first.is_alive()
+            assert responses[0].status_code == 200
+    finally:
+        release.set()
 
 
 def test_model_revision_http_preview_signoff_history_and_conflict(tmp_path: Path) -> None:
@@ -2008,7 +2154,7 @@ def test_signed_revision_export_uses_overlay_and_stores_hash_verified_workbook(
         revision_runtime._execute_export(revision["id"], "analyst")
         exported = ledgers.models.get_revision(revision["id"])
         assert exported is not None
-        assert exported["export"]["status"] == "READY"
+        assert exported["export"]["status"] == "READY", exported["export"]
         assert inputs_calls == 2
         workbook_path = tmp_path / exported["export"]["vault_key"]
         stored_bytes = workbook_path.read_bytes()
@@ -2081,6 +2227,89 @@ def test_signed_revision_export_uses_overlay_and_stores_hash_verified_workbook(
                 "sha256"
             ]
             workbook_path.write_bytes(workbook_path.read_bytes() + b"tamper")
+            tampered = client.get(
+                f"/api/cases/{case['id']}/model-revisions/{revision['id']}/download",
+                headers=headers,
+            )
+            assert tampered.status_code == 409
+            assert tampered.json()["detail"] == "MODEL_REVISION_EXPORT_INTEGRITY_FAILED"
+    finally:
+        workflow.close()
+
+
+def test_revision_download_serves_only_the_verified_buffer(tmp_path: Path) -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models, readiness, model_bundle, workflow.executor, tmp_path
+    )
+    service = ModelRevisionService(ledgers.models, readiness, model_bundle)
+    try:
+        build, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(build["id"], "analyst")
+        registry = service.assumption_registry(case["id"], build["id"])
+        preview = service.preview(
+            case["id"],
+            build["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            draft_generation=1,
+        )
+        revision = service.sign_off(
+            case["id"],
+            build["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            expected_head_revision_id=None,
+            preview_digest=preview["preview_digest"],
+            note="Verified download",
+            actor="analyst",
+            draft_generation=1,
+        )
+        content = b"verified signed revision workbook"
+        checksum = hashlib.sha256(content).hexdigest()
+        relative = Path("models") / case["id"] / revision["id"] / f"{checksum}.xlsx"
+        export_path = tmp_path / relative
+        export_path.parent.mkdir(parents=True)
+        export_path.write_bytes(content)
+        token = ledgers.models.claim_revision_export(revision["id"], "worker")
+        assert token is not None
+        ledgers.models.complete_revision_export(
+            revision["id"],
+            token,
+            {
+                "vault_key": relative.as_posix(),
+                "filename": "revision.xlsx",
+                "sha256": checksum,
+                "size": len(content),
+                "formulas_validated": 0,
+                "semantic_checks": 0,
+                "renderer_version": "test-renderer.v1",
+                "renderer_sha256": "a" * 64,
+                "calculation_engine": "test-engine.v1",
+            },
+            "analyst",
+        )
+        app = create_app(
+            Settings(environment="test", storage_dir=tmp_path, deploy_v_root=DEPLOY_V),
+            ledgers,
+        )
+        headers = {"x-forwarded-user": "analyst", "x-caos-role": "ANALYST"}
+        with TestClient(app) as client:
+            downloaded = client.get(
+                f"/api/cases/{case['id']}/model-revisions/{revision['id']}/download",
+                headers=headers,
+            )
+            assert downloaded.status_code == 200
+            assert downloaded.content == content
+            export_path.write_bytes(content + b"tamper")
             tampered = client.get(
                 f"/api/cases/{case['id']}/model-revisions/{revision['id']}/download",
                 headers=headers,

@@ -19,6 +19,10 @@ export type WorksheetCell = { address: string; row: number; column: number; valu
 export type WorksheetTab = { id: string; name: string; max_row: number; max_column: number; freeze_panes: string; merged_cells: string[]; columns: { column: number; letter: string; width?: number; hidden: boolean }[]; cells: WorksheetCell[] };
 export type WorksheetResponse = { build_id: string; input_fingerprint: string; payload_digest: string; qa: ModelBuild["qa"]; payload: { schema_version: string; identity: { issuer_id: string; issuer_name: string; analysis_date: string }; tabs: WorksheetTab[] } };
 
+export function assumptionRegistryPath(caseId: string, buildId: string) {
+  return `/api/cases/${caseId}/models/assumption-registry?build_id=${encodeURIComponent(buildId)}`;
+}
+
 export async function api<T>(path: string, options: RequestInit = {}, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { ...options, signal, headers: options.body instanceof FormData ? options.headers : { "Content-Type": "application/json", ...options.headers } });
   if (!response.ok) {

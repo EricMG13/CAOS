@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-from contextlib import asynccontextmanager
+import threading
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
 import anthropic
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .artifacts.domain import (
@@ -212,6 +212,40 @@ def create_app(
         bundle,
         settings.storage_dir,
     )
+    active_calculation_actors: set[str] = set()
+    calculation_actor_slots_lock = threading.Lock()
+
+    @contextmanager
+    def calculation_request(actor: str):
+        # ponytail: process-local fairness; use a distributed limiter if the API scales out.
+        with calculation_actor_slots_lock:
+            if actor in active_calculation_actors:
+                raise HTTPException(status_code=429, detail="MODEL_CALCULATION_BUSY")
+            active_calculation_actors.add(actor)
+        try:
+            yield
+        finally:
+            with calculation_actor_slots_lock:
+                active_calculation_actors.discard(actor)
+
+    def verified_model_export(
+        export: dict[str, Any], *, unavailable: str, integrity_failed: str
+    ) -> bytes:
+        key = export.get("vault_key")
+        if not isinstance(key, str):
+            raise HTTPException(status_code=409, detail=unavailable)
+        try:
+            return read_verified_vault_bytes(
+                settings.storage_dir,
+                key,
+                expected_sha256=export.get("sha256"),
+                expected_size=export.get("size"),
+                max_bytes=MAX_EXPORT_BYTES,
+            )
+        except VaultFileIntegrityError as exc:
+            raise HTTPException(status_code=409, detail=integrity_failed) from exc
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=unavailable) from exc
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -841,11 +875,13 @@ def create_app(
     def model_assumption_registry(
         case_id: str, build_id: str, request: Request
     ) -> dict[str, Any]:
-        require_case(runs, case_id, identity(request))
-        try:
-            return revision_service.assumption_registry(case_id, build_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        who = identity(request)
+        require_case(runs, case_id, who)
+        with calculation_request(who.subject):
+            try:
+                return revision_service.assumption_registry(case_id, build_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(
         "/api/cases/{case_id}/models/{build_id}", response_model=ModelBuildRouteResponse
@@ -901,19 +937,21 @@ def create_app(
     def preview_model_revision(
         case_id: str, payload: ModelPreviewRequest, request: Request
     ) -> dict[str, Any]:
-        require_case(runs, case_id, identity(request))
-        try:
-            return revision_service.preview(
-                case_id,
-                payload.build_id,
-                payload.registry_version,
-                payload.registry_digest,
-                [row.model_dump(mode="json") for row in payload.assumptions],
-                parent_revision_id=payload.parent_revision_id,
-                draft_generation=payload.draft_generation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        who = identity(request)
+        require_case(runs, case_id, who)
+        with calculation_request(who.subject):
+            try:
+                return revision_service.preview(
+                    case_id,
+                    payload.build_id,
+                    payload.registry_version,
+                    payload.registry_digest,
+                    [row.model_dump(mode="json") for row in payload.assumptions],
+                    parent_revision_id=payload.parent_revision_id,
+                    draft_generation=payload.draft_generation,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(
         "/api/cases/{case_id}/model-revisions",
@@ -933,31 +971,32 @@ def create_app(
     ) -> dict[str, Any]:
         who = identity(request)
         require_case(runs, case_id, who, write=True)
-        try:
-            signed = revision_service.sign_off(
-                case_id,
-                payload.build_id,
-                payload.registry_version,
-                payload.registry_digest,
-                [row.model_dump(mode="json") for row in payload.assumptions],
-                parent_revision_id=payload.parent_revision_id,
-                expected_head_revision_id=payload.expected_head_revision_id,
-                preview_digest=payload.preview_digest,
-                note=payload.note,
-                actor=who.subject,
-                draft_generation=payload.draft_generation,
-            )
-        except RevisionConflictError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "MODEL_REVISION_CONFLICT",
-                    "current": exc.current,
-                    "current_build": exc.current_build,
-                },
-            ) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        with calculation_request(who.subject):
+            try:
+                signed = revision_service.sign_off(
+                    case_id,
+                    payload.build_id,
+                    payload.registry_version,
+                    payload.registry_digest,
+                    [row.model_dump(mode="json") for row in payload.assumptions],
+                    parent_revision_id=payload.parent_revision_id,
+                    expected_head_revision_id=payload.expected_head_revision_id,
+                    preview_digest=payload.preview_digest,
+                    note=payload.note,
+                    actor=who.subject,
+                    draft_generation=payload.draft_generation,
+                )
+            except RevisionConflictError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "MODEL_REVISION_CONFLICT",
+                        "current": exc.current,
+                        "current_build": exc.current_build,
+                    },
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if settings.environment != "production":
             try:
                 revision_runtime.schedule_export(signed["id"], who.subject)
@@ -976,16 +1015,18 @@ def create_app(
     def rebase_model_revision(
         case_id: str, payload: ModelRebasePreviewRequest, request: Request
     ) -> dict[str, Any]:
-        require_case(runs, case_id, identity(request))
-        try:
-            return revision_service.rebase_preview(
-                case_id,
-                payload.revision_id,
-                payload.build_id,
-                draft_generation=payload.draft_generation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        who = identity(request)
+        require_case(runs, case_id, who)
+        with calculation_request(who.subject):
+            try:
+                return revision_service.rebase_preview(
+                    case_id,
+                    payload.revision_id,
+                    payload.build_id,
+                    draft_generation=payload.draft_generation,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(
         "/api/cases/{case_id}/models/scenarios",
@@ -994,19 +1035,21 @@ def create_app(
     def scenario_model(
         case_id: str, payload: ModelScenarioRequest, request: Request
     ) -> dict[str, Any]:
-        require_case(runs, case_id, identity(request))
-        try:
-            return revision_service.scenario(
-                case_id,
-                payload.build_id,
-                payload.registry_version,
-                payload.registry_digest,
-                [shock.model_dump(mode="json") for shock in payload.shocks],
-                base_revision_id=payload.base_revision_id,
-                draft_generation=payload.draft_generation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        who = identity(request)
+        require_case(runs, case_id, who)
+        with calculation_request(who.subject):
+            try:
+                return revision_service.scenario(
+                    case_id,
+                    payload.build_id,
+                    payload.registry_version,
+                    payload.registry_digest,
+                    [shock.model_dump(mode="json") for shock in payload.shocks],
+                    base_revision_id=payload.base_revision_id,
+                    draft_generation=payload.draft_generation,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(
         "/api/cases/{case_id}/models/sensitivities/one-way",
@@ -1015,25 +1058,27 @@ def create_app(
     def one_way_sensitivity(
         case_id: str, payload: OneWaySensitivityRequest, request: Request
     ) -> dict[str, Any]:
-        require_case(runs, case_id, identity(request))
-        try:
-            return revision_service.one_way(
-                case_id,
-                payload.build_id,
-                payload.registry_version,
-                payload.registry_digest,
-                payload.assumption_id,
-                payload.case,
-                payload.period_scope,
-                minimum=payload.minimum,
-                maximum=payload.maximum,
-                step=payload.step,
-                output_id=payload.output_id,
-                base_revision_id=payload.base_revision_id,
-                draft_generation=payload.draft_generation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        who = identity(request)
+        require_case(runs, case_id, who)
+        with calculation_request(who.subject):
+            try:
+                return revision_service.one_way(
+                    case_id,
+                    payload.build_id,
+                    payload.registry_version,
+                    payload.registry_digest,
+                    payload.assumption_id,
+                    payload.case,
+                    payload.period_scope,
+                    minimum=payload.minimum,
+                    maximum=payload.maximum,
+                    step=payload.step,
+                    output_id=payload.output_id,
+                    base_revision_id=payload.base_revision_id,
+                    draft_generation=payload.draft_generation,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(
         "/api/cases/{case_id}/model-revisions/{revision_id}/export",
@@ -1081,46 +1126,24 @@ def create_app(
         if revision is None or revision.get("case_id") != case_id:
             raise HTTPException(status_code=404, detail="model revision not found")
         export = revision.get("export") or {}
-        key = export.get("vault_key")
-        if export.get("status") != "READY" or not isinstance(key, str):
+        if export.get("status") != "READY":
             raise HTTPException(
                 status_code=409, detail="MODEL_REVISION_EXPORT_NOT_READY"
             )
-        root = settings.storage_dir.resolve()
-        candidate = root / key
-        try:
-            path = candidate.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code=409, detail="MODEL_REVISION_EXPORT_UNAVAILABLE"
-            ) from exc
-        if not path.is_relative_to(root) or not path.is_file():
-            raise HTTPException(
-                status_code=409, detail="MODEL_REVISION_EXPORT_UNAVAILABLE"
-            )
-        size = path.stat().st_size
-        expected_size = export.get("size")
-        if (
-            not isinstance(expected_size, int)
-            or expected_size <= 0
-            or expected_size > MAX_EXPORT_BYTES
-            or size != expected_size
-        ):
-            raise HTTPException(
-                status_code=409, detail="MODEL_REVISION_EXPORT_INTEGRITY_FAILED"
-            )
-        with path.open("rb") as exported:
-            checksum = hashlib.file_digest(exported, "sha256").hexdigest()
-        if checksum != export.get("sha256"):
-            raise HTTPException(
-                status_code=409, detail="MODEL_REVISION_EXPORT_INTEGRITY_FAILED"
-            )
+        content = verified_model_export(
+            export,
+            unavailable="MODEL_REVISION_EXPORT_UNAVAILABLE",
+            integrity_failed="MODEL_REVISION_EXPORT_INTEGRITY_FAILED",
+        )
         models.record_revision_export_download(revision_id, case_id, who.subject)
-        return FileResponse(
-            path,
+        return Response(
+            content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=f"{revision_id}.xlsx",
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="{revision_id}.xlsx"',
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @app.get("/api/cases/{case_id}/models/{build_id}/download")
@@ -1129,38 +1152,22 @@ def create_app(
         require_case(runs, case_id, who)
         build = model_for_case(case_id, build_id)
         export = build.get("export") or {}
-        key = export.get("vault_key")
-        if export.get("status") != "READY" or not isinstance(key, str):
+        if export.get("status") != "READY":
             raise HTTPException(status_code=409, detail="MODEL_EXPORT_NOT_READY")
-        root = settings.storage_dir.resolve()
-        candidate = root / key
-        try:
-            path = candidate.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code=409, detail="MODEL_EXPORT_UNAVAILABLE"
-            ) from exc
-        if not path.is_relative_to(root) or not path.is_file():
-            raise HTTPException(status_code=409, detail="MODEL_EXPORT_UNAVAILABLE")
-        size = path.stat().st_size
-        expected_size = export.get("size")
-        if (
-            not isinstance(expected_size, int)
-            or expected_size <= 0
-            or expected_size > MAX_EXPORT_BYTES
-            or size != expected_size
-        ):
-            raise HTTPException(status_code=409, detail="MODEL_EXPORT_INTEGRITY_FAILED")
-        with path.open("rb") as exported:
-            checksum = hashlib.file_digest(exported, "sha256").hexdigest()
-        if checksum != export.get("sha256"):
-            raise HTTPException(status_code=409, detail="MODEL_EXPORT_INTEGRITY_FAILED")
+        content = verified_model_export(
+            export,
+            unavailable="MODEL_EXPORT_UNAVAILABLE",
+            integrity_failed="MODEL_EXPORT_INTEGRITY_FAILED",
+        )
         models.record_export_download(build_id, case_id, who.subject)
-        return FileResponse(
-            path,
+        return Response(
+            content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=f"{build_id}.xlsx",
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="{build_id}.xlsx"',
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @app.post(

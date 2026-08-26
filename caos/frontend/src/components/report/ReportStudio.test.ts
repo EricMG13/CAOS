@@ -62,6 +62,16 @@ test("model fallback, evidence, scenario, focus, and case fences remain explicit
   assert.match(studio, /onDraftStateChange/);
 });
 
+test("Scenario registry is build-bound and seeded only from server defaults", () => {
+  assert.match(studio, /assumptionRegistryPath\(caseId, buildId\)/);
+  assert.match(studio, /value\.build_id !== buildId/);
+  assert.match(studio, /value\.defaults\.find\(\(row\) => row\.case === "BASE" && row\.status === "READY"\)/);
+  assert.match(studio, /<select id="scenario-period"/);
+  assert.doesNotMatch(studio, /<input id="scenario-period"/);
+  assert.doesNotMatch(studio, /FY2025/);
+  assert.match(studio, /Scenario registry unavailable/);
+});
+
 test("every lifecycle mutation shares one scope generation and in-flight gate", () => {
   assert.match(studio, /type LifecycleToken/);
   assert.match(studio, /const lifecycleGeneration = useRef\(0\)/);

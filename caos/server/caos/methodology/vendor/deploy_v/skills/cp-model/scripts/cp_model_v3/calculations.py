@@ -13,8 +13,9 @@ from .domain import CpModelV3Error, CreditModelIR, Period, SENIOR_DEBT_CLASSES
 
 ZERO = Decimal("0")
 RECONCILIATION_TOLERANCE = Decimal("0.001")
-CALCULATION_CONTRACT_VERSION = "cp-model-calculations.v4"
+CALCULATION_CONTRACT_VERSION = "cp-model-calculations.v5"
 FORECAST_ADDBACK_ID = "forecast::identified_addbacks"
+FORECAST_DEBT_ADJUSTMENT_ID = "forecast::unallocated_debt_movement"
 
 
 @dataclass(frozen=True)
@@ -1085,6 +1086,7 @@ def _forecast_column(
         - debt_repayment
     )
     total_debt = max(prior_value("total_debt_reported") + debt_issue_repay, ZERO)
+    forecast_debt_adjustment = total_debt - pro_forma_value("total_debt_reported")
     cash_interest = -_finite_product(
         total_debt,
         driver("base_rate") + driver("debt_spread"),
@@ -1114,6 +1116,7 @@ def _forecast_column(
         + other_investing_financing
     )
     debt_values = dict(pro_forma.debt_values)
+    debt_values[FORECAST_DEBT_ADJUSTMENT_ID] = forecast_debt_adjustment
     primitive = {
         "revenue": revenue,
         "cogs": cogs,
@@ -1139,7 +1142,7 @@ def _forecast_column(
         "total_debt_reported": total_debt,
         "secured_debt": prior_value("secured_debt"),
         "unsecured_debt": prior_value("unsecured_debt"),
-        "other_debt": prior_value("other_debt"),
+        "other_debt": pro_forma_value("other_debt") + forecast_debt_adjustment,
         "senior_debt": prior_value("senior_debt"),
         "senior_secured_debt": prior_value("senior_secured_debt"),
         "net_accounts_receivable": _finite_product(

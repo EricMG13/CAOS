@@ -10,6 +10,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import anyio
+import anyio.to_process
+
 from ..contracts import digest
 from ..ledgers import ModelLedger
 from ..store import JobFencedError
@@ -27,6 +30,7 @@ Record = dict[str, Any]
 MAX_EFFECTIVE_ASSUMPTIONS = 256
 MAX_SENSITIVITY_POINTS = 41
 MAX_CALCULATION_SECONDS = 30.0
+_WORKER_BUNDLES: dict[str, CpModelBundle] = {}
 
 
 class ModelCalculationTimeout(ValueError):
@@ -48,6 +52,71 @@ def _remaining_calculation_time(deadline: float) -> float:
     if remaining <= 0:
         raise ModelCalculationTimeout()
     return remaining
+
+
+def _calculate_in_worker(
+    deploy_v_root: str,
+    markdown: Record,
+    effective_assumptions: list[Record] | None,
+) -> tuple[str, Any]:
+    """Calculate in a killable process and return only wire-safe authority."""
+
+    try:
+        model_bundle = _WORKER_BUNDLES.get(deploy_v_root)
+        if model_bundle is None:
+            model_bundle = CpModelBundle(Path(deploy_v_root))
+            _WORKER_BUNDLES[deploy_v_root] = model_bundle
+        with tempfile.TemporaryDirectory(prefix="caos-model-revision-") as temporary:
+            paths = ModelBuildRuntime._write_inputs(Path(temporary), markdown)
+            model, calculations = model_bundle.calculate(
+                paths, effective_assumptions=effective_assumptions
+            )
+        return "OK", (_assumption_rows(model), _annual_outputs(calculations))
+    except ValueError as exc:
+        return "VALUE_ERROR", str(exc)
+
+
+async def _await_calculation(
+    deploy_v_root: str,
+    markdown: Record,
+    effective_assumptions: list[Record] | None,
+    timeout: float,
+) -> tuple[str, Any]:
+    try:
+        with anyio.fail_after(timeout):
+            return await anyio.to_process.run_sync(
+                _calculate_in_worker,
+                deploy_v_root,
+                markdown,
+                effective_assumptions,
+                cancellable=True,
+            )
+    except TimeoutError as exc:
+        raise ModelCalculationTimeout() from exc
+
+
+def _run_calculation(
+    deploy_v_root: Path,
+    markdown: Record,
+    effective_assumptions: list[Record] | None,
+    timeout: float,
+) -> tuple[list[Record], Record]:
+    arguments = (
+        str(deploy_v_root),
+        markdown,
+        effective_assumptions,
+        timeout,
+    )
+    try:
+        status, payload = anyio.from_thread.run(_await_calculation, *arguments)
+    except RuntimeError as exc:
+        if "AnyIO worker thread" not in str(exc):
+            raise
+        status, payload = anyio.run(_await_calculation, *arguments)
+    if status == "VALUE_ERROR":
+        raise ValueError(payload)
+    rows, outputs = payload
+    return rows, outputs
 
 
 def _json_number(value: Any) -> str | None:
@@ -191,6 +260,27 @@ def _output_deltas(baseline: Record, changed: Record) -> Record:
     return result
 
 
+def _has_output(outputs: Record, case: str, output_id: str) -> bool:
+    return any(
+        output_id in values
+        for values in outputs.get(case, {}).values()
+        if isinstance(values, dict)
+    )
+
+
+def _breach_matches_output(breach: Record, output_id: str) -> bool:
+    threshold_outputs = {
+        "covenant.max_total_leverage": {"covenant_headroom", "total_leverage"},
+        "liquidity.minimum_operating_cash": {
+            "accessible_liquidity",
+            "liquidity_headroom",
+        },
+    }
+    return breach.get("metric_id") == output_id or output_id in threshold_outputs.get(
+        breach.get("threshold_id"), set()
+    )
+
+
 class ModelRevisionService:
     """One authority boundary for previews, scenarios, sensitivity, and Sign-Off."""
 
@@ -250,16 +340,14 @@ class ModelRevisionService:
         try:
             _remaining_calculation_time(deadline)
             resolved = self.readiness.inputs_for_build(build)
-            with tempfile.TemporaryDirectory(prefix="caos-model-revision-") as temporary:
-                paths = ModelBuildRuntime._write_inputs(
-                    Path(temporary), resolved["markdown"]
-                )
-                model, calculations = self.model.calculate(
-                    paths, effective_assumptions=effective_assumptions
-                )
+            rows, outputs = _run_calculation(
+                self.model.deploy_v_root,
+                resolved["markdown"],
+                effective_assumptions,
+                _remaining_calculation_time(deadline),
+            )
             _remaining_calculation_time(deadline)
-            rows = _assumption_rows(model)
-            return model, calculations, rows, _annual_outputs(calculations)
+            return None, None, rows, outputs
         finally:
             self._calculation_slots.release()
 
@@ -600,6 +688,8 @@ class ModelRevisionService:
             parent["effective_assumptions"] if parent else defaults
         )
         baseline_outputs = parent["outputs"] if parent else default_outputs
+        if not _has_output(baseline_outputs, case, output_id):
+            raise ValueError("MODEL_SENSITIVITY_OUTPUT_INVALID")
         definition = next(
             (
                 item
@@ -648,7 +738,11 @@ class ModelRevisionService:
                 "deltas": _output_deltas(baseline_outputs, outputs),
             }
             points.append(point)
-            breaches = outputs.get(f"{case}_first_breaches", [])
+            breaches = [
+                breach
+                for breach in outputs.get(f"{case}_first_breaches", [])
+                if _breach_matches_output(breach, output_id)
+            ]
             if breakpoint is None and breaches:
                 breakpoint = {
                     "value": point["value"],

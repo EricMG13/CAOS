@@ -271,9 +271,12 @@ in the same case thereafter. COGS, OPEX, D&A, cash leases, cash taxes, working
 capital, FFO Other, capex and working-capital balances roll at their PF
 revenue/COGS ratios; the CP-2G identified add-back assumption is represented
 exactly once in a dedicated forecast bucket independent of the issuer's
-historical add-back series; facility debt carries from PF; cash rolls through
-NCF; and CP-2G supplies acquisitions, equity, dividends and other financing
-flows. All such cells are formulas with independently calculated
+historical add-back series; named facility debt carries from PF while cumulative
+aggregate issuance and repayment appears in one visible unallocated movement row
+whose security and seniority are not inferred; cash rolls through NCF; and CP-2G
+supplies acquisitions, equity, dividends and other financing flows. Total debt
+is the sum of the displayed facility rows and this disclosed adjustment. All such
+cells are formulas with independently calculated
 expectations. CP-2G values remain formula-linked to hidden `_INPUTS` records so
 lineage is retained without a visible forecast-assumption section.
 

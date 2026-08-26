@@ -5020,3 +5020,43 @@ and diff checks are green. GitNexus branch comparison is cumulatively CRITICAL
 because it includes the accepted Phases 2–7 authority seams; task-local
 unstaged detection is LOW with no affected execution flow. No known Critical or
 Important product defect remains.
+
+## 2026-08-26 — Session-wide adversarial-review corrections
+
+Correction under review: close the five defects found by the requested
+session-wide adversarial review without inventing undisclosed debt allocation,
+weakening reader access, or replacing immutable-file controls with pathname
+checks.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-326 | Model-integrity reviewer | Aggregate forecast debt moves while facility and classified balances remain frozen, allowing contradictory debt schedules and leverage measures to pass reconciliation. | Critical | Planned | Represent aggregate movement as one explicit unclassified forecast adjustment in the debt schedule and derive total debt from the same displayed schedule; do not infer security or seniority. Add a non-zero issuance/repayment regression. |
+| RT-2026-08-26-327 | API-contract reviewer | Report Studio omits the registry endpoint's required build identity and silently hides Scenario authoring; its period default is hard-coded and stale. | Critical | Planned | Reuse one shared frontend route builder, initialize the form from server registry defaults, surface registry failure, and assert the exact build-bound request in the focused frontend test. |
+| RT-2026-08-26-328 | Sensitivity reviewer | A free-form output identifier is echoed but never validated, producing successful blank sensitivities and unrelated breakpoint presentation. | Critical | Planned | Validate against the calculated server output set before running points and report breakpoints only when their threshold maps to the selected output. |
+| RT-2026-08-26-329 | Availability reviewer | Reader-accessible synchronous calculations have a post-hoc deadline that cannot interrupt a stuck calculation, and one actor can occupy every shared slot. | Critical | Planned | Preserve temporary Reader calculations but execute each calculation in a cancellable AnyIO worker process under the aggregate deadline, plus one in-flight calculation per actor and the existing global cap. Preserve public error codes and return shape. |
+| RT-2026-08-26-330 | Vault reviewer | Model exports are hashed by pathname and later reopened by `FileResponse`, so the verified bytes are not necessarily the served bytes. | Critical | Planned | Reuse the existing no-follow descriptor-chain reader and return the verified buffer with attachment headers for both build and revision downloads. |
+
+Decision: proceed with the bounded corrections above. The calculation seam is
+GitNexus CRITICAL (five direct callers and six API flows), so its return contract,
+error codes, and aggregate deadline require focused regression coverage before
+the corrections can be accepted.
+
+## 2026-08-26 — Session-wide adversarial-review correction verification
+
+Follow-up to RT-2026-08-26-326 through RT-2026-08-26-330. This entry appends
+the final dispositions without modifying the original critic record.
+
+| ID | Status | Resolution / verification |
+|----|--------|---------------------------|
+| RT-2026-08-26-326 | Resolved and verified | Base and Downside forecast debt now carry one visible `forecast::unallocated_debt_movement` row, explicitly disclaim security and seniority inference, derive calculated total debt from the displayed facility schedule, and leave named senior balances unchanged. The non-zero issuance/repayment regression reconciles every forecast year exactly. |
+| RT-2026-08-26-327 | Resolved and verified | Model Builder and Report Studio share the build-bound registry path. Report Studio binds the response identity to the selected model build, seeds assumption/case/period from READY server defaults, exposes registry errors, and restricts periods to registry-owned choices. Frontend lint, TypeScript, and all 53 unit tests pass. |
+| RT-2026-08-26-328 | Resolved and verified | Model Builder presents only registry-owned output identifiers; the service rejects outputs absent from the selected case before calculating points and filters first breaches to the selected metric/threshold family. The invalid-output regression returns `MODEL_SENSITIVITY_OUTPUT_INVALID` without persistence. |
+| RT-2026-08-26-329 | Resolved and verified | Calculations execute in cancellable AnyIO worker processes under the aggregate deadline, retain the four-slot service cap, and admit at most one request per actor in this process. A real worker is killed at deadline and the pool recovers; same-actor overlap returns 429 while a different case member proceeds. The process-local ceiling is documented for a future distributed limiter if the API scales out. |
+| RT-2026-08-26-330 | Resolved and verified | Both model download routes now return the exact byte buffer read and verified through the existing no-follow descriptor chain, with size/SHA-256 checks and no pathname reopen. Tampered build and revision metadata paths fail closed with route-specific integrity codes. |
+
+Decision: accept all five corrections. Focused correction tests pass 5/5,
+HTTP response contracts pass 27/27, Ruff and Deploy V integrity checks pass,
+and the CP-model suite passes 56/57. The sole failure is the existing signed
+revision LibreOffice export (`status -6`), reproduced unchanged at baseline
+`aacfca3db47f09ca0d418e7731b09dc4cd56bb5f`; it is not in the corrected
+calculation, registry, sensitivity, fairness, or verified-download paths.

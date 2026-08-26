@@ -1523,8 +1523,8 @@
           "sha256": "ee688a18f71d1e6bb667e843e9fdb27f0c2c2dbd31cebcd221d254bb8dbee7a0"
         },
         "references/REF_CP-MODEL_STEPS.md": {
-          "bytes": 17601,
-          "sha256": "1e7ac11661c3363b6bc8fbf6aa1d57d457e96530dbe9595e527e1dc48ed384e2"
+          "bytes": 17835,
+          "sha256": "11fe8bf340c9e58453f0a9530db0dc617cb24b6a0f611da7735b4c750aec6dbc"
         },
         "scripts/cp_model_v3/__init__.py": {
           "bytes": 279,
@@ -1535,16 +1535,16 @@
           "sha256": "3ab01b5195165253455a45fcf3e204d9a08ce9ed52cb85113be3f832b6d242fa"
         },
         "scripts/cp_model_v3/calculations.py": {
-          "bytes": 57836,
-          "sha256": "5f9c052edf790156343d633362c53b4075341d8dd2cb56683abdc7312cce7778"
+          "bytes": 58090,
+          "sha256": "e1bfa9442737797ab6a4893317698a3281fa630ef79c29bdf1ac6e53c7609c6a"
         },
         "scripts/cp_model_v3/domain.py": {
           "bytes": 32975,
           "sha256": "9b4c7a54303daff1f5ccce9351167d52dc4e9da7c7b928ca7276d67438cfd3c8"
         },
         "scripts/cp_model_v3/workbook.py": {
-          "bytes": 94284,
-          "sha256": "adfe9efa69a02376de1a57cc5c39c60a3132fc91045e55102da6ec222a67a88a"
+          "bytes": 95760,
+          "sha256": "d7c7f240ad89b36a6cd2d628725195bd4e4b17f8a9f562b894717b271cea73d2"
         },
         "scripts/export_cp_model_v3.py": {
           "bytes": 4276,

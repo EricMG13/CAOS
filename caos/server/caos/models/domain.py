@@ -186,7 +186,8 @@ class CpModelBundle:
     """Load the integrity-pinned CP-MODEL validators without a permanent sys.path edit."""
 
     def __init__(self, deploy_v_root: Path) -> None:
-        scripts = deploy_v_root / "skills" / "cp-model" / "scripts"
+        self.deploy_v_root = deploy_v_root.resolve()
+        scripts = self.deploy_v_root / "skills" / "cp-model" / "scripts"
         with _LOAD_LOCK:
             self._handoff = _load_module(
                 "cp_model_validate_handoff", scripts / "validate_handoff.py"

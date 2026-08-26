@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 from .calculations import (
     CALCULATION_CONTRACT_VERSION,
     FORECAST_ADDBACK_ID,
+    FORECAST_DEBT_ADJUSTMENT_ID,
     SENIOR_DEBT_CLASSES,
     AnalysisColumn,
     CalculationBook,
@@ -379,13 +380,15 @@ def _render_model(
                 f"missing forecast input cell for {key}"
             ) from exc
 
-    def forecast_debt_formula(column: AnalysisColumn) -> str:
+    def forecast_starting_debt_formula() -> str:
         latest_balance_period = pro_forma.balance_period_id or model.quarters[-1].period_id
-        starting_debt = (
+        return (
             "SUMIFS('_INPUTS'!$D:$D,'_INPUTS'!$B:$B,\"total_debt\","
             f"'_INPUTS'!$C:$C,\"{latest_balance_period}\")"
         )
-        pieces = [starting_debt]
+
+    def forecast_debt_formula(column: AnalysisColumn) -> str:
+        pieces = [forecast_starting_debt_formula()]
         for candidate in columns:
             if candidate.case != column.case or candidate.group != column.group:
                 continue
@@ -974,6 +977,7 @@ def _render_model(
     )
     facility_rows: dict[tuple[str, str], int] = {}
     subtotal_rows: list[int] = []
+    forecast_adjustment_row: int | None = None
 
     def point_for_column(facility: DebtSeries, column: AnalysisColumn) -> object | None:
         period_id = column.balance_period_id
@@ -986,8 +990,6 @@ def _render_model(
             facility for facility in model.debt
             if any(point.secured_status == secured_status for point in facility.values.values())
         ]
-        if not group_facilities and secured_status == "NOT_STATED":
-            continue
         _style_data_row(ws, row, max_column, fill=GREY, bold=True)
         _set_literal(ws.cell(row, 1), group_label)
         row += 1
@@ -1047,6 +1049,15 @@ def _render_model(
                     )
                 model_cells[(semantic_id, column.column_id)] = cell
             row += 1
+        if secured_status == "NOT_STATED":
+            forecast_adjustment_row = row
+            group_rows.append(row)
+            _style_data_row(ws, row, max_column, font_color=INPUT_BLUE)
+            _set_literal(
+                ws.cell(row, 1),
+                "  Unallocated forecast debt movement | security and seniority not inferred",
+            )
+            row += 1
         formula_row(
             subtotal_key,
             f"Total {group_label.lower()}",
@@ -1081,13 +1092,34 @@ def _render_model(
         lambda column, letter: classified_debt_formula(column, letter, senior_only=True), bold=True,
     )
     def total_debt_formula(column: AnalysisColumn, letter: str) -> str:
-        if is_forecast(column):
-            return f"={forecast_debt_formula(column)}"
         return "=" + "+".join(f"{letter}{item}" for item in subtotal_rows)
 
     formula_row(
         "total_debt_calc", "Total debt (calculated)", total_debt_formula, bold=True,
     )
+    if forecast_adjustment_row is None:
+        raise CpModelV3Error("forecast debt adjustment row is unavailable")
+    for column in columns:
+        calculation = calculations.for_column(column.column_id)
+        expected = calculation.debt_values.get(FORECAST_DEBT_ADJUSTMENT_ID)
+        if not is_forecast(column) or expected is None:
+            continue
+        letter = column_letters[column.column_id]
+        prior_adjustment = "0"
+        if column.rollforward_column_id != pro_forma.column_id:
+            prior_letter = column_letters[column.rollforward_column_id or ""]
+            prior_adjustment = f"{prior_letter}{forecast_adjustment_row}"
+        cell = f"{letter}{forecast_adjustment_row}"
+        state.formula(
+            "Model",
+            cell,
+            FORECAST_DEBT_ADJUSTMENT_ID,
+            f"=MAX(-{pf_letter}{row_for_key['total_debt_calc']},{prior_adjustment}+{letter}{row_for_key['net_debt_issue_repay']})",
+            expected,
+            period_id=column.column_id,
+            number_format=MONEY_FORMAT,
+        )
+        model_cells[(FORECAST_DEBT_ADJUSTMENT_ID, column.column_id)] = cell
     source_row("total_debt_reported", "Total debt (reported / projected)", "total_debt", bold=True)
     formula_row(
         "total_debt_variance", "Debt reconciliation",

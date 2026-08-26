@@ -4,6 +4,7 @@ import test from "node:test";
 
 const workspace = readFileSync(new URL("../Workspace.tsx", import.meta.url), "utf8");
 const modelBuilder = readFileSync(new URL("./ModelBuilder.tsx", import.meta.url), "utf8");
+const api = readFileSync(new URL("../../lib/api.ts", import.meta.url), "utf8");
 
 test("Workspace delegates Model Builder to the extracted component", () => {
   assert.match(workspace, /import ModelBuilder from "\.\/model\/ModelBuilder";/);
@@ -26,8 +27,9 @@ test("authoring is registry-driven, browser-memory-only, and identity fenced", (
   for (const label of ["Model", "Assumptions", "Sensitivities", "History"]) {
     assert.match(modelBuilder, new RegExp(`label: "${label}"`));
   }
+  assert.match(modelBuilder, /assumptionRegistryPath\(expectedCaseId, nextBuild\.id\)/);
+  assert.match(api, /models\/assumption-registry\?build_id=/);
   for (const route of [
-    "models/assumption-registry",
     "models/previews",
     "model-revisions/sign-off",
     "model-revisions/rebase-preview",
@@ -86,6 +88,8 @@ test("assumption review exposes application defaults, application-build deltas, 
   assert.match(modelBuilder, /mixed=\{broadcastScope\.mixed\}/);
   assert.match(modelBuilder, /broadcastScope\.editable/);
   assert.match(modelBuilder, /sensitivityScope\.editable/);
+  assert.match(modelBuilder, /<label>Output<select/);
+  assert.doesNotMatch(modelBuilder, /Output ID<input/);
   assert.match(modelBuilder, /aria-live="polite"/);
 });
 
