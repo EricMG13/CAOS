@@ -774,7 +774,11 @@ def test_openapi_declares_strict_models_for_every_json_success_response(
                 "get",
                 "/api/cases/{case_id}/model-revisions/{revision_id}/download",
             ),
-        ("get", "/api/cases/{case_id}/reports/export/{format_name}"),
+            (
+                "get",
+                "/api/cases/{case_id}/deliverables/by-id/{deliverable_id}/export/{format_name}",
+            ),
+            ("get", "/api/cases/{case_id}/reports/export/{format_name}"),
     }
     paths = client.app.openapi()["paths"]
 

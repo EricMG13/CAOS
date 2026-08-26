@@ -13,9 +13,11 @@ from typing import Any
 from .contracts import clean_json, digest
 from .ledgers import (
     DeliverableConflictError,
+    FrozenDeliverableConflictError,
     RevisionConflictError,
     _revision_conflict_build,
     SourceCatalog,
+    frozen_submission_matches,
     _validate_run_nodes,
     _validated_revision_identity,
 )
@@ -70,6 +72,8 @@ class _MemoryState:
         self.model_revision_heads: dict[str, str] = {}
         self.model_revision_export_jobs: dict[str, Record] = {}
         self.deliverable_draft_revisions: dict[tuple[str, str], list[Record]] = {}
+        self.frozen_deliverables: dict[str, Record] = {}
+        self.deliverable_exports: dict[tuple[str, str], Record] = {}
 
     @staticmethod
     def new_id(prefix: str) -> str:
@@ -1712,6 +1716,328 @@ class _MemoryPublicationLedger(_Adapter):
                     if revision["id"] == deliverable_id:
                         return copy.deepcopy(revision)
         return None
+
+    @staticmethod
+    def _current_draft(
+        state: _MemoryState, case_id: str, pathway: str
+    ) -> Record | None:
+        revisions = state.deliverable_draft_revisions.get((case_id, pathway), [])
+        return revisions[-1] if revisions else None
+
+    @classmethod
+    def _assert_frozen_identity(
+        cls,
+        state: _MemoryState,
+        record: Record,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+    ) -> None:
+        cls._assert_frozen_authority(state, record)
+        current = cls._current_draft(state, record["case_id"], record["pathway"])
+        draft = record["payload"]["draft"]
+        if (
+            record.get("status") != "FROZEN"
+            or record.get("preview_digest") != expected_preview_digest
+            or record.get("input_fingerprint") != expected_input_fingerprint
+            or current is None
+            or current.get("id") != draft.get("id")
+            or current.get("version") != draft.get("version")
+            or current.get("digest") != draft.get("digest")
+        ):
+            raise ValueError("DELIVERABLE_FROZEN_CONFLICT")
+
+    @staticmethod
+    def _assert_frozen_authority(state: _MemoryState, record: Record) -> None:
+        payload = record.get("payload") or {}
+        authority = payload.get("authority") or {}
+        case_id = record.get("case_id") or payload.get("case_id")
+        case = state.cases.get(case_id)
+        snapshot = state.snapshots.get(authority.get("accepted_snapshot_id"))
+        source_set = state.source_set_history.get(authority.get("source_set_id"))
+        if (
+            case is None
+            or snapshot is None
+            or source_set is None
+            or case.get("accepted_snapshot_id") != snapshot.get("id")
+            or snapshot.get("case_id") != case_id
+            or snapshot.get("source_set_id") != source_set.get("id")
+            or source_set.get("case_id") != case_id
+            or authority.get("accepted_snapshot_digest") != digest(snapshot)
+            or authority.get("source_set_digest") != digest(source_set)
+        ):
+            raise ValueError("DELIVERABLE_FROZEN_AUTHORITY_STALE")
+        for evidence in payload.get("evidence") or []:
+            source = state.sources.get(evidence.get("source_id"))
+            available = {
+                block.get("block_id") for block in (source or {}).get("blocks", [])
+            }
+            if (
+                source is None
+                or source.get("case_id") != case_id
+                or source.get("withdrawn")
+                or source.get("sha256") != evidence.get("sha256")
+                or not set(evidence.get("block_ids") or []).issubset(available)
+            ):
+                raise ValueError("DELIVERABLE_FROZEN_AUTHORITY_STALE")
+        selection = (payload.get("content") or {}).get("model_selection")
+        if selection is None:
+            return
+        builds = [
+            build
+            for build in sorted(
+                (
+                    item
+                    for item in state.model_builds.values()
+                    if item.get("case_id") == case_id
+                ),
+                key=lambda item: state.model_build_authority_orders[item["id"]],
+                reverse=True,
+            )
+            if build.get("status") == "READY"
+        ]
+        current_build = builds[0] if builds else None
+        head_id = state.model_revision_heads.get(case_id)
+        head = state.model_revisions.get(head_id) if head_id else None
+        active = (
+            head
+            if head is not None
+            and current_build is not None
+            and head.get("build_id") == current_build.get("id")
+            else None
+        )
+        model = payload.get("model") or {}
+        if selection.get("kind") == "ANALYST_REVISION":
+            valid = (
+                active is not None
+                and active.get("id") == selection.get("revision_id")
+                and active.get("build_id") == selection.get("build_id")
+                and model.get("revision_id") == active.get("id")
+                and model.get("build_id") == current_build.get("id")
+            )
+        else:
+            valid = (
+                active is None
+                and current_build is not None
+                and current_build.get("id") == selection.get("build_id")
+                and model.get("build_id") == current_build.get("id")
+            )
+        if not valid:
+            raise ValueError("DELIVERABLE_FROZEN_AUTHORITY_STALE")
+
+    def append_frozen_deliverable(
+        self,
+        case_id: str,
+        pathway: str,
+        actor: str,
+        expected_draft_id: str,
+        expected_draft_version: int,
+        expected_draft_digest: str,
+        value: Record,
+        exports: dict[str, Record],
+    ) -> Record:
+        state = self._state
+        with state.lock:
+            current = self._current_draft(state, case_id, pathway)
+            if (
+                current is None
+                or current.get("id") != expected_draft_id
+                or current.get("version") != expected_draft_version
+                or current.get("digest") != expected_draft_digest
+                or value.get("payload", {}).get("draft")
+                != {
+                    "id": expected_draft_id,
+                    "version": expected_draft_version,
+                    "digest": expected_draft_digest,
+                }
+            ):
+                raise ValueError("DELIVERABLE_DRAFT_STALE")
+            self._assert_frozen_authority(
+                state, {**value, "case_id": case_id, "pathway": pathway}
+            )
+            if set(exports) != {"md", "pdf", "xlsx"}:
+                raise ValueError("DELIVERABLE_EXPORT_SET_INVALID")
+            existing = next(
+                (
+                    record
+                    for record in state.frozen_deliverables.values()
+                    if record.get("case_id") == case_id
+                    and record.get("pathway") == pathway
+                    and record.get("draft_version") == expected_draft_version
+                ),
+                None,
+            )
+            if existing is not None:
+                if frozen_submission_matches(existing, value, exports):
+                    return copy.deepcopy(existing)
+                raise FrozenDeliverableConflictError(copy.deepcopy(existing))
+            saved = copy.deepcopy(value)
+            saved.update(
+                id=state.new_id("frozen"),
+                case_id=case_id,
+                pathway=pathway,
+                draft_version=expected_draft_version,
+                status="FROZEN",
+                frozen_by=actor,
+                frozen_at=now_iso(),
+                approved_by=None,
+                approved_at=None,
+                approval_comment=None,
+                superseded_by_id=None,
+                change_request=None,
+            )
+            saved_exports: dict[str, Record] = {}
+            for format_name, metadata in exports.items():
+                exported = copy.deepcopy(metadata)
+                exported.update(
+                    deliverable_id=saved["id"], created_at=saved["frozen_at"]
+                )
+                state.deliverable_exports[(saved["id"], format_name)] = exported
+                saved_exports[format_name] = exported
+            saved["exports"] = saved_exports
+            state.frozen_deliverables[saved["id"]] = saved
+            state.audit_event(
+                "deliverable.frozen",
+                actor,
+                case_id=case_id,
+                pathway=pathway,
+                deliverable_id=saved["id"],
+                draft_version=expected_draft_version,
+            )
+            return copy.deepcopy(saved)
+
+    def list_frozen_deliverables(
+        self, case_id: str, pathway: str
+    ) -> list[Record]:
+        with self._state.lock:
+            return copy.deepcopy(
+                [
+                    item
+                    for item in self._state.frozen_deliverables.values()
+                    if item.get("case_id") == case_id
+                    and item.get("pathway") == pathway
+                ]
+            )
+
+    def get_frozen_deliverable(self, deliverable_id: str) -> Record | None:
+        with self._state.lock:
+            record = self._state.frozen_deliverables.get(deliverable_id)
+            return copy.deepcopy(record) if record else None
+
+    def file_deliverable(
+        self,
+        case_id: str,
+        deliverable_id: str,
+        actor: str,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+    ) -> Record:
+        state = self._state
+        with state.lock:
+            record = state.frozen_deliverables.get(deliverable_id)
+            if record is None or record.get("case_id") != case_id:
+                raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+            self._assert_frozen_identity(
+                state, record, expected_preview_digest, expected_input_fingerprint
+            )
+            approved_at = now_iso()
+            for prior in state.frozen_deliverables.values():
+                if (
+                    prior.get("case_id") == case_id
+                    and prior.get("pathway") == record["pathway"]
+                    and prior.get("status") == "FILED"
+                ):
+                    prior["status"] = "SUPERSEDED"
+                    prior["superseded_by_id"] = deliverable_id
+            record.update(
+                status="FILED",
+                approved_by=actor,
+                approved_at=approved_at,
+                approval_comment=None,
+            )
+            state.audit_event(
+                "deliverable.filed",
+                actor,
+                case_id=case_id,
+                pathway=record["pathway"],
+                deliverable_id=deliverable_id,
+            )
+            return copy.deepcopy(record)
+
+    def request_deliverable_changes(
+        self,
+        case_id: str,
+        deliverable_id: str,
+        actor: str,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+        comment: str,
+    ) -> tuple[Record, Record]:
+        if not comment.strip():
+            raise ValueError("DELIVERABLE_CHANGE_COMMENT_REQUIRED")
+        state = self._state
+        with state.lock:
+            record = state.frozen_deliverables.get(deliverable_id)
+            if record is None or record.get("case_id") != case_id:
+                raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+            self._assert_frozen_identity(
+                state, record, expected_preview_digest, expected_input_fingerprint
+            )
+            current = self._current_draft(state, case_id, record["pathway"])
+            assert current is not None
+            requested_at = now_iso()
+            change_request = {
+                "comment": comment.strip(),
+                "requested_by": actor,
+                "requested_at": requested_at,
+                "frozen_deliverable_id": deliverable_id,
+            }
+            replacement = copy.deepcopy(current)
+            replacement.update(
+                id=state.new_id("deliverable"),
+                version=current["version"] + 1,
+                author=actor,
+                created_at=requested_at,
+                change_request=change_request,
+            )
+            state.deliverable_draft_revisions[(case_id, record["pathway"])].append(
+                replacement
+            )
+            record.update(status="CHANGES_REQUESTED", change_request=change_request)
+            state.audit_event(
+                "deliverable.draft_versioned",
+                actor,
+                case_id=case_id,
+                pathway=record["pathway"],
+                deliverable_id=replacement["id"],
+                version=replacement["version"],
+                reason="CHANGES_REQUESTED",
+            )
+            state.audit_event(
+                "deliverable.changes_requested",
+                actor,
+                case_id=case_id,
+                pathway=record["pathway"],
+                deliverable_id=deliverable_id,
+                replacement_draft_id=replacement["id"],
+                replacement_version=replacement["version"],
+            )
+            return copy.deepcopy(record), copy.deepcopy(replacement)
+
+    def record_deliverable_export_download(
+        self, deliverable_id: str, case_id: str, actor: str, format_name: str
+    ) -> None:
+        state = self._state
+        with state.lock:
+            record = state.frozen_deliverables.get(deliverable_id)
+            if record is None or record.get("case_id") != case_id:
+                raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+            state.audit_event(
+                "deliverable.export_downloaded",
+                actor,
+                case_id=case_id,
+                deliverable_id=deliverable_id,
+                format=format_name,
+            )
 
     @staticmethod
     def _current_version(bucket: dict[str, list[Record]], case_id: str) -> int:

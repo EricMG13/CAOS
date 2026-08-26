@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import math
-import os
-import secrets
-import shutil
 import tempfile
 import threading
 from datetime import date, datetime
@@ -16,6 +12,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from ..artifacts.domain import build_snapshot_payload, latest_accepted_snapshot
+from ..atomic_files import publish_hash_addressed_bytes
 from ..contracts import canonical_json, digest
 from ..ledgers import ModelLedger, RunLedger, SourceCatalog
 from ..methodology.canonical import CANONICAL_MODULES, is_canonical_full_credit
@@ -479,41 +476,14 @@ def _publish_export(
         for value in (build.get("case_id"), build.get("id"))
     ):
         raise ValueError("unsafe model export identity")
-    size = source.stat().st_size
-    if size <= 0 or size > MAX_EXPORT_BYTES:
-        raise ValueError("model export size limit exceeded")
-    actual_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
-    if actual_sha256 != expected_sha256:
-        raise ValueError("model export digest mismatch")
-    root = storage_dir.resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    directory = root / "models" / build["case_id"] / build["id"]
-    directory.mkdir(parents=True, exist_ok=True)
-    directory = directory.resolve()
-    if not directory.is_relative_to(root):
-        raise ValueError("model export path escapes storage root")
-    target = directory / f"{expected_sha256}.xlsx"
-    if target.exists():
-        if target.is_symlink() or target.stat().st_size != size:
-            raise ValueError("existing model export identity mismatch")
-        if hashlib.sha256(target.read_bytes()).hexdigest() != expected_sha256:
-            raise ValueError("existing model export digest mismatch")
-        return target, target.relative_to(root).as_posix(), size
-    temporary = directory / f".{expected_sha256}.{secrets.token_hex(8)}.tmp"
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb") as output, source.open("rb") as input_file:
-            descriptor = None
-            shutil.copyfileobj(input_file, output)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, target)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-    return target, target.relative_to(root).as_posix(), size
+    return publish_hash_addressed_bytes(
+        storage_dir,
+        ("models", build["case_id"], build["id"]),
+        "xlsx",
+        source.read_bytes(),
+        expected_sha256=expected_sha256,
+        max_bytes=MAX_EXPORT_BYTES,
+    )
 
 
 def _cell_type(value: Any, formula: str | None) -> str:

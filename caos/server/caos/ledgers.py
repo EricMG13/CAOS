@@ -26,6 +26,46 @@ class DeliverableConflictError(ValueError):
         self.current = current
 
 
+class FrozenDeliverableConflictError(ValueError):
+    def __init__(self, current: Record) -> None:
+        super().__init__("DELIVERABLE_FREEZE_CONFLICT")
+        self.current = current
+
+
+def frozen_submission_matches(
+    current: Record, value: Record, exports: dict[str, Record]
+) -> bool:
+    identity_fields = (
+        "payload",
+        "digest",
+        "preview_digest",
+        "input_fingerprint",
+        "authority_identity",
+        "model_identity",
+        "template_identity",
+        "render_identity",
+    )
+    export_fields = (
+        "format",
+        "vault_key",
+        "sha256",
+        "size",
+        "renderer_identity",
+    )
+    current_exports = current.get("exports") or {}
+    return all(current.get(field) == value.get(field) for field in identity_fields) and (
+        set(current_exports) == set(exports) == {"md", "pdf", "xlsx"}
+        and all(
+            all(
+                current_exports[format_name].get(field)
+                == exports[format_name].get(field)
+                for field in export_fields
+            )
+            for format_name in exports
+        )
+    )
+
+
 def _revision_conflict_build(build: Record | None) -> Record | None:
     if build is None:
         return None
@@ -297,6 +337,47 @@ class PublicationLedger(Protocol):
     ) -> list[Record]: ...
 
     def get_deliverable_revision(self, deliverable_id: str) -> Record | None: ...
+
+    def append_frozen_deliverable(
+        self,
+        case_id: str,
+        pathway: str,
+        actor: str,
+        expected_draft_id: str,
+        expected_draft_version: int,
+        expected_draft_digest: str,
+        value: Record,
+        exports: dict[str, Record],
+    ) -> Record: ...
+
+    def list_frozen_deliverables(
+        self, case_id: str, pathway: str
+    ) -> list[Record]: ...
+
+    def get_frozen_deliverable(self, deliverable_id: str) -> Record | None: ...
+
+    def file_deliverable(
+        self,
+        case_id: str,
+        deliverable_id: str,
+        actor: str,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+    ) -> Record: ...
+
+    def request_deliverable_changes(
+        self,
+        case_id: str,
+        deliverable_id: str,
+        actor: str,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+        comment: str,
+    ) -> tuple[Record, Record]: ...
+
+    def record_deliverable_export_download(
+        self, deliverable_id: str, case_id: str, actor: str, format_name: str
+    ) -> None: ...
 
     def append_thesis(
         self, case_id: str, actor: str, expected_version: int, thesis: Record

@@ -28,6 +28,10 @@ from .artifacts.loan_universe import (
     LoanUniverseSourceError,
     import_loan_source,
 )
+from .atomic_files import (
+    VaultFileIntegrityError,
+    read_verified_vault_bytes,
+)
 from .config import Settings
 from .contracts import (
     DESTINATIONS,
@@ -38,6 +42,8 @@ from .contracts import (
     CreateCaseRequest,
     DeliverableDraftRequest,
     Depth,
+    FileDeliverableRequest,
+    FreezeDeliverableRequest,
     FreezeReportRequest,
     LoanUniverseImportRequest,
     MemberRequest,
@@ -50,6 +56,7 @@ from .contracts import (
     OneWaySensitivityRequest,
     RecommendationMatrixRequest,
     ReportInputsRequest,
+    RequestDeliverableChangesRequest,
     RVUniverseRequest,
     SnapshotSwitchRequest,
     StartRunRequest,
@@ -73,12 +80,21 @@ from .models.runtime import (
 )
 from .memory_ledgers import MemoryLedgerSet
 from .postgres_ledgers import PostgresLedgerSet
-from .ledgers import DeliverableConflictError, RevisionConflictError
+from .ledgers import (
+    DeliverableConflictError,
+    FrozenDeliverableConflictError,
+    RevisionConflictError,
+)
 from .publishing.domain import (
     DeliverableService,
     freeze_report,
     render_pdf,
     render_xlsx,
+)
+from .publishing.frozen import (
+    FILED_STATUSES,
+    MAX_DELIVERABLE_EXPORT_BYTES,
+    DeliverablePublicationService,
 )
 from .publishing.recipes import validate_recipe
 from .responses import (
@@ -92,8 +108,10 @@ from .responses import (
     CaseMemberResponse,
     CaseLensResponse,
     CaseResponse,
+    DeliverableChangeResponse,
     DeliverableDraftRevisionResponse,
     DeliverableWorkspaceResponse,
+    FrozenDeliverableResponse,
     HealthResponse,
     IdentityResponse,
     LoanUniverseResponse,
@@ -185,6 +203,15 @@ def create_app(
     deliverables = DeliverableService(
         publications, sources, models, scenario_service=revision_service
     )
+    deliverable_publications = DeliverablePublicationService(
+        publications,
+        runs,
+        sources,
+        models,
+        deliverables,
+        bundle,
+        settings.storage_dir,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -210,6 +237,7 @@ def create_app(
     app.state.revision_service = revision_service
     app.state.revision_runtime = revision_runtime
     app.state.deliverables = deliverables
+    app.state.deliverable_publications = deliverable_publications
 
     def identity(request: Request) -> Identity:
         return identity_from_request(request, settings)
@@ -1235,6 +1263,144 @@ def create_app(
             ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/cases/{case_id}/deliverables/{pathway}/freeze",
+        status_code=201,
+        response_model=FrozenDeliverableResponse,
+    )
+    def freeze_deliverable(
+        case_id: str,
+        pathway: str,
+        payload: FreezeDeliverableRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        who = identity(request)
+        require_case(runs, case_id, who, write=True)
+        try:
+            return deliverable_publications.freeze(
+                case_id,
+                pathway,
+                who.subject,
+                payload.draft_id,
+                payload.draft_version,
+                payload.draft_digest,
+            )
+        except FrozenDeliverableConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DELIVERABLE_FREEZE_CONFLICT",
+                    "current": exc.current,
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/cases/{case_id}/deliverables/by-id/{deliverable_id}/approve",
+        response_model=FrozenDeliverableResponse,
+    )
+    def file_deliverable(
+        case_id: str,
+        deliverable_id: str,
+        payload: FileDeliverableRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        who = identity(request)
+        require_case(runs, case_id, who, write=True)
+        require_role(who, "APPROVER", "ADMIN")
+        try:
+            return deliverable_publications.file(
+                case_id,
+                deliverable_id,
+                who.subject,
+                payload.preview_digest,
+                payload.input_fingerprint,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/cases/{case_id}/deliverables/by-id/{deliverable_id}/request-changes",
+        response_model=DeliverableChangeResponse,
+    )
+    def request_deliverable_changes(
+        case_id: str,
+        deliverable_id: str,
+        payload: RequestDeliverableChangesRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        who = identity(request)
+        require_case(runs, case_id, who, write=True)
+        require_role(who, "APPROVER", "ADMIN")
+        try:
+            frozen, draft = deliverable_publications.request_changes(
+                case_id,
+                deliverable_id,
+                who.subject,
+                payload.preview_digest,
+                payload.input_fingerprint,
+                payload.comment,
+            )
+            return {"frozen": frozen, "draft": draft}
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/cases/{case_id}/deliverables/by-id/{deliverable_id}/export/{format_name}"
+    )
+    def download_deliverable_export(
+        case_id: str, deliverable_id: str, format_name: str, request: Request
+    ) -> Response:
+        who = identity(request)
+        require_case(runs, case_id, who)
+        record = publications.get_frozen_deliverable(deliverable_id)
+        if record is None or record.get("case_id") != case_id:
+            raise HTTPException(status_code=404, detail="frozen deliverable not found")
+        if record.get("status") not in FILED_STATUSES:
+            raise HTTPException(status_code=409, detail="DELIVERABLE_NOT_FILED")
+        export = (record.get("exports") or {}).get(format_name)
+        if export is None or format_name not in {"md", "pdf", "xlsx"}:
+            raise HTTPException(status_code=404, detail="deliverable export not found")
+        key = export.get("vault_key")
+        if not isinstance(key, str):
+            raise HTTPException(status_code=409, detail="DELIVERABLE_EXPORT_UNAVAILABLE")
+        try:
+            content = read_verified_vault_bytes(
+                settings.storage_dir,
+                key,
+                expected_sha256=export.get("sha256"),
+                expected_size=export.get("size"),
+                max_bytes=MAX_DELIVERABLE_EXPORT_BYTES,
+            )
+        except VaultFileIntegrityError as exc:
+            raise HTTPException(
+                status_code=409, detail="DELIVERABLE_EXPORT_INTEGRITY_FAILED"
+            ) from exc
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409, detail="DELIVERABLE_EXPORT_UNAVAILABLE"
+            ) from exc
+        publications.record_deliverable_export_download(
+            deliverable_id, case_id, who.subject, format_name
+        )
+        media_types = {
+            "md": "text/markdown; charset=utf-8",
+            "pdf": "application/pdf",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        return Response(
+            content,
+            media_type=media_types[format_name],
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": (
+                    f'attachment; filename="{deliverable_id}.{format_name}"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/api/cases/{case_id}/reports", response_model=ReportRouteResponse | None)
     def reports(case_id: str, request: Request) -> dict[str, Any] | None:

@@ -1417,6 +1417,49 @@ class DeliverableWorkspaceResponse(WireModel):
     model_eligibility: DeliverableModelEligibilityResponse
 
 
+class DeliverableExportMetadataResponse(WireModel):
+    deliverable_id: str
+    format: Literal["md", "pdf", "xlsx"]
+    vault_key: str
+    sha256: str
+    size: int
+    renderer_identity: dict[str, Any]
+    created_at: str
+
+
+class FrozenDeliverableResponse(WireModel):
+    id: str
+    case_id: str
+    pathway: str
+    draft_version: int
+    status: Literal["FROZEN", "FILED", "SUPERSEDED", "CHANGES_REQUESTED"]
+    frozen_by: str
+    frozen_at: str
+    approved_by: str | None
+    approved_at: str | None
+    approval_comment: str | None
+    superseded_by_id: str | None
+    change_request: dict[str, Any] | None
+    digest: str
+    preview_digest: str
+    input_fingerprint: str
+    authority_identity: dict[str, Any]
+    model_identity: dict[str, Any] | None
+    template_identity: dict[str, Any]
+    render_identity: dict[str, Any]
+    payload: dict[str, Any]
+    exports: dict[str, DeliverableExportMetadataResponse]
+
+
+class DeliverableChangedDraftResponse(DeliverableDraftRevisionResponse):
+    change_request: dict[str, Any]
+
+
+class DeliverableChangeResponse(WireModel):
+    frozen: FrozenDeliverableResponse
+    draft: DeliverableChangedDraftResponse
+
+
 class ApprovedReportResponse(ReportResponse):
     status: Literal["APPROVED"]
     approved_by: str

@@ -4880,3 +4880,50 @@ suite passes 29 tests without PostgreSQL (five PostgreSQL-only skips) and 34/34
 with live PostgreSQL. The complete live PostgreSQL/LibreOffice suite after the
 production guard passes 498/498 in 86.08 seconds. No known Critical or Important
 Phase 5 issue remains.
+
+## 2026-08-26 — Analyst authoring Phase 6 exact Frozen/Filed Deliverables
+
+Decision under review: materialize one canonical immutable Frozen payload into
+stored Markdown/PDF/XLSX bytes, then permit independent filing or a commented
+change request without rerendering, mutating, or bypassing current authority.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-300 | Authority-race reviewer | Service-layer validation alone could approve a Frozen record after the accepted snapshot, source/evidence, active model, READY build, or current draft changed concurrently. | Critical | Resolved and verified | Freeze, filing, and change request retain service-level exact reconstruction, while both ledger adapters independently compare the exact draft and authority inside their mutation boundary. PostgreSQL takes the case-row lock and performs authority validation, immutable insert/status transition, supersession, replacement draft, and audit in one transaction. Memory uses its single state lock. Live two-writer filing and stale-authority tests prove one winner and no orphan durable row/audit. |
+| RT-2026-08-26-301 | Stored-byte security reviewer | A filed export could be regenerated, escape the vault, pass through a symlink, change between hash verification and `FileResponse` reopen, exceed its declared size, or return bytes under the wrong digest. | Critical | Resolved and verified | Freeze uses the shared hash-addressed atomic publisher with strict safe path parts, containment, size, and digest checks. Download accepts only FILED/SUPERSEDED rows, rejects absolute/dot/symlink components, reads once within the 64 MiB bound, checks exact length and SHA-256 on that byte buffer, and returns that same buffer with no-store/nosniff headers. Red-first tamper, in-root symlink, pre-file, restart, renderer-disabled, and all-format tests pass. |
+| RT-2026-08-26-302 | Renderer-integrity reviewer | PDF/XLSX stubs or mutable-state lookups could make the downloaded document differ from the reviewed Frozen authority, and spreadsheet text could execute as formulas. | Critical | Resolved and verified | All three pure renderers accept only the canonical Frozen payload. The PDF is multi-page with pathway sections, narrative, authority, analytical tables, citations, and revision record; XLSX emits typed relevant sheets, exact model/assumption/evidence identities, and no formulas. ReportLab invariant output plus pypdf and openpyxl self-checks fail closed. All six templates reopen semantically; adversarial `=HYPERLINK` text is apostrophe-neutralized while typed numeric values remain numeric. |
+| RT-2026-08-26-303 | Independent-approval reviewer | A writer could self-file, a reviewer could approve a separately reconstructed preview, or request changes could overwrite history. | Critical | Resolved and verified | Freeze remains writer-gated, while filing and change request require exact APPROVER/ADMIN role plus mandatory preview and input identities. Approval never renders. Change request requires a nonblank comment and appends a new attributed draft revision copied from the exact Frozen content; the rejected Frozen row remains immutable. Later filing supersedes rather than deletes prior FILED bytes. |
+| RT-2026-08-26-304 | Compatibility reviewer | Retrofitting normalized deliverables could mutate legacy `reports` authority or silently fabricate historical export bytes. | High | Resolved and verified | Forward-only idempotent migration 009 leaves migration 008 and every legacy report untouched. It backfills only eligible normalized report metadata as a read-only `LEGACY_REPORT` compatibility record and intentionally creates no export bytes; compatibility report reads remain the bounded old path. Every new write uses the normalized Frozen/export tables. Clean-slate, isolated 008→009, idempotence, constraint, and legacy-row tests pass. |
+| RT-2026-08-26-305 | Partial-publication reviewer | Rendering and filesystem publication necessarily occur before the database CAS, so a losing Freeze race can leave unreachable hash-addressed bytes. | High | Accepted with bounded disposition | No Frozen row, export metadata, or audit becomes durable on a losing CAS, and no route can discover or serve bytes without a FILED/SUPERSEDED ledger record. Each file publication itself is atomic and content-addressed, so a concurrent identical Freeze may safely reuse it. Deleting on CAS failure would be unsafe because another transaction may already reference the same digest. Operational orphan sweeping can use the ledger as the sole reachability authority without weakening publication correctness. |
+
+Decision: accept Phase 6 for independent review. The unrestricted no-DSN suite
+passes 448 tests with 62 explicit PostgreSQL skips, and the disposable live
+PostgreSQL/LibreOffice suite passes 510 tests. The final download-hardening
+slice passes 28 broad HTTP contracts plus 8 focused live migration/export
+tests. Ruff, compile, diff, pip consistency, pip-audit, high-severity Bandit,
+Deploy V integrity (307 checked, zero mismatches), and corpus consistency (26
+modules, zero drift) pass. No known Critical or Important Phase 6 defect
+remains.
+
+## 2026-08-26 — Analyst authoring Phase 6 independent-review corrections
+
+Correction under review: close the three Important publication findings at the
+immutable authority, ledger uniqueness, and descriptor-read boundaries.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-306 | Committee-content reviewer | A model-required draft could freeze and file narrative plus model identity while omitting the selected signed model's Base/Downside calculations. | Critical | Resolved and verified | Freeze now resolves the exact READY Application Build behind the selected authority, rechecks its case/snapshot/fingerprint/payload digest, and pins its immutable worksheet payload, QA, runtime, export metadata, and warnings. An Analyst Revision additionally requires exact assumptions/output digests and pins the full effective assumptions, named gaps, Base/Downside outputs, and debt values. Pure renderer v2 emits these independently of optional author blocks. A real Model Ledger build and ACTIVE signed Full Credit revision with Base FY2027 total leverage 4.2 produces that exact value in extracted stored PDF text and as a typed cell in reopened XLSX, together with Model, Base Downside, Analytical Detail, Assumptions, Debt Schedule, and Gaps and Warnings sheets. |
+| RT-2026-08-26-307 | Idempotency/concurrency reviewer | Sequential retry or two writers could create two fileable Frozen records for the same immutable draft and manufacture false supersession history. | Critical | Resolved and verified | Forward-only migration 010 adds native uniqueness for `(case_id, pathway, draft_version)`. Memory and PostgreSQL perform the same exact-draft check inside their lock/transaction, return the existing record only when every Frozen identity and all three export metadata records match, and otherwise raise typed `DELIVERABLE_FREEZE_CONFLICT` before insert/audit. Concurrent memory/live-PostgreSQL and HTTP retries prove one Frozen ID, one export set, one audit, one possible filing, and no false supersession; 009→010 and repeated 010 application are green. |
+| RT-2026-08-26-308 | Vault/TOCTOU reviewer | Path validation followed by pathname reopen could follow a swapped symlink/device or allocate an oversized target before rejection. | Critical | Resolved and verified | Download now opens the configured vault root and every lexical component through an `O_NOFOLLOW` directory-descriptor chain, opens the final target nonblocking/no-follow, requires a regular file and exact bounded `fstat` size, reads at most expected-size-plus-one, rechecks descriptor identity/size, hashes the exact returned buffer, and never calls `Path.read_bytes`. Platforms without `O_NOFOLLOW` fail closed. Barrier-driven final-file and intermediate-directory swaps, oversized mutation, `/dev/null` symlink, FIFO, missing no-follow support, tamper, restart, and no-audit failure tests pass. |
+
+Decision: accept the Phase 6 corrections for rereview. The combined focused
+publication/migration suite passes 54 tests against live PostgreSQL; the full
+no-DSN suite passes 451 tests with 63 explicit skips and the full disposable
+PostgreSQL/LibreOffice suite passes 514 tests. Ruff, compileall, route security,
+Bandit, pip consistency/audit, Deploy V integrity (307/0), corpus consistency
+(26/0), and diff checks pass. Rewrite tournaments retain the two security and
+authority incumbents after challengers either weaken exactness or split the
+single reviewable boundary. The confidence review additionally found and fixed
+the missing-`O_NOFOLLOW` fail-closed guard. RT-306 through RT-308 supersede the
+affected assurances in RT-301 and RT-302. No known Critical or Important Phase
+6 defect remains.

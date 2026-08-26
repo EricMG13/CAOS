@@ -16,10 +16,12 @@ from psycopg.types.json import Jsonb
 from .contracts import clean_json, digest
 from .ledgers import (
     DeliverableConflictError,
+    FrozenDeliverableConflictError,
     RevisionConflictError,
     _revision_conflict_build,
     _validate_run_nodes,
     _validated_revision_identity,
+    frozen_submission_matches,
 )
 from .migrations import apply_migrations
 from .store import (
@@ -1659,6 +1661,483 @@ class _PostgresPublicationLedger(_Adapter):
                 )
                 row = cursor.fetchone()
                 return copy.deepcopy(row[0]) if row else None
+
+    @staticmethod
+    def _frozen_record(cursor: Any, deliverable_id: str) -> Record | None:
+        cursor.execute(
+            "SELECT value FROM frozen_deliverables WHERE id=%s", (deliverable_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        record = copy.deepcopy(row[0])
+        cursor.execute(
+            "SELECT format, vault_key, sha256, size, renderer_identity, created_at "
+            "FROM deliverable_exports WHERE deliverable_id=%s ORDER BY format",
+            (deliverable_id,),
+        )
+        record["exports"] = {
+            export_row[0]: {
+                "deliverable_id": deliverable_id,
+                "format": export_row[0],
+                "vault_key": export_row[1],
+                "sha256": export_row[2],
+                "size": export_row[3],
+                "renderer_identity": export_row[4],
+                "created_at": export_row[5].isoformat(),
+            }
+            for export_row in cursor.fetchall()
+        }
+        return record
+
+    @staticmethod
+    def _assert_frozen_identity(
+        cursor: Any,
+        record: Record,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+    ) -> None:
+        _PostgresPublicationLedger._assert_frozen_authority(cursor, record)
+        cursor.execute(
+            "SELECT value FROM deliverable_draft_revisions "
+            "WHERE case_id=%s AND pathway=%s ORDER BY version DESC LIMIT 1",
+            (record["case_id"], record["pathway"]),
+        )
+        row = cursor.fetchone()
+        current = copy.deepcopy(row[0]) if row else None
+        draft = record["payload"]["draft"]
+        if (
+            record.get("status") != "FROZEN"
+            or record.get("preview_digest") != expected_preview_digest
+            or record.get("input_fingerprint") != expected_input_fingerprint
+            or current is None
+            or current.get("id") != draft.get("id")
+            or current.get("version") != draft.get("version")
+            or current.get("digest") != draft.get("digest")
+        ):
+            raise ValueError("DELIVERABLE_FROZEN_CONFLICT")
+
+    @staticmethod
+    def _assert_frozen_authority(cursor: Any, record: Record) -> None:
+        payload = record.get("payload") or {}
+        authority = payload.get("authority") or {}
+        case_id = record.get("case_id") or payload.get("case_id")
+        cursor.execute(
+            "SELECT accepted_snapshot_id FROM cases WHERE id=%s", (case_id,)
+        )
+        case_row = cursor.fetchone()
+        cursor.execute(
+            "SELECT record FROM accepted_snapshots WHERE id=%s",
+            (authority.get("accepted_snapshot_id"),),
+        )
+        snapshot_row = cursor.fetchone()
+        cursor.execute(
+            "SELECT record FROM source_sets WHERE id=%s",
+            (authority.get("source_set_id"),),
+        )
+        source_set_row = cursor.fetchone()
+        snapshot = snapshot_row[0] if snapshot_row else None
+        source_set = source_set_row[0] if source_set_row else None
+        if (
+            case_row is None
+            or snapshot is None
+            or source_set is None
+            or case_row[0] != snapshot.get("id")
+            or snapshot.get("case_id") != case_id
+            or snapshot.get("source_set_id") != source_set.get("id")
+            or source_set.get("case_id") != case_id
+            or authority.get("accepted_snapshot_digest") != digest(snapshot)
+            or authority.get("source_set_digest") != digest(source_set)
+        ):
+            raise ValueError("DELIVERABLE_FROZEN_AUTHORITY_STALE")
+        for evidence in payload.get("evidence") or []:
+            cursor.execute(
+                "SELECT record, withdrawn FROM sources WHERE id=%s AND case_id=%s",
+                (evidence.get("source_id"), case_id),
+            )
+            row = cursor.fetchone()
+            source = row[0] if row else None
+            available = {
+                block.get("block_id") for block in (source or {}).get("blocks", [])
+            }
+            if (
+                source is None
+                or row[1]
+                or source.get("sha256") != evidence.get("sha256")
+                or not set(evidence.get("block_ids") or []).issubset(available)
+            ):
+                raise ValueError("DELIVERABLE_FROZEN_AUTHORITY_STALE")
+        selection = (payload.get("content") or {}).get("model_selection")
+        if selection is None:
+            return
+        cursor.execute(
+            "SELECT record FROM model_builds WHERE case_id=%s AND status='READY' "
+            "ORDER BY authority_order DESC LIMIT 1",
+            (case_id,),
+        )
+        build_row = cursor.fetchone()
+        current_build = build_row[0] if build_row else None
+        cursor.execute(
+            "SELECT revision.record FROM model_revision_heads AS head "
+            "JOIN model_revisions AS revision ON revision.id=head.revision_id "
+            "WHERE head.case_id=%s",
+            (case_id,),
+        )
+        head_row = cursor.fetchone()
+        head = head_row[0] if head_row else None
+        active = (
+            head
+            if head is not None
+            and current_build is not None
+            and head.get("build_id") == current_build.get("id")
+            else None
+        )
+        model = payload.get("model") or {}
+        if selection.get("kind") == "ANALYST_REVISION":
+            valid = (
+                active is not None
+                and active.get("id") == selection.get("revision_id")
+                and active.get("build_id") == selection.get("build_id")
+                and model.get("revision_id") == active.get("id")
+                and model.get("build_id") == current_build.get("id")
+            )
+        else:
+            valid = (
+                active is None
+                and current_build is not None
+                and current_build.get("id") == selection.get("build_id")
+                and model.get("build_id") == current_build.get("id")
+            )
+        if not valid:
+            raise ValueError("DELIVERABLE_FROZEN_AUTHORITY_STALE")
+
+    def append_frozen_deliverable(
+        self,
+        case_id: str,
+        pathway: str,
+        actor: str,
+        expected_draft_id: str,
+        expected_draft_version: int,
+        expected_draft_digest: str,
+        value: Record,
+        exports: dict[str, Record],
+    ) -> Record:
+        if set(exports) != {"md", "pdf", "xlsx"}:
+            raise ValueError("DELIVERABLE_EXPORT_SET_INVALID")
+        saved = copy.deepcopy(value)
+        saved.update(
+            id=_new_id("frozen"),
+            case_id=case_id,
+            pathway=pathway,
+            draft_version=expected_draft_version,
+            status="FROZEN",
+            frozen_by=actor,
+            frozen_at=now_iso(),
+            approved_by=None,
+            approved_at=None,
+            approval_comment=None,
+            superseded_by_id=None,
+            change_request=None,
+        )
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM cases WHERE id=%s FOR UPDATE", (case_id,))
+                if cursor.fetchone() is None:
+                    raise ValueError("CASE_NOT_FOUND")
+                cursor.execute(
+                    "SELECT value FROM deliverable_draft_revisions "
+                    "WHERE case_id=%s AND pathway=%s ORDER BY version DESC LIMIT 1",
+                    (case_id, pathway),
+                )
+                row = cursor.fetchone()
+                current = copy.deepcopy(row[0]) if row else None
+                if (
+                    current is None
+                    or current.get("id") != expected_draft_id
+                    or current.get("version") != expected_draft_version
+                    or current.get("digest") != expected_draft_digest
+                    or saved.get("payload", {}).get("draft")
+                    != {
+                        "id": expected_draft_id,
+                        "version": expected_draft_version,
+                        "digest": expected_draft_digest,
+                    }
+                ):
+                    raise ValueError("DELIVERABLE_DRAFT_STALE")
+                self._assert_frozen_authority(
+                    cursor, {**saved, "case_id": case_id, "pathway": pathway}
+                )
+                cursor.execute(
+                    "SELECT id FROM frozen_deliverables "
+                    "WHERE case_id=%s AND pathway=%s AND draft_version=%s",
+                    (case_id, pathway, expected_draft_version),
+                )
+                existing_row = cursor.fetchone()
+                existing = (
+                    self._frozen_record(cursor, existing_row[0])
+                    if existing_row is not None
+                    else None
+                )
+                if existing is not None:
+                    if frozen_submission_matches(existing, value, exports):
+                        return copy.deepcopy(existing)
+                    raise FrozenDeliverableConflictError(existing)
+                cursor.execute(
+                    "INSERT INTO frozen_deliverables("
+                    "id, case_id, pathway, draft_version, status, authority_identity, "
+                    "model_identity, template_identity, render_identity, digest, value, "
+                    "frozen_by, frozen_at, draft_id, preview_digest, input_fingerprint) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s)",
+                    (
+                        saved["id"],
+                        case_id,
+                        pathway,
+                        expected_draft_version,
+                        saved["status"],
+                        Jsonb(saved["authority_identity"]),
+                        Jsonb(saved["model_identity"])
+                        if saved.get("model_identity") is not None
+                        else None,
+                        Jsonb(saved["template_identity"]),
+                        Jsonb(saved["render_identity"]),
+                        saved["digest"],
+                        Jsonb(saved),
+                        actor,
+                        saved["frozen_at"],
+                        expected_draft_id,
+                        saved["preview_digest"],
+                        saved["input_fingerprint"],
+                    ),
+                )
+                saved_exports: dict[str, Record] = {}
+                for format_name, metadata in exports.items():
+                    exported = copy.deepcopy(metadata)
+                    exported.update(
+                        deliverable_id=saved["id"], created_at=saved["frozen_at"]
+                    )
+                    cursor.execute(
+                        "INSERT INTO deliverable_exports("
+                        "deliverable_id, format, vault_key, sha256, size, "
+                        "renderer_identity, created_at) VALUES ("
+                        "%s, %s, %s, %s, %s, %s, %s)",
+                        (
+                            saved["id"],
+                            format_name,
+                            exported["vault_key"],
+                            exported["sha256"],
+                            exported["size"],
+                            Jsonb(exported["renderer_identity"]),
+                            exported["created_at"],
+                        ),
+                    )
+                    saved_exports[format_name] = exported
+                saved["exports"] = saved_exports
+                cursor.execute(
+                    "UPDATE frozen_deliverables SET value=%s WHERE id=%s",
+                    (Jsonb(saved), saved["id"]),
+                )
+                self._audit(
+                    cursor,
+                    "deliverable.frozen",
+                    actor,
+                    case_id=case_id,
+                    pathway=pathway,
+                    deliverable_id=saved["id"],
+                    draft_version=expected_draft_version,
+                )
+        return copy.deepcopy(saved)
+
+    def list_frozen_deliverables(
+        self, case_id: str, pathway: str
+    ) -> list[Record]:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM frozen_deliverables WHERE case_id=%s AND pathway=%s "
+                    "ORDER BY frozen_at, id",
+                    (case_id, pathway),
+                )
+                ids = [row[0] for row in cursor.fetchall()]
+                return [
+                    record
+                    for deliverable_id in ids
+                    if (record := self._frozen_record(cursor, deliverable_id)) is not None
+                ]
+
+    def get_frozen_deliverable(self, deliverable_id: str) -> Record | None:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                return self._frozen_record(cursor, deliverable_id)
+
+    def file_deliverable(
+        self,
+        case_id: str,
+        deliverable_id: str,
+        actor: str,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+    ) -> Record:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM cases WHERE id=%s FOR UPDATE", (case_id,))
+                if cursor.fetchone() is None:
+                    raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+                record = self._frozen_record(cursor, deliverable_id)
+                if record is None or record.get("case_id") != case_id:
+                    raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+                self._assert_frozen_identity(
+                    cursor,
+                    record,
+                    expected_preview_digest,
+                    expected_input_fingerprint,
+                )
+                approved_at = now_iso()
+                cursor.execute(
+                    "SELECT id, value FROM frozen_deliverables "
+                    "WHERE case_id=%s AND pathway=%s AND status='FILED' FOR UPDATE",
+                    (case_id, record["pathway"]),
+                )
+                for prior_id, prior_value in cursor.fetchall():
+                    prior = copy.deepcopy(prior_value)
+                    prior.update(status="SUPERSEDED", superseded_by_id=deliverable_id)
+                    cursor.execute(
+                        "UPDATE frozen_deliverables SET status='SUPERSEDED', "
+                        "superseded_by_id=%s, value=%s WHERE id=%s",
+                        (deliverable_id, Jsonb(prior), prior_id),
+                    )
+                record.update(
+                    status="FILED",
+                    approved_by=actor,
+                    approved_at=approved_at,
+                    approval_comment=None,
+                )
+                cursor.execute(
+                    "UPDATE frozen_deliverables SET status='FILED', approved_by=%s, "
+                    "approved_at=%s, approval_comment=NULL, value=%s WHERE id=%s",
+                    (actor, approved_at, Jsonb(record), deliverable_id),
+                )
+                self._audit(
+                    cursor,
+                    "deliverable.filed",
+                    actor,
+                    case_id=case_id,
+                    pathway=record["pathway"],
+                    deliverable_id=deliverable_id,
+                )
+                return copy.deepcopy(record)
+
+    def request_deliverable_changes(
+        self,
+        case_id: str,
+        deliverable_id: str,
+        actor: str,
+        expected_preview_digest: str,
+        expected_input_fingerprint: str,
+        comment: str,
+    ) -> tuple[Record, Record]:
+        if not comment.strip():
+            raise ValueError("DELIVERABLE_CHANGE_COMMENT_REQUIRED")
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM cases WHERE id=%s FOR UPDATE", (case_id,))
+                if cursor.fetchone() is None:
+                    raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+                record = self._frozen_record(cursor, deliverable_id)
+                if record is None or record.get("case_id") != case_id:
+                    raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+                self._assert_frozen_identity(
+                    cursor,
+                    record,
+                    expected_preview_digest,
+                    expected_input_fingerprint,
+                )
+                cursor.execute(
+                    "SELECT value FROM deliverable_draft_revisions "
+                    "WHERE case_id=%s AND pathway=%s ORDER BY version DESC LIMIT 1",
+                    (case_id, record["pathway"]),
+                )
+                current = copy.deepcopy(cursor.fetchone()[0])
+                requested_at = now_iso()
+                change_request = {
+                    "comment": comment.strip(),
+                    "requested_by": actor,
+                    "requested_at": requested_at,
+                    "frozen_deliverable_id": deliverable_id,
+                }
+                replacement = copy.deepcopy(current)
+                replacement.update(
+                    id=_new_id("deliverable"),
+                    version=current["version"] + 1,
+                    author=actor,
+                    created_at=requested_at,
+                    change_request=change_request,
+                )
+                cursor.execute(
+                    "INSERT INTO deliverable_draft_revisions("
+                    "id, case_id, pathway, version, template_id, template_version, "
+                    "digest, value, author, created_at) VALUES ("
+                    "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        replacement["id"],
+                        case_id,
+                        record["pathway"],
+                        replacement["version"],
+                        replacement["template_id"],
+                        replacement["template_version"],
+                        replacement["digest"],
+                        Jsonb(replacement),
+                        actor,
+                        requested_at,
+                    ),
+                )
+                record.update(status="CHANGES_REQUESTED", change_request=change_request)
+                cursor.execute(
+                    "UPDATE frozen_deliverables SET status='CHANGES_REQUESTED', "
+                    "change_request=%s, value=%s WHERE id=%s",
+                    (Jsonb(change_request), Jsonb(record), deliverable_id),
+                )
+                self._audit(
+                    cursor,
+                    "deliverable.draft_versioned",
+                    actor,
+                    case_id=case_id,
+                    pathway=record["pathway"],
+                    deliverable_id=replacement["id"],
+                    version=replacement["version"],
+                    reason="CHANGES_REQUESTED",
+                )
+                self._audit(
+                    cursor,
+                    "deliverable.changes_requested",
+                    actor,
+                    case_id=case_id,
+                    pathway=record["pathway"],
+                    deliverable_id=deliverable_id,
+                    replacement_draft_id=replacement["id"],
+                    replacement_version=replacement["version"],
+                )
+                return copy.deepcopy(record), copy.deepcopy(replacement)
+
+    def record_deliverable_export_download(
+        self, deliverable_id: str, case_id: str, actor: str, format_name: str
+    ) -> None:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM frozen_deliverables WHERE id=%s AND case_id=%s",
+                    (deliverable_id, case_id),
+                )
+                if cursor.fetchone() is None:
+                    raise ValueError("DELIVERABLE_FROZEN_NOT_FOUND")
+                self._audit(
+                    cursor,
+                    "deliverable.export_downloaded",
+                    actor,
+                    case_id=case_id,
+                    deliverable_id=deliverable_id,
+                    format=format_name,
+                )
 
     def _append_version(
         self,

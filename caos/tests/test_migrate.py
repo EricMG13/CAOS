@@ -292,6 +292,160 @@ def test_model_revision_migration_backfills_immutable_build_authority_order(
                 )
 
 
+def test_filed_deliverable_migration_upgrades_008_and_backfills_eligible_legacy(
+    tmp_path: Path,
+) -> None:
+    database_url = os.getenv("CAOS_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("CAOS_TEST_DATABASE_URL is required for Phase 6 migration proof")
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+    from psycopg.types.json import Jsonb
+
+    database_url = database_url.replace("postgresql+psycopg://", "postgresql://")
+    schema = f"filed_deliverables_{uuid.uuid4().hex}"
+    root = Path(__file__).parents[1] / "server" / "migrations"
+    staged = tmp_path / "filed-migrations"
+    staged.mkdir()
+    for migration in sorted(root.glob("00[1-8]_*.sql")):
+        shutil.copy2(migration, staged / migration.name)
+    with psycopg.connect(database_url) as admin:
+        with admin.cursor() as cursor:
+            cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    scoped_url = make_conninfo(database_url, options=f"-c search_path={schema}")
+    try:
+        with psycopg.connect(scoped_url) as connection:
+            assert apply_migrations(connection, staged)
+            legacy_record = {
+                "id": "report_legacy",
+                "case_id": "case_legacy",
+                "status": "APPROVED",
+                "digest": "a" * 64,
+                "snapshot_digest": "b" * 64,
+                "preview_digest": "c" * 64,
+                "input_fingerprint": "d" * 64,
+                "content": {
+                    "snapshot_id": "snapshot_legacy",
+                    "model": None,
+                },
+                "markdown": "# Legacy",
+            }
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO cases(id, name, issuer, sector, created_by) "
+                    "VALUES ('case_legacy', 'Legacy', 'Issuer', 'Testing', 'analyst')"
+                )
+                cursor.execute(
+                    "INSERT INTO reports(id, case_id, status, digest, snapshot_digest, "
+                    "value, created_by, preview_digest, input_fingerprint, approved_by, "
+                    "approved_at, approval_comment, record) VALUES ("
+                    "'report_legacy', 'case_legacy', 'APPROVED', %s, %s, %s, 'analyst', "
+                    "%s, %s, 'approver', now(), 'Approved legacy', %s)",
+                    (
+                        "a" * 64,
+                        "b" * 64,
+                        Jsonb(legacy_record),
+                        "c" * 64,
+                        "d" * 64,
+                        Jsonb(legacy_record),
+                    ),
+                )
+            shutil.copy2(
+                root / "009_filed_deliverables.sql",
+                staged / "009_filed_deliverables.sql",
+            )
+            assert apply_migrations(connection, staged) == (
+                "009_filed_deliverables",
+            )
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pathway, status, value #>> '{legacy_report,id}' "
+                    "FROM frozen_deliverables WHERE id='report_legacy'"
+                )
+                assert cursor.fetchone() == (
+                    "LEGACY_REPORT",
+                    "FILED",
+                    "report_legacy",
+                )
+                cursor.execute(
+                    "SELECT count(*) FROM deliverable_exports "
+                    "WHERE deliverable_id='report_legacy'"
+                )
+                assert cursor.fetchone()[0] == 0
+                cursor.execute(
+                    "DELETE FROM schema_migrations "
+                    "WHERE version='009_filed_deliverables'"
+                )
+            assert apply_migrations(connection, staged) == (
+                "009_filed_deliverables",
+            )
+            assert apply_migrations(connection, staged) == ()
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT count(*) FROM frozen_deliverables "
+                    "WHERE id='report_legacy'"
+                )
+                assert cursor.fetchone()[0] == 1
+                cursor.execute(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conrelid='frozen_deliverables'::regclass "
+                    "AND conname='frozen_deliverables_status_check'"
+                )
+                definition = cursor.fetchone()[0]
+                assert "CHANGES_REQUESTED" in definition
+                assert "SUPERSEDED" in definition
+            shutil.copy2(
+                root / "010_unique_frozen_draft.sql",
+                staged / "010_unique_frozen_draft.sql",
+            )
+            assert apply_migrations(connection, staged) == (
+                "010_unique_frozen_draft",
+            )
+            assert apply_migrations(connection, staged) == ()
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conrelid='frozen_deliverables'::regclass "
+                    "AND conname='frozen_deliverables_exact_draft_key'"
+                )
+                assert cursor.fetchone()[0] == (
+                    "UNIQUE (case_id, pathway, draft_version)"
+                )
+                cursor.execute("SAVEPOINT duplicate_frozen_draft")
+                with pytest.raises(psycopg.errors.UniqueViolation):
+                    cursor.execute(
+                        "INSERT INTO frozen_deliverables("
+                        "id, case_id, pathway, draft_version, status, "
+                        "authority_identity, model_identity, template_identity, "
+                        "render_identity, digest, value, frozen_by, frozen_at, "
+                        "approved_by, approved_at, approval_comment, draft_id, "
+                        "preview_digest, input_fingerprint, superseded_by_id, "
+                        "change_request) SELECT 'report_legacy_duplicate', "
+                        "case_id, pathway, draft_version, status, authority_identity, "
+                        "model_identity, template_identity, render_identity, digest, "
+                        "value, frozen_by, frozen_at, approved_by, approved_at, "
+                        "approval_comment, draft_id, preview_digest, "
+                        "input_fingerprint, superseded_by_id, change_request "
+                        "FROM frozen_deliverables WHERE id='report_legacy'"
+                    )
+                cursor.execute("ROLLBACK TO SAVEPOINT duplicate_frozen_draft")
+                cursor.execute(
+                    "DELETE FROM schema_migrations "
+                    "WHERE version='010_unique_frozen_draft'"
+                )
+            assert apply_migrations(connection, staged) == (
+                "010_unique_frozen_draft",
+            )
+            assert apply_migrations(connection, staged) == ()
+    finally:
+        with psycopg.connect(database_url) as admin:
+            with admin.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
+                )
+
+
 def test_normalized_app_never_reads_or_writes_a_post_migration_legacy_row(
     tmp_path: Path,
 ) -> None:

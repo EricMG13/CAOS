@@ -438,6 +438,28 @@ class DeliverableDraftRequest(StrictModel):
     blocks: list[CanonicalDeliverableBlock] = Field(min_length=1, max_length=120)
 
 
+class FreezeDeliverableRequest(StrictModel):
+    draft_id: str = Field(min_length=1, max_length=120)
+    draft_version: int = Field(ge=1)
+    draft_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class FileDeliverableRequest(StrictModel):
+    preview_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RequestDeliverableChangesRequest(FileDeliverableRequest):
+    comment: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("comment")
+    @classmethod
+    def non_blank_comment(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("change-request comment must not be blank")
+        return value.strip()
+
+
 class RVRow(StrictModel):
     instrument: str = Field(min_length=1, max_length=160)
     observation_date: str = Field(min_length=10, max_length=10)
