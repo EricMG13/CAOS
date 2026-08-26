@@ -167,6 +167,8 @@ try {
   let expectedAuthorityFailureURL = "";
   let expectedAuthorityFailureSeen = false;
   let expectedNotFoundURL = "";
+  let expectedPreviewValidationFailures = 0;
+  let expectedSignOffConflicts = 0;
   page.on("console", (message) => {
     if (message.type() !== "error") return;
     if (message.location().url === expectedNotFoundURL
@@ -178,6 +180,18 @@ try {
       && message.location().url === expectedAuthorityFailureURL
       && message.text() === "Failed to load resource: the server responded with a status of 503 (Service Unavailable)") {
       expectedAuthorityFailureSeen = true;
+      return;
+    }
+    if (expectedPreviewValidationFailures > 0
+      && message.location().url.endsWith(`/api/cases/${caseRecord.id}/models/previews`)
+      && message.text() === "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)") {
+      expectedPreviewValidationFailures -= 1;
+      return;
+    }
+    if (expectedSignOffConflicts > 0
+      && message.location().url.endsWith(`/api/cases/${caseRecord.id}/model-revisions/sign-off`)
+      && message.text() === "Failed to load resource: the server responded with a status of 409 (Conflict)") {
+      expectedSignOffConflicts -= 1;
       return;
     }
     errors.push(message.text());
@@ -703,9 +717,83 @@ try {
       })),
     },
   };
+  const registryVersion = "cp-model-assumptions.v1";
+  const registryDigest = "f".repeat(64);
+  const assumptionDefinitionSpecs = [
+    ["operating.revenue_growth.division_1", "Division 1 revenue growth", "OPERATING", "NOT_APPLICABLE", null],
+    ["operating.revenue_growth.division_2", "Division 2 revenue growth", "OPERATING", "NOT_APPLICABLE", null],
+    ["operating.revenue_growth.division_3", "Division 3 revenue growth", "OPERATING", "NOT_APPLICABLE", null],
+    ["operating.consolidated_revenue_growth", "Revenue growth", "OPERATING", "READY", null],
+    ["operating.adjusted_ebitda_margin", "Adjusted EBITDA margin", "OPERATING", "READY", null],
+    ["operating.identified_addbacks", "Identified add-backs", "OPERATING", "READY", null],
+    ["cash_flow.capex_pct_revenue", "Capital expenditure as percent of revenue", "CASH FLOW", "READY", null],
+    ["cash_flow.working_capital_pct_revenue", "Working capital change as percent of revenue", "CASH FLOW", "READY", null],
+    ["cash_flow.cash_tax_pct_revenue", "Cash taxes as percent of revenue", "CASH FLOW", "READY", null],
+    ["cash_flow.lease_cash_pct_revenue", "Lease cash flow as percent of revenue", "CASH FLOW", "READY", null],
+    ["rates.base_rate", "Base interest rate", "RATES", "READY", null],
+    ["rates.debt_spread", "Debt spread or coupon", "RATES", "READY", null],
+    ["capital.contractual_amortization", "Contractual debt amortization", "CAPITAL", "READY", null],
+    ["capital.debt_issuance", "Debt issuance", "CAPITAL", "READY", null],
+    ["capital.debt_repayment", "Discretionary debt repayment", "CAPITAL", "READY", null],
+    ["capital.refinancing_proceeds", "Refinancing proceeds", "CAPITAL", "READY", null],
+    ["capital.acquisitions_disposals", "Acquisitions and disposals", "CAPITAL", "READY", null],
+    ["capital.net_equity_issue_repay", "Net equity issuance or repurchase", "CAPITAL", "READY", null],
+    ["capital.dividends_paid", "Dividends paid", "CAPITAL", "READY", null],
+    ["capital.other_investing_financing", "Other investing and financing", "CAPITAL", "READY", null],
+    ["liquidity.minimum_operating_cash", "Minimum operating cash", "LIQUIDITY", "UNAVAILABLE", "MINIMUM_CASH_DEFINITION_UNAVAILABLE"],
+    ["liquidity.undrawn_revolver", "Accessible undrawn revolver", "LIQUIDITY", "UNAVAILABLE", "ACCESSIBLE_LIQUIDITY_DEFINITION_UNAVAILABLE"],
+    ["covenant.max_total_leverage", "Maximum total leverage covenant", "COVENANT", "UNAVAILABLE", "COVENANT_DEFINITION_UNAVAILABLE"],
+  ];
+  const assumptionDefinitions = assumptionDefinitionSpecs.map(([assumptionId, label, family, status, gapCode]) => ({
+    assumption_id: assumptionId,
+    label,
+    family,
+    description: `Canonical ${String(label).toLowerCase()} assumption.`,
+    driver_id: assumptionId.split(".").at(-1),
+    slot_id: assumptionId.includes("division_") ? assumptionId.split(".").at(-1).toUpperCase() : null,
+    value_type: "DECIMAL",
+    unit: assumptionId.includes("rate") || assumptionId.includes("growth") || assumptionId.includes("pct_") || assumptionId.includes("margin") ? "PERCENT_DECIMAL" : "CURRENCY_MM",
+    cases: ["BASE", "DOWNSIDE"],
+    periods: ["FY2025", "FY2026", "FY2027"],
+    default: { status, value: status === "READY" ? 0 : null },
+    lineage: { authority_module: "CP-2G" },
+    sensitivity_default: { range: "0.04", step: "0.01" },
+    hard_min: assumptionId === "operating.consolidated_revenue_growth" ? "-0.75" : "-100000",
+    hard_max: assumptionId === "operating.consolidated_revenue_growth" ? "2" : "100000",
+    required: !["UNAVAILABLE", "NOT_APPLICABLE"].includes(status),
+    allowed_statuses: status === "UNAVAILABLE" ? ["READY", "UNAVAILABLE"] : status === "NOT_APPLICABLE" ? ["READY", "NOT_APPLICABLE"] : ["READY"],
+    degradation: gapCode ? { behavior: "NULL_WITH_NAMED_GAP", gap_code: gapCode } : null,
+    affected_outputs: ["revenue", "total_leverage"],
+  }));
+  const assumptionDefinition = assumptionDefinitions.find((item) => item.assumption_id === "operating.consolidated_revenue_growth");
+  assert.equal(assumptionDefinitions.length, 23, "Model Builder fixture drifted from the methodology-owned full registry");
+  const assumptionDefaults = assumptionDefinitions.flatMap((definition) => ["BASE", "DOWNSIDE"].flatMap((caseName) => ["FY2025", "FY2026", "FY2027"].map((periodId) => {
+    const spec = assumptionDefinitionSpecs.find(([assumptionId]) => assumptionId === definition.assumption_id);
+    const status = spec[3];
+    const gapCode = spec[4];
+    const value = status === "READY" ? definition.assumption_id === assumptionDefinition.assumption_id ? caseName === "BASE" ? "0.03" : "-0.02" : "0" : null;
+    return { assumption_id: definition.assumption_id, case: caseName, period_id: periodId, unit: definition.unit, status, value, gap_code: gapCode, default_value: value, default_status: status, default_gap_code: gapCode, source_context: status === "READY" ? { authority_module: "CP-2G", gap_code: "", provenance: [{ source_id: "SRC-1", source_locator: "page 42", as_of: "2026-08-24" }] } : { authority_module: "CP-2G", gap_code: gapCode || "NOT_APPLICABLE", provenance: [] }, source_context_digest: "9".repeat(64) };
+  })));
+  const assumptionRegistry = () => ({ version: registryVersion, digest: registryDigest, definitions: assumptionDefinitions, build_id: inventoryModelBuildId, accepted_snapshot_id: accepted.id, input_fingerprint: "b".repeat(64), defaults: assumptionDefaults });
+  const signedAssumptions = assumptionDefaults.map((row) => row.assumption_id === assumptionDefinition.assumption_id && row.case === "BASE" && row.period_id === "FY2025" ? { ...row, value: "0.02" } : row);
+  let modelRevisions = [{ id: `revision_signed_${fixtureSuffix}`, case_id: caseRecord.id, build_id: modelBuildId, accepted_snapshot_id: accepted.id, build_input_fingerprint: "b".repeat(64), build_payload_digest: "c".repeat(64), registry_version: registryVersion, registry_digest: registryDigest, calculation_contract_version: "cp-model-calculation.v1", effective_assumptions: signedAssumptions, assumptions_digest: "a".repeat(64), outputs: { total_leverage: 4.2, revenue: { FY2025: 1180 } }, outputs_digest: "7".repeat(64), preview_digest: "8".repeat(64), parent_revision_id: null, note: "Previously signed analyst assumptions.", revision_number: 1, signed_by: "approver@example.com", signed_at: "2026-08-24T12:00:00Z", export: { status: "READY", error: null, filename: "northstar-r1.xlsx", sha256: "5".repeat(64), size: 4096 }, state: "ACTIVE" }];
+  let previewPosts = 0;
+  let previewFails = false;
+  let signOffPosts = 0;
+  let signOffConflicts = false;
+  let modelRole = "ANALYST";
   const modelsPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models`;
   const worksheetPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/${modelBuildId}/worksheet`;
   const exportPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/${modelBuildId}/export`;
+  const registryPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/assumption-registry`;
+  const revisionsPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/model-revisions`;
+  const previewPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/previews`;
+  const signOffPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/model-revisions/sign-off`;
+  const rebasePath = (url) => url.pathname === `/api/cases/${caseRecord.id}/model-revisions/rebase-preview`;
+  const sensitivityPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/sensitivities/one-way`;
+  const scenarioPath = (url) => url.pathname === `/api/cases/${caseRecord.id}/models/scenarios`;
+  const identityPath = (url) => url.pathname === "/api/me";
+  await page.route(identityPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ role: modelRole }) }));
   await page.route(modelsPath, async (route) => {
     if (route.request().method() === "POST") {
       modelPosts += 1; modelState = "QUEUED";
@@ -731,6 +819,47 @@ try {
     exportPosts += 1; modelExportState = "QUEUED";
     await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ build: modelBuild(), queued: true }) });
   });
+  await page.route(registryPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(assumptionRegistry()) }));
+  await page.route(revisionsPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ revisions: modelRevisions }) }));
+  await page.route(previewPath, async (route) => {
+    previewPosts += 1;
+    const requestBody = route.request().postDataJSON();
+    if (previewFails) {
+      expectedPreviewValidationFailures += 1;
+      await route.fulfill({ status: 422, contentType: "application/json", body: JSON.stringify({ detail: "MODEL_PREVIEW_CALCULATION_FAILED" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ case_id: caseRecord.id, build_id: modelBuildId, accepted_snapshot_id: accepted.id, build_input_fingerprint: "b".repeat(64), build_payload_digest: "c".repeat(64), registry_version: registryVersion, registry_digest: registryDigest, calculation_contract_version: "cp-model-calculation.v1", parent_revision_id: requestBody.parent_revision_id, draft_generation: requestBody.draft_generation, effective_assumptions: requestBody.assumptions, assumptions_digest: "1".repeat(64), outputs: { total_leverage: 4.1, revenue: { FY2025: 1194.8 } }, outputs_digest: "2".repeat(64), deltas: { total_leverage: -0.1 }, preview_digest: "3".repeat(64) }) });
+  });
+  await page.route(signOffPath, async (route) => {
+    signOffPosts += 1;
+    const requestBody = route.request().postDataJSON();
+    if (signOffConflicts) {
+      expectedSignOffConflicts += 1;
+      const intervening = { id: `revision_intervening_${fixtureSuffix}`, case_id: caseRecord.id, build_id: modelBuildId, accepted_snapshot_id: accepted.id, build_input_fingerprint: "b".repeat(64), build_payload_digest: "c".repeat(64), registry_version: registryVersion, registry_digest: registryDigest, calculation_contract_version: "cp-model-calculation.v1", effective_assumptions: assumptionDefaults, assumptions_digest: "6".repeat(64), outputs: { total_leverage: 4.2, revenue: { FY2025: 1180 } }, outputs_digest: "7".repeat(64), preview_digest: "8".repeat(64), parent_revision_id: null, note: "Intervening committee update.", revision_number: 1, signed_by: "approver@example.com", signed_at: "2026-08-24T13:01:00Z", export: { status: "READY", error: null, filename: "northstar-r1.xlsx", sha256: "5".repeat(64), size: 4096 }, state: "ACTIVE" };
+      modelRevisions = [intervening];
+      signOffConflicts = false;
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ detail: { current: intervening, current_build: modelBuild() } }) });
+      return;
+    }
+    const revision = { id: `revision_${fixtureSuffix}`, case_id: caseRecord.id, build_id: modelBuildId, accepted_snapshot_id: accepted.id, build_input_fingerprint: "b".repeat(64), build_payload_digest: "c".repeat(64), registry_version: registryVersion, registry_digest: registryDigest, calculation_contract_version: "cp-model-calculation.v1", effective_assumptions: requestBody.assumptions, assumptions_digest: "1".repeat(64), outputs: { total_leverage: 4.1, revenue: { FY2025: 1194.8 } }, outputs_digest: "2".repeat(64), preview_digest: requestBody.preview_digest, parent_revision_id: requestBody.parent_revision_id, note: requestBody.note, revision_number: modelRevisions.length + 1, signed_by: "analyst@example.com", signed_at: "2026-08-24T13:02:00Z", export: { status: "READY", error: null, filename: "northstar-r2.xlsx", sha256: "5".repeat(64), size: 4096 }, state: "ACTIVE" };
+    modelRevisions = [revision, ...modelRevisions.map((item) => ({ ...item, state: "SUPERSEDED" }))];
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(revision) });
+  });
+  await page.route(rebasePath, async (route) => {
+    const requestBody = route.request().postDataJSON();
+    const activeRevision = modelRevisions.find((item) => item.state === "ACTIVE");
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ source_revision_id: requestBody.revision_id, source_build_id: modelBuildId, build_id: modelBuildId, draft_generation: requestBody.draft_generation, compatible: [{ assumption_id: assumptionDefinition.assumption_id }], changed: [{ assumption_id: assumptionDefinition.assumption_id, reason: "SOURCE_CONTEXT_CHANGED" }], invalidated: [], candidate_assumptions: activeRevision?.effective_assumptions || assumptionDefaults, preview: null }) });
+  });
+  await page.route(sensitivityPath, async (route) => {
+    const requestBody = route.request().postDataJSON();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ case_id: caseRecord.id, build_id: modelBuildId, base_revision_id: requestBody.base_revision_id, registry_version: registryVersion, registry_digest: registryDigest, assumption_id: requestBody.assumption_id, case: requestBody.case, period_scope: requestBody.period_scope, output_id: requestBody.output_id, draft_generation: requestBody.draft_generation, points: [{ value: "0.01", outputs: { BASE: { FY2025: { total_leverage: 4.3 }, FY2026: { total_leverage: 4.2 }, FY2027: { total_leverage: null } }, DOWNSIDE: { FY2025: { total_leverage: 5.1 }, FY2026: { total_leverage: 5.4 }, FY2027: { total_leverage: 5.8 } } }, deltas: { BASE: { FY2025: { total_leverage: 0.1 }, FY2026: { total_leverage: 0 }, FY2027: { total_leverage: null } }, DOWNSIDE: { FY2025: { total_leverage: 0.2 }, FY2026: { total_leverage: 0.5 }, FY2027: { total_leverage: 0.9 } } } }, { value: "0.05", outputs: { BASE: { FY2025: { total_leverage: 3.9 }, FY2026: { total_leverage: 3.7 }, FY2027: { total_leverage: 3.5 } }, DOWNSIDE: { FY2025: { total_leverage: 4.8 }, FY2026: { total_leverage: 5 }, FY2027: { total_leverage: 5.2 } } }, deltas: { BASE: { FY2025: { total_leverage: -0.3 }, FY2026: { total_leverage: -0.5 }, FY2027: { total_leverage: -0.7 } }, DOWNSIDE: { FY2025: { total_leverage: -0.1 }, FY2026: { total_leverage: 0.1 }, FY2027: { total_leverage: 0.3 } } } }], breakpoint: { value: "0.01", threshold: { case: requestBody.case, period_id: "FY2026", threshold_id: "covenant.max_total_leverage", threshold_value: 5, observed_value: 5.4 } } }) });
+  });
+  await page.route(scenarioPath, async (route) => {
+    const requestBody = route.request().postDataJSON();
+    const values = assumptionDefaults.map((row) => requestBody.shocks.find((shock) => shock.assumption_id === row.assumption_id && shock.case === row.case && shock.period_id === row.period_id) ? { ...row, value: requestBody.shocks.find((shock) => shock.assumption_id === row.assumption_id && shock.case === row.case && shock.period_id === row.period_id).value } : row);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ draft_generation: requestBody.draft_generation, baseline: { total_leverage: 4.2 }, scenario: { effective_assumptions: values, outputs: { total_leverage: 4.1 }, deltas: { total_leverage: -0.1 } }, scenario_digest: "4".repeat(64) }) });
+  });
   await page.goto(`${baseURL}/model-builder/?case=${caseRecord.id}`, { waitUntil: "networkidle" });
   const buildButton = page.getByRole("button", { name: "Build model" });
   await buildButton.click();
@@ -743,6 +872,8 @@ try {
   modelGetDelay = 0;
   assert.equal(maxModelGetsInFlight, 1, "Model Builder overlapped slow poll requests");
   modelState = "READY";
+  await page.getByText("Active Analyst Model · R1", { exact: true }).waitFor({ timeout: 4000 });
+  await page.getByRole("button", { name: "Application Model Build" }).click();
   await page.getByRole("tab", { name: "Credit Snapshot" }).waitFor({ timeout: 4000 });
   const terminalGets = modelGets;
   await page.waitForTimeout(1800);
@@ -761,7 +892,7 @@ try {
   const firstTab = page.getByRole("tab", { name: "Credit Snapshot" });
   await firstTab.focus();
   await page.keyboard.press("ArrowRight");
-  assert.equal(await page.getByRole("tab", { name: "Model" }).getAttribute("aria-selected"), "true");
+  assert.equal(await page.getByRole("tablist", { name: "Model worksheets" }).getByRole("tab", { name: "Model" }).getAttribute("aria-selected"), "true");
   const formulaCell = page.getByRole("button", { name: /Show lineage for metric::leverage/ });
   await formulaCell.focus();
   await page.keyboard.press("Enter");
@@ -777,11 +908,157 @@ try {
   await page.waitForTimeout(1800);
   assert.equal(modelGets, exportTerminalGets, "Model Builder kept polling after export READY");
   assert.equal(worksheetGets, terminalWorksheetGets, "export polling reloaded an immutable worksheet");
+  const builderTablist = page.getByRole("tablist", { name: "Model Builder views" });
+  await builderTablist.getByRole("tab", { name: "Model" }).focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await builderTablist.getByRole("tab", { name: "Assumptions" }).getAttribute("aria-selected"), "true", "ArrowRight did not select the next Model Builder tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "model-builder-tab-assumptions", "ArrowRight did not move focus with Model Builder tab selection");
+  await page.keyboard.press("End");
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "model-builder-tab-history", "End did not focus History");
+  await page.keyboard.press("Home");
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "model-builder-tab-model", "Home did not focus Model");
+  await builderTablist.getByRole("tab", { name: "Assumptions" }).click();
+  const assumptionSelect = page.locator(".model-assumption-toolbar select").nth(1);
+  assert.equal(await assumptionSelect.locator("option").count(), 23, "Model Builder did not render the full methodology-owned registry");
+  const firstAssumption = page.getByLabel("Revenue growth BASE FY2025");
+  await firstAssumption.fill("0.04");
+  await firstAssumption.press("Enter");
+  const secondAssumption = page.getByLabel("Revenue growth BASE FY2026");
+  await secondAssumption.fill("0.05");
+  await secondAssumption.press("Enter");
+  const firstAssumptionRow = page.getByRole("region", { name: "Revenue growth BASE assumptions" }).getByRole("row").filter({ has: page.getByRole("rowheader", { name: "FY2025" }) });
+  await page.getByRole("columnheader", { name: "Effective minus Application build" }).waitFor();
+  assert.equal(await firstAssumptionRow.locator("td").nth(1).innerText(), "0.03", "application default was not rendered beside the effective assumption");
+  assert.equal(await firstAssumptionRow.locator("td").nth(2).innerText(), "0.01", "effective-minus-Application-build delta used the signed 0.02 value instead of the 0.03 build default");
+  const broadcast = page.getByLabel("All-year broadcast Revenue growth BASE");
+  assert.equal(await broadcast.inputValue(), "", "all-year broadcast did not clear for mixed year-specific values");
+  assert.equal(await broadcast.getAttribute("placeholder"), "Mixed", "all-year broadcast did not expose the Mixed state");
+  await firstAssumption.fill("3");
+  await firstAssumption.press("Enter");
+  assert.equal(await firstAssumption.inputValue(), "0.04", "rejected out-of-bounds edit did not revert the controlled input");
+  await page.getByText(/Enter a finite value from -0.75 to 2/).waitFor();
+  await broadcast.fill("0.04");
+  await broadcast.press("Enter");
+  assert.equal(await secondAssumption.inputValue(), "0.04", "all-year broadcast did not update every registry year");
+  await assumptionSelect.selectOption("liquidity.minimum_operating_cash");
+  assert.equal(await page.getByLabel("All-year broadcast Minimum operating cash BASE").isDisabled(), true, "UNAVAILABLE assumptions remained editable");
+  await page.getByText(/MINIMUM_CASH_DEFINITION_UNAVAILABLE/).first().waitFor();
+  await assumptionSelect.selectOption(assumptionDefinition.assumption_id);
+  await page.getByRole("button", { name: "Preview Draft Revision" }).click();
+  await page.getByText("Exact preview calculated. Review deltas, then add one Sign-Off Note.").waitFor();
+  assert.equal(previewPosts, 1, "preview was not calculated exactly once");
+  await firstAssumption.fill("0.05");
+  await firstAssumption.press("Enter");
+  await builderTablist.getByRole("tab", { name: "Model" }).click();
+  await page.getByRole("button", { name: "Active Analyst Model" }).click();
+  await page.getByText("Preview stale · last successful preview", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "Last successful preview outputs" }).getByText("4.1", { exact: true }).waitFor();
+  await builderTablist.getByRole("tab", { name: "Assumptions" }).click();
+  previewFails = true;
+  await page.getByRole("button", { name: "Preview Draft Revision" }).click();
+  await page.getByText("MODEL_PREVIEW_CALCULATION_FAILED", { exact: true }).waitFor();
+  await builderTablist.getByRole("tab", { name: "Model" }).click();
+  await page.getByText("Preview stale · last successful preview", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "Last successful preview outputs" }).getByText("4.1", { exact: true }).waitFor();
+  previewFails = false;
+  await builderTablist.getByRole("tab", { name: "Assumptions" }).click();
+  await page.getByRole("button", { name: "Preview Draft Revision" }).click();
+  await page.getByText("Exact preview calculated. Review deltas, then add one Sign-Off Note.").waitFor();
+  const signOffNote = page.getByLabel("Sign-Off Note *");
+  await signOffNote.fill("FY2025 growth updated for the accepted quarterly earnings release.");
+  signOffConflicts = true;
+  await page.getByRole("button", { name: "Sign Off Revision" }).click();
+  await page.getByText("Authority conflict", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Revenue growth BASE FY2025").inputValue(), "0.05", "409 authority refresh replaced the dirty local Draft Revision");
+  await page.getByRole("button", { name: "Review and rebase local Draft" }).click();
+  await page.getByText("Rebase Candidate calculated. Nothing has been stored.").waitFor();
+  await page.getByRole("button", { name: "Apply Rebase Candidate to Draft" }).click();
+  assert.equal(await page.getByLabel("Revenue growth BASE FY2025").inputValue(), "0.05", "same-build rebase dropped the local assumption shock");
+  await page.getByRole("button", { name: "Preview Draft Revision" }).click();
+  await page.getByLabel("Sign-Off Note *").fill("Rebased FY2025 growth after an intervening approved revision.");
+  await page.getByRole("button", { name: "Sign Off Revision" }).click();
+  await page.getByText("Active Analyst Model · R2").waitFor();
+  assert.equal(signOffPosts, 2, "conflict and recovered sign-off requests did not both reach the server seam");
+  await builderTablist.getByRole("tab", { name: "Assumptions" }).click();
+  await page.getByLabel("Revenue growth BASE FY2025").fill("0.06");
+  await page.getByLabel("Revenue growth BASE FY2025").press("Enter");
+  page.once("dialog", (dialog) => void dialog.dismiss());
+  await page.getByRole("combobox", { name: "Select case" }).selectOption(raceCase.id).catch(() => {});
+  assert.ok(page.url().includes(`case=${caseRecord.id}`), "dismissed dirty-draft warning changed the selected case");
+  const dirtyURL = page.url();
+  page.once("dialog", (dialog) => void dialog.dismiss());
+  await page.getByRole("link", { name: "Sources", exact: true }).first().click().catch(() => {});
+  assert.equal(page.url(), dirtyURL, "dismissed dirty-draft warning allowed internal workspace navigation");
+  let browserHistoryPromptCount = 0;
+  const dismissBrowserHistoryPrompt = (dialog) => {
+    browserHistoryPromptCount += 1;
+    void dialog.dismiss();
+  };
+  page.on("dialog", dismissBrowserHistoryPrompt);
+  await page.evaluate(() => window.history.back());
+  await page.waitForTimeout(250);
+  page.off("dialog", dismissBrowserHistoryPrompt);
+  assert.equal(browserHistoryPromptCount, 1, "canceling browser Back prompted more than once during the compensating history restoration");
+  assert.equal(page.url(), dirtyURL, "dismissed dirty-draft warning allowed browser history navigation");
+  assert.equal(await page.getByLabel("Revenue growth BASE FY2025").inputValue(), "0.06", "browser history restoration dropped the dirty local assumption value");
+  await builderTablist.getByRole("tab", { name: "Sensitivities" }).click();
+  await page.getByRole("button", { name: "Run Multi-Driver Scenario" }).click();
+  await page.getByRole("region", { name: "Multi-Driver Scenario outputs" }).waitFor();
+  await page.getByRole("button", { name: "Apply to Draft" }).click();
+  await builderTablist.getByRole("tab", { name: "Sensitivities" }).click();
+  const sensitivityPanel = page.getByRole("tabpanel", { name: "Sensitivities" });
+  const sensitivityAssumptionSelect = sensitivityPanel.locator(".sensitivity-controls select").first();
+  await sensitivityAssumptionSelect.selectOption("liquidity.minimum_operating_cash");
+  assert.equal(await sensitivityPanel.getByRole("button", { name: "Run one-way" }).isDisabled(), true, "UNAVAILABLE assumption scope enabled sensitivity");
+  await sensitivityAssumptionSelect.selectOption(assumptionDefinition.assumption_id);
+  await page.getByRole("button", { name: "Run one-way" }).click();
+  const baseSensitivity = page.getByRole("region", { name: "One-way table" });
+  await baseSensitivity.waitFor();
+  await baseSensitivity.getByText("4.3", { exact: true }).waitFor();
+  await baseSensitivity.getByText("Unavailable", { exact: true }).first().waitFor();
+  await page.getByRole("img", { name: /One-way tornado/ }).waitFor();
+  await page.getByRole("region", { name: "First sensitivity breakpoint" }).getByText("covenant.max_total_leverage", { exact: true }).waitFor();
+  await sensitivityPanel.getByLabel("Case").selectOption("DOWNSIDE");
+  await sensitivityPanel.getByLabel("Period").selectOption("FY2026");
+  await sensitivityPanel.getByRole("button", { name: "Run one-way" }).click();
+  await page.getByRole("region", { name: "One-way table" }).getByText("5.4", { exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, "Model Builder causes page-level horizontal overflow at 390px");
   await page.setViewportSize({ width: 1440, height: 1000 });
+  for (const checkedRole of ["READER", "APPROVER", "ADMIN"]) {
+    modelRole = checkedRole;
+    if (checkedRole === "READER") modelRevisions = modelRevisions.map((item) => ({ ...item, export: { ...item.export, status: "FAILED", error: { code: "MODEL_REVISION_EXPORT_FAILED", detail: "Retry remains a shared write." } } }));
+    await page.goto(`${baseURL}/model-builder/?case=${caseRecord.id}&role=${checkedRole.toLowerCase()}`, { waitUntil: "networkidle" });
+    const roleTabs = page.getByRole("tablist", { name: "Model Builder views" });
+    await roleTabs.getByRole("tab", { name: "Assumptions" }).click();
+    const roleInput = page.getByLabel("Revenue growth BASE FY2025");
+    await roleInput.fill(checkedRole === "READER" ? "0.07" : "0.071");
+    await roleInput.press("Enter");
+    await page.getByRole("button", { name: "Preview Draft Revision" }).click();
+    await page.getByText("Exact preview calculated. Review deltas, then add one Sign-Off Note.").waitFor();
+    if (checkedRole === "READER") {
+      assert.equal(await page.getByLabel("Sign-Off Note *").count(), 0, "reader was shown the shared Sign-Off Note control");
+      assert.equal(await page.getByRole("button", { name: "Sign Off Revision" }).count(), 0, "reader was shown the shared sign-off action");
+      await page.getByText(/Reader mode: local shocks, previews, scenarios, sensitivities/).waitFor();
+      await roleTabs.getByRole("tab", { name: "Sensitivities" }).click();
+      await page.getByRole("button", { name: "Run Multi-Driver Scenario" }).click();
+      await page.getByRole("region", { name: "Multi-Driver Scenario outputs" }).waitFor();
+      await page.getByRole("button", { name: "Apply to Draft" }).click();
+      await roleTabs.getByRole("tab", { name: "History" }).click();
+      assert.equal(await page.getByRole("button", { name: "Retry exact export" }).count(), 0, "reader was shown a shared export retry");
+      await roleTabs.getByRole("tab", { name: "Assumptions" }).click();
+    } else {
+      await page.getByLabel("Sign-Off Note *").waitFor();
+      await page.getByRole("button", { name: "Sign Off Revision" }).waitFor();
+    }
+    await roleInput.fill("0.05");
+    await roleInput.press("Enter");
+    if (checkedRole === "READER") modelRevisions = modelRevisions.map((item) => ({ ...item, export: { ...item.export, status: "READY", error: null } }));
+  }
+  modelRole = "ANALYST";
   modelState = "READY"; modelExportState = "FAILED";
   await page.goto(`${baseURL}/model-builder/?case=${caseRecord.id}&state=export-failed`, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Application Model Build" }).click();
   await page.getByText("MODEL_EXPORT_FAILED", { exact: true }).waitFor();
   await page.getByRole("tab", { name: "Credit Snapshot" }).waitFor();
   for (const [state, text] of [["FAILED", "MODEL_CALCULATION_FAILED"], ["NOT_READY", "ACCEPTED FULL CREDIT REQUIRED"]]) {
@@ -796,6 +1073,14 @@ try {
   await page.unroute(modelsPath);
   await page.unroute(worksheetPath);
   await page.unroute(exportPath);
+  await page.unroute(registryPath);
+  await page.unroute(revisionsPath);
+  await page.unroute(previewPath);
+  await page.unroute(signOffPath);
+  await page.unroute(rebasePath);
+  await page.unroute(sensitivityPath);
+  await page.unroute(scenarioPath);
+  await page.unroute(identityPath);
 
   modelState = "READY"; modelExportState = "READY";
   await page.route(modelsPath, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(modelInventory()) }));

@@ -102,7 +102,7 @@ try {
   assert.ok(runFixtureHits > 0, "pending-plan run fixture was not exercised");
   await pendingContext.close();
 
-  const modelContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, extraHTTPHeaders: identityHeaders });
+  const modelContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: identityHeaders });
   const modelPage = await modelContext.newPage();
   const modelCaseId = "case_a11y_ready_model";
   const modelBuildId = "model_a11y_ready";
@@ -114,13 +114,33 @@ try {
   await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(modelCase) }));
   await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/snapshot`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: null, latest_accepted: null, switch_required: false, diff: null }) }));
   await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/models`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ readiness: modelReadiness, builds: [modelBuild] }) }));
+  const modelAssumptionDefinition = { assumption_id: "operating.consolidated_revenue_growth", label: "Revenue growth", family: "Operating", description: "Consolidated annual revenue growth.", driver_id: "consolidated_revenue_growth", slot_id: null, value_type: "DECIMAL", unit: "PERCENT_DECIMAL", cases: ["BASE", "DOWNSIDE"], periods: ["FY2025", "FY2026", "FY2027"], default: { status: "READY", value: 0.03 }, lineage: { authority_module: "CP-2G" }, sensitivity_default: { range: "0.04", step: "0.01" }, hard_min: "-0.75", hard_max: "2", required: true, allowed_statuses: ["READY"], degradation: null, affected_outputs: ["revenue", "total_leverage"] };
+  const modelAssumptionDefaults = ["BASE", "DOWNSIDE"].flatMap((caseName) => ["FY2025", "FY2026", "FY2027"].map((periodId) => ({ assumption_id: modelAssumptionDefinition.assumption_id, case: caseName, period_id: periodId, unit: "PERCENT", status: "READY", value: caseName === "BASE" ? "0.03" : "-0.02", gap_code: null, default_value: caseName === "BASE" ? "0.03" : "-0.02", default_status: "READY", default_gap_code: null, source_context: { authority_module: "CP-2G", gap_code: "", provenance: [{ source_id: "SRC-1", source_locator: "page 1", as_of: "2026-08-24" }] }, source_context_digest: "f".repeat(64) })));
+  await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/models/assumption-registry`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ version: "cp-model-assumptions.v1", digest: "f".repeat(64), definitions: [modelAssumptionDefinition], build_id: modelBuildId, accepted_snapshot_id: modelBuild.accepted_snapshot_id, input_fingerprint: modelBuild.input_fingerprint, defaults: modelAssumptionDefaults }) }));
+  await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/model-revisions`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ revisions: [] }) }));
   await modelPage.route((url) => url.pathname === `/api/cases/${modelCaseId}/models/${modelBuildId}/worksheet`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ build_id: modelBuildId, input_fingerprint: modelBuild.input_fingerprint, payload_digest: modelBuild.payload_digest, qa: modelBuild.qa, payload: { schema_version: "caos.model.worksheet.v1", identity: { issuer_id: "northstar", issuer_name: "Northstar", analysis_date: "2026-08-24" }, tabs: [worksheetTab("Credit Snapshot"), worksheetTab("Model"), worksheetTab("KPIs")] } }) }));
-  await modelPage.goto(`${baseUrl}/model-builder/?case=${modelCaseId}&fixture=ready-model`, { waitUntil: "networkidle" });
-  await modelPage.getByRole("tab", { name: "Credit Snapshot" }).waitFor();
-  await modelPage.getByRole("button", { name: /Show lineage for account::revenue/ }).click();
-  await modelPage.locator("#model-cell-lineage").getByText(/SRC-1/).waitFor();
-  const modelResult = await new AxeBuilder({ page: modelPage }).analyze();
-  for (const violation of modelResult.violations) violations.push({ viewport: "ready-model-1280", route: "/model-builder/", id: violation.id, impact: violation.impact, nodes: violation.nodes.map((node) => ({ target: node.target, html: node.html, summary: node.failureSummary })) });
+  const populatedModelViewports = [{ name: "desktop", width: 1440, height: 1000 }, { name: "tablet", width: 768, height: 1024 }, { name: "mobile", width: 390, height: 844 }];
+  for (const viewport of populatedModelViewports) {
+    await modelPage.setViewportSize({ width: viewport.width, height: viewport.height });
+    await modelPage.goto(`${baseUrl}/model-builder/?case=${modelCaseId}&fixture=ready-model-${viewport.name}`, { waitUntil: "networkidle" });
+    await modelPage.getByRole("tab", { name: "Credit Snapshot" }).waitFor();
+    await modelPage.getByRole("button", { name: /Show lineage for account::revenue/ }).click();
+    await modelPage.locator("#model-cell-lineage").getByText(/SRC-1/).waitFor();
+    const builderTabs = modelPage.getByRole("tablist", { name: "Model Builder views" });
+    await builderTabs.getByRole("tab", { name: "Model", exact: true }).focus();
+    await modelPage.keyboard.press("ArrowRight");
+    assert.equal(await modelPage.evaluate(() => document.activeElement?.id), "model-builder-tab-assumptions", `${viewport.name} Model Builder tab ArrowRight did not move focus`);
+    assert.equal(await builderTabs.getByRole("tab", { name: "Assumptions" }).getAttribute("aria-selected"), "true", `${viewport.name} Model Builder tab ArrowRight did not select the panel`);
+    await modelPage.keyboard.press("End");
+    assert.equal(await modelPage.evaluate(() => document.activeElement?.id), "model-builder-tab-history", `${viewport.name} Model Builder tab End did not focus History`);
+    await modelPage.keyboard.press("Home");
+    assert.equal(await modelPage.evaluate(() => document.activeElement?.id), "model-builder-tab-model", `${viewport.name} Model Builder tab Home did not focus Model`);
+    for (const tabName of ["Model", "Assumptions", "Sensitivities", "History"]) {
+      await builderTabs.getByRole("tab", { name: tabName, exact: true }).click();
+      const modelResult = await new AxeBuilder({ page: modelPage }).analyze();
+      for (const violation of modelResult.violations) violations.push({ viewport: `ready-model-${viewport.name}-${tabName.toLowerCase()}`, route: "/model-builder/", id: violation.id, impact: violation.impact, nodes: violation.nodes.map((node) => ({ target: node.target, html: node.html, summary: node.failureSummary })) });
+    }
+  }
   await modelContext.close();
 } finally {
   await browser.close();
@@ -130,5 +150,5 @@ if (violations.length) {
   console.error(JSON.stringify({ violations }, null, 2));
   process.exitCode = 1;
 } else {
-  console.log(JSON.stringify({ routes: routes.length, viewports: viewports.length, combinations: routes.length * viewports.length + 2, pendingPlanFixture: true, readyModelFixture: true, violations: 0 }));
+  console.log(JSON.stringify({ routes: routes.length, viewports: viewports.length, combinations: routes.length * viewports.length + 13, pendingPlanFixture: true, readyModelFixture: true, modelBuilderAxeChecks: 12, modelBuilderKeyboardTabChecks: 3, violations: 0 }));
 }

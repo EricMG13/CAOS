@@ -2468,9 +2468,9 @@ def test_model_api_is_case_scoped_downloads_verified_export_and_freezes_identity
         workflow.close()
 
 
-def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs() -> (
-    None
-):
+def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs(
+    tmp_path: Path,
+) -> None:
     provider = _CanonicalProvider()
     ledgers, runtime, case = _canonical_runtime_case(provider)
     try:
@@ -2496,6 +2496,21 @@ def test_full_credit_fake_provider_run_is_accepted_with_canonical_model_inputs()
         assert {item["module_id"] for item in snapshot["artifacts"]} >= set(
             FIXTURE_BY_MODULE
         )
+        with TestClient(
+            create_app(
+                Settings(storage_dir=tmp_path, deploy_v_root=DEPLOY_V), ledgers
+            ),
+            raise_server_exceptions=False,
+        ) as client:
+            detail = client.get(
+                f"/api/cases/{case['id']}",
+                headers={"x-forwarded-user": "analyst"},
+            )
+            assert detail.status_code == 200, detail.text
+            latest = detail.json()["latest_run"]
+            assert latest["id"] == run["id"]
+            assert latest["canonical_generation"]["phase"] == "complete"
+            assert latest["canonical_generation"]["module_output_tokens"]["CP-2G"]
     finally:
         runtime.close()
 

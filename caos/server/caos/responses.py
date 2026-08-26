@@ -578,6 +578,11 @@ class CanonicalModuleOutputTokensResponse(WireModel):
     cp_1b: int = Field(alias="CP-1B")
     cp_2: int = Field(alias="CP-2")
     cp_2a: int = Field(alias="CP-2A")
+    cp_2g: int | None = Field(
+        default=None,
+        alias="CP-2G",
+        exclude_if=lambda value: value is None,
+    )
 
 
 class CanonicalAttemptBaseResponse(WireModel):

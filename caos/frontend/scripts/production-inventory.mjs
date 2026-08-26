@@ -15,6 +15,7 @@ const adminUser = process.env.CAOS_ADMIN_USER || "admin.qa@local.invalid";
 const readerUser = process.env.CAOS_READER_USER || "reader.qa@local.invalid";
 const maxBurstP95Ms = Number(process.env.CAOS_MAX_BURST_P95_MS || 1500);
 const maxPostLoadMs = Number(process.env.CAOS_MAX_POST_LOAD_MS || 500);
+const phase4ModelOnly = process.env.CAOS_PHASE4_MODEL_ONLY === "1";
 const loanWorkbook = Buffer.from(readFileSync(new URL("./fixtures/loan-universe.xlsx.b64", import.meta.url), "utf8").trim(), "base64");
 assert.ok(Number.isFinite(maxBurstP95Ms) && maxBurstP95Ms > 0, "CAOS_MAX_BURST_P95_MS must be positive");
 assert.ok(Number.isFinite(maxPostLoadMs) && maxPostLoadMs > 0, "CAOS_MAX_POST_LOAD_MS must be positive");
@@ -190,10 +191,22 @@ async function inventoryLoadedRoute(context, role, slug, title) {
     } else if (slug === "command-center") {
       await page.getByRole("heading", { name: "Synthetic Dense Issuer" }).waitFor();
     } else if (slug === "model-builder") {
-      await page.getByText("CANONICAL MODEL INPUTS INVALID", { exact: true }).waitFor();
+      if (phase4ModelOnly) {
+        await page.getByText("Active Analyst Model · R1", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "Application Model Build" }).waitFor();
+        await page.getByRole("tab", { name: "Assumptions", exact: true }).waitFor();
+        await page.getByRole("tab", { name: "Sensitivities", exact: true }).waitFor();
+        await page.getByRole("tab", { name: "History", exact: true }).waitFor();
+      } else {
+        await page.getByText("CANONICAL MODEL INPUTS INVALID", { exact: true }).waitFor();
+      }
     } else if (slug === "report-studio") {
       await page.getByRole("button", { name: "Freeze report snapshot" }).waitFor();
-      for (const name of ["Markdown", "PDF", "XLSX"]) await page.getByRole("link", { name, exact: true }).waitFor();
+      if (phase4ModelOnly) {
+        await page.getByText("No frozen report for this case.", { exact: true }).waitFor();
+      } else {
+        for (const name of ["Markdown", "PDF", "XLSX"]) await page.getByRole("link", { name, exact: true }).waitFor();
+      }
     }
     return result;
   } finally {
@@ -251,15 +264,29 @@ try {
   assert.equal(denseDetail.issuer, "Synthetic Dense Issuer");
   assert.ok(denseDetail.source_count >= 100);
   const denseRuns = await (await analystApi.get(`/api/cases/${denseCaseId}/runs`)).json();
-  assert.deepEqual([...new Set(denseRuns.map((run) => run.plan.pathway))].sort(), expectedPathways);
-  assert.ok(expectedPathways.every((pathway) => denseRuns.some((run) => run.plan.pathway === pathway
-    && run.status === "succeeded"
+  const allRunPathways = [...new Set(denseRuns.map((run) => run.plan.pathway))].sort();
+  const acceptedPathways = [...new Set(denseRuns.filter((run) => run.status === "succeeded"
     && run.accepted_snapshot_id
     && run.nodes.length > 0
-    && run.nodes.every((node) => node.status === "succeeded" && node.artifact_id))));
+    && run.nodes.every((node) => node.status === "succeeded" && node.artifact_id))
+    .map((run) => run.plan.pathway))].sort();
+  if (phase4ModelOnly) {
+    assert.deepEqual(allRunPathways, ["FULL_CREDIT"]);
+    assert.deepEqual(acceptedPathways, ["FULL_CREDIT"]);
+    const modelInventory = await (await analystApi.get(`/api/cases/${denseCaseId}/models`)).json();
+    assert.equal(modelInventory.readiness.status, "READY");
+    assert.equal(modelInventory.readiness.build.status, "READY");
+    const revisionInventory = await (await analystApi.get(`/api/cases/${denseCaseId}/model-revisions`)).json();
+    assert.equal(revisionInventory.revisions.length, 1);
+    assert.equal(revisionInventory.revisions[0].state, "ACTIVE");
+    assert.equal(revisionInventory.revisions[0].export.status, "READY");
+  } else {
+    assert.deepEqual(allRunPathways, expectedPathways);
+    assert.deepEqual(acceptedPathways, expectedPathways);
+  }
   const denseRV = await (await analystApi.get(`/api/cases/${denseCaseId}/rv`)).json();
-  assert.equal(denseRV.rows.length, 250);
-  assert.equal(denseRV.excluded.length, 50);
+  assert.equal(denseRV.rows.length, phase4ModelOnly ? 0 : 250);
+  assert.equal(denseRV.excluded.length, phase4ModelOnly ? 0 : 50);
 
   const analystContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: analystHeaders });
   contexts.push(analystContext);
@@ -500,7 +527,7 @@ try {
       dense_case_id: denseCaseId,
       dense_sources: denseDetail.source_count,
       roles: ["ADMIN", "ANALYST", "APPROVER", "READER"],
-      pathways: expectedPathways,
+      pathways: acceptedPathways,
       rv: { eligible: denseRV.rows.length, excluded: denseRV.excluded.length },
     },
     journey: { case_id: journeyCase.id, empty_case_id: emptyCase.id, run_id: firstRun.id, exports },

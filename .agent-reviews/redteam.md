@@ -4750,3 +4750,68 @@ consistency, deterministic authority integrity, production verification, and
 clean-diff gates pass. RT-273 supersedes RT-272 only for the one-time legacy
 backfill mechanism; post-migration monotonic identity authority is unchanged.
 No known Critical or Important defect remains.
+
+## 2026-08-26 — Analyst authoring Phase 4 Model Builder UI
+
+Architecture under review: restore the signed Analyst Model workflow around the
+existing read-only worksheet while keeping all calculations and durable state at
+the Phase 3 server boundary.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-274 | Authority reviewer | A late preview, scenario, sensitivity, rebase, or Sign-Off response could overwrite a newer case, build, registry, head, or browser draft. | Critical | Resolved and verified | One authority identity and action/draft generations fence every temporary request and response; preview eligibility additionally binds build fingerprint/digest, registry version/digest, parent/head, and draft generation. Focused state tests and the browser journey exercise exact preview and case-switch invalidation. |
+| RT-2026-08-26-275 | Governance reviewer | An unsigned assumption draft could leak into Web Storage or server autosave and become visible to another analyst before approval. | Critical | Resolved and verified | Draft rows exist only in component state. Static checks reject Model Builder Web Storage use, the browser journey proves Apply to Draft remains local, and only the exact Sign-Off endpoint persists a revision. Dirty drafts warn on case change, navigation, and unload. |
+| RT-2026-08-26-276 | Calculation reviewer | Client-side sensitivity or scenario math could drift from CP-MODEL and present a wrong committee result. | Critical | Resolved and verified | The UI sends driver identities/values only and renders server-returned tables, deltas, tornado rows, and breakpoints. No financial calculation is implemented in React. Workbench fixtures assert the accepted endpoint sequence and production inventory exercises a real READY model authority. |
+| RT-2026-08-26-277 | Regression reviewer | Extracting the legacy worksheet from `Workspace` could regress its read-only behavior, lineage, keyboard navigation, export, request overlap, or case fencing. | Critical | Resolved and verified | `WorksheetGrid` behavior was preserved in the extracted sealed Application Model Build. Focused extraction checks plus workbench smoke cover arrow-key/Enter lineage, tabs, QA/export, failure/not-ready states, non-overlapping refreshes, and stale-case suppression. |
+| RT-2026-08-26-278 | Contract reviewer | A real accepted Full Credit run containing canonical CP-2G could make strict CaseDetail response serialization fail, blocking the new UI despite green mocked browser tests. | Critical | Resolved and verified | The strict public canonical output-token contract now includes optional aliased CP-2G without loosening `extra='forbid'`; legacy records still omit the absent field. A red-first real persisted HTTP regression and the normalized production inventory prove CaseDetail returns 200. |
+| RT-2026-08-26-279 | Accessibility reviewer | Four dense tabs and wide tables could become keyboard-inoperable, motion-hostile, or clipped at tablet/mobile widths. | High | Resolved and verified | Existing focus/keyboard semantics remain, every table has a named scroll region, compact responsive layouts retain horizontal overflow, and reduced-motion rules are preserved. The local axe runner covers 40 populated route/viewport combinations with 0 violations; mobile workbench smoke verifies Model Builder overflow. |
+
+Decision: accept Phase 4 for independent review. The focused authoring suite
+passes 9 tests, the full frontend unit suite passes 34, response contracts pass
+27, ESLint/Ruff/TypeScript and the supported webpack production build pass, the
+workbench journey passes, and axe reports 0 violations across 40 populated
+combinations. A fresh normalized PostgreSQL inventory proves a READY build,
+ACTIVE signed revision/export, and 16 role-by-route combinations with zero load
+or overflow failures. The legacy dump was not treated as authority; RV/six-path
+density remains a later inventory concern and does not block the Phase 4 Model
+Builder journey.
+
+## 2026-08-26 — Analyst authoring Phase 4 independent-review corrections
+
+Correction under review: close the six Important Model Builder findings and
+restore the default production-inventory pathway invariant without moving any
+calculation or unsigned draft state out of its accepted authority boundary.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-280 | Calculation-contract reviewer | The one-way UI read flat output keys while the Phase 3 service returns case/period/output nesting, so real sensitivities rendered unavailable. | Critical | Resolved and verified | One shared pure decoder now reads `outputs[CASE][FY][output_id]` and matching deltas, expands `ALL` into deterministic forecast-period rows, preserves nulls, and renders the exact server values in both table and tornado. The workbench uses the production nested shape and verifies Base/all-years, Downside/FY2026, unavailable output, exact deltas, and threshold-identity breakpoint exposure. |
+| RT-2026-08-26-281 | Role/governance reviewer | Readers could not create a local shock, preventing the temporary preview, scenario, one-way, and Apply-to-Draft workflow that is explicitly safe because it persists nothing. | High | Resolved and verified | READY assumption controls and all transient calculation actions are available to every case reader. Sign-Off, build/export mutation, and failed-export retry remain writer-only and are still enforced by the server. Browser checks exercise READER, ANALYST, APPROVER, and ADMIN; the reader can calculate and apply locally but sees no Sign-Off Note, Sign-Off, or export retry. |
+| RT-2026-08-26-282 | Authority/navigation reviewer | A 409 refresh or unguarded internal/history navigation could replace the analyst's dirty draft and last successful preview. | Critical | Resolved and verified | Dirty draft rows, their original baseline, draft authority, and last preview survive head/build refresh. Current metadata is shown separately; a same-build server Rebase Candidate merges current authority with local shocks and requires a fresh preview. Workspace owns one case/link/popstate/beforeunload guard with a history sentinel. The browser proves two-writer 409 preservation, current metadata, rebase retention, and canceled case, destination-link, and browser-back navigation without value loss. |
+| RT-2026-08-26-283 | Accessibility reviewer | The four apparent tabs lacked the WAI-ARIA focus and keyboard interaction contract. | High | Resolved and verified | Stable tab/tabpanel IDs, `aria-controls`/`aria-labelledby`, one roving tab stop, and Left/Right/Home/End focus transfer now share one selection path. Workbench verifies the interaction, while axe verifies all four panels at desktop/tablet/mobile and three explicit keyboard journeys with zero violations across 40 combinations. |
+| RT-2026-08-26-284 | Assumption-authority reviewer | Default, signed delta, applicability, Mixed state, and controlled rejection were absent or misleading for legitimate N/A/unavailable registry rows. | Critical | Resolved and verified | Every period exposes effective value, application default, draft-vs-signed delta, status/named gap, and provenance. Whole-scope helpers require all included rows to be finite READY before broadcast or sensitivity; first selection prefers an applicable definition. Controlled inputs show blank/Mixed, revert rejected bounds, and announce the exact constraint. The browser fixture uses all 23 methodology IDs with an unsegmented consolidated driver, inactive division slots, and three named optional gaps. |
+| RT-2026-08-26-285 | Failure-path reviewer | Editing or failing a newer preview deleted the last successful calculation, eliminating the analyst's comparison while still providing no signable current result. | Critical | Resolved and verified | Draft edits invalidate only preview eligibility, not the stored browser-memory preview. The Model view labels its exact build/registry/generation as stale, retains outputs/deltas after a typed failure, and exposes Sign-Off only after a matching successful retry. The browser runs success → edit → failure → preserved stale data → successful retry. |
+| RT-2026-08-26-286 | Regression-harness reviewer | Phase 4 mode had weakened the default production inventory by checking accepted pathways without rejecting unexpected partial/failed pathway records. | High | Resolved and verified | Default mode again requires the exact six-path set across every run and independently requires complete accepted authority for all six. The additive Phase 4 mode requires exactly Full Credit for both sets. Normalized PostgreSQL inventory passes 16 loaded role/route combinations, 48 explicit state probes, and all load stages with zero failures. |
+
+Decision: accept the Phase 4 independent-review corrections for rereview. The
+full frontend suite passes 42 tests, the production workbench covers the exact
+server-shaped journeys, axe reports zero violations, the supported webpack
+build passes, proportional strict HTTP contracts pass, and the fresh normalized
+production inventory is green. No known Critical or Important Phase 4 defect
+remains; no unsigned draft, preview, scenario, sensitivity, or Rebase Candidate
+is stored.
+
+## 2026-08-26 — Analyst authoring Phase 4 final rereview corrections
+
+Correction under review: align assumption deltas to the immutable Application
+Model Build and make canceled browser-history restoration strictly single-prompt.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-287 | Assumption-authority reviewer | The table subtracted the signed revision rather than the Application Model Build default, so it mislabeled analyst-versus-signed movement as the accepted build delta. | High | Resolved and verified | A pure `applicationBuildDelta` now subtracts `default_value` from the effective local value, returns unavailable for either null operand, and the column is explicitly labeled `Effective minus Application build`. The production-shaped browser fixture distinguishes signed 0.02, build default 0.03, and local 0.04 and verifies the displayed delta is 0.01 rather than 0.02. This supersedes the delta wording in RT-284; signed revision context remains separately visible in the active authority/history. |
+| RT-2026-08-26-288 | Navigation reviewer | Canceling browser Back called `history.forward()`, whose compensating popstate re-entered the same dirty guard and prompted twice. | High | Resolved and verified | Workspace owns a one-shot restoration-pop fence. The compensating traversal consumes the fence without prompting; a one-second fail-safe prevents a permanently armed fence if the browser emits no restoration event, and effect cleanup clears the timer/state/listeners. The browser regression observes exactly one confirmation and the exact original URL plus 0.06 dirty assumption after restoration. |
+
+Decision: accept the final Phase 4 rereview corrections. Focused tests pass
+18/18, the full frontend suite passes 43/43, lint, TypeScript, and the supported
+webpack build pass, and the rebuilt combined-app workbench passes the exact
+signed/default delta and single-prompt history journeys. No known Critical or
+Important Phase 4 defect remains.
