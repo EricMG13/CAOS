@@ -623,6 +623,11 @@ class CanonicalEvidenceAttemptResponse(CanonicalAttemptBaseResponse):
     block_ids: list[str]
 
 
+class CanonicalSendToUserAttemptResponse(CanonicalAttemptBaseResponse):
+    kind: Literal["send_to_user"]
+    message: str
+
+
 class CanonicalGenerationAttemptResponse(CanonicalAttemptBaseResponse):
     kind: Literal["generation"]
     request_digest: str
@@ -654,6 +659,7 @@ CanonicalAttemptResponse = (
     | CanonicalProviderAttemptResponse
     | CanonicalProviderRetryAttemptResponse
     | CanonicalEvidenceAttemptResponse
+    | CanonicalSendToUserAttemptResponse
     | CanonicalGenerationAttemptResponse
     | CanonicalRepairAttemptResponse
     | CanonicalTerminalAttemptResponse
@@ -809,6 +815,15 @@ class ResearchEvidenceTerminalAttemptResponse(ResearchEvidenceAttemptResponse):
     terminal_code: str
 
 
+class ResearchSendToUserAttemptResponse(ResearchAttemptBaseResponse):
+    kind: Literal["send_to_user"]
+    message: str
+
+
+class ResearchSendToUserTerminalAttemptResponse(ResearchSendToUserAttemptResponse):
+    terminal_code: str
+
+
 class ResearchGenerationAttemptResponse(ResearchAttemptBaseResponse):
     kind: Literal["generation"]
     request_digest: str
@@ -855,6 +870,8 @@ ResearchAttemptResponse = (
     | ResearchProviderRetryAttemptResponse
     | ResearchEvidenceTerminalAttemptResponse
     | ResearchEvidenceAttemptResponse
+    | ResearchSendToUserTerminalAttemptResponse
+    | ResearchSendToUserAttemptResponse
     | ResearchGenerationTerminalAttemptResponse
     | ResearchGenerationAttemptResponse
     | ResearchRepairTerminalAttemptResponse

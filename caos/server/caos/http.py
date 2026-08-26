@@ -173,6 +173,7 @@ def create_app(
             settings.anthropic_api_key,
             settings.anthropic_model,
             settings.anthropic_timeout_seconds,
+            fallback_model=settings.anthropic_fallback_model,
         )
         if settings.anthropic_api_key
         and (settings.canonical_agent_enabled or settings.cpdr_agent_enabled)

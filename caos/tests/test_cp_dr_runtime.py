@@ -1414,7 +1414,9 @@ def test_gateway_preserves_assistant_content_and_orders_tool_results() -> None:
 
     assert result["module_id"] == "CP-DR"
     first = client.messages.create_calls[0]
-    assert first["system"] == "authority"
+    assert first["system"] == [
+        {"type": "text", "text": "authority", "cache_control": {"type": "ephemeral"}}
+    ]
     assert first["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert (
         first["tools"][0]["name"] == "read_evidence"
@@ -1563,9 +1565,9 @@ def test_gateway_real_sdk_mock_transport_serializes_expected_messages_request() 
     create = requests[1][1]
     assert create["model"] == "claude-sonnet-4-6" and create["max_tokens"] == 2_000
     serialized_create = json.dumps(create, sort_keys=True)
-    assert create["system"] == system_prompt and create["messages"] == [
-        {"role": "user", "content": user_prompt}
-    ]
+    assert create["system"] == [
+        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+    ] and create["messages"] == [{"role": "user", "content": user_prompt}]
     for sentinel in (
         "sdk-question-sentinel",
         "sdk-decision-sentinel",
@@ -1642,7 +1644,9 @@ def test_gateway_preserves_legacy_request_digest_bytes_across_retry() -> None:
 
     legacy_preimage = {
         "model": "claude-sonnet-4-6",
-        "system": "authority",
+        "system": [
+            {"type": "text", "text": "authority", "cache_control": {"type": "ephemeral"}}
+        ],
         "messages": [{"role": "user", "content": "brief"}],
         "output_config": {
             "format": {
@@ -1650,7 +1654,7 @@ def test_gateway_preserves_legacy_request_digest_bytes_across_retry() -> None:
                 "schema": anthropic.transform_schema(CPDRPayload.model_json_schema()),
             }
         },
-        "tools": [provider_module.READ_EVIDENCE_TOOL],
+        "tools": [provider_module.READ_EVIDENCE_TOOL, provider_module.SEND_TO_USER_TOOL],
         "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
         "max_tokens": 2_000,
     }
@@ -1717,7 +1721,9 @@ def test_gateway_preserves_legacy_sdk_block_fields_in_continuation_digest() -> N
 
     legacy_preimage = {
         "model": "claude-sonnet-4-6",
-        "system": "authority",
+        "system": [
+            {"type": "text", "text": "authority", "cache_control": {"type": "ephemeral"}}
+        ],
         "messages": [
             {"role": "user", "content": "brief"},
             {"role": "assistant", "content": tool_blocks},
@@ -1738,7 +1744,7 @@ def test_gateway_preserves_legacy_sdk_block_fields_in_continuation_digest() -> N
                 "schema": anthropic.transform_schema(CPDRPayload.model_json_schema()),
             }
         },
-        "tools": [provider_module.READ_EVIDENCE_TOOL],
+        "tools": [provider_module.READ_EVIDENCE_TOOL, provider_module.SEND_TO_USER_TOOL],
         "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
         "max_tokens": 2_000,
     }
@@ -1832,7 +1838,9 @@ def test_production_injection_preserves_legacy_request_digest(
 
     legacy_preimage = {
         "model": "claude-sonnet-4-6",
-        "system": "authority",
+        "system": [
+            {"type": "text", "text": "authority", "cache_control": {"type": "ephemeral"}}
+        ],
         "messages": [{"role": "user", "content": "brief"}],
         "output_config": {
             "format": {
@@ -1840,7 +1848,7 @@ def test_production_injection_preserves_legacy_request_digest(
                 "schema": anthropic.transform_schema(CPDRPayload.model_json_schema()),
             }
         },
-        "tools": [provider_module.READ_EVIDENCE_TOOL],
+        "tools": [provider_module.READ_EVIDENCE_TOOL, provider_module.SEND_TO_USER_TOOL],
         "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
         "max_tokens": 2_000,
     }
