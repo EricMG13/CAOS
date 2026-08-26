@@ -67,3 +67,28 @@ def test_model_job_actor_migration_backfills_creator_and_enforces_not_null() -> 
         < migration.index("SET actor = build.created_by")
         < migration.index("ALTER COLUMN actor SET NOT NULL")
     )
+
+
+def test_model_revision_migration_is_append_only_with_separate_head_and_export() -> None:
+    migration = (
+        Path(__file__).parents[1]
+        / "server"
+        / "migrations"
+        / "007_model_revisions.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS model_revisions" in migration
+    assert "CREATE TABLE IF NOT EXISTS model_revision_heads" in migration
+    assert "CREATE TABLE IF NOT EXISTS model_revision_exports" in migration
+    assert "UNIQUE (case_id, revision_number)" in migration
+    assert "parent_revision_id text REFERENCES model_revisions(id) ON DELETE RESTRICT" in migration
+    assert "build_id text NOT NULL REFERENCES model_builds(id) ON DELETE RESTRICT" in migration
+    assert "active boolean" not in migration.lower()
+    assert "UPDATE model_revisions" not in migration
+    assert "ADD COLUMN authority_order bigint" in migration
+    assert "row_number() OVER (ORDER BY queued_at, id)" in migration
+    assert "ADD GENERATED ALWAYS AS IDENTITY" in migration
+    assert "max_authority_order + 1" in migration
+    assert "ctid" not in migration.lower()
+    assert "xmin" not in migration.lower()
+    assert "model_builds_authority_order_idx" in migration

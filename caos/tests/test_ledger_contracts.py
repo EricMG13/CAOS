@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from caos import ledgers
+from caos import postgres_ledgers as postgres_ledgers_module
 from caos.contracts import clean_json, digest
 from caos.memory_ledgers import MemoryLedgerSet
 from caos.postgres_ledgers import PostgresLedgerSet
@@ -311,6 +312,90 @@ def _accepted_model_input(ledger_set: Any) -> dict[str, Any]:
         "source_set_id": source_set["id"],
         "input_fingerprint": "c" * 64,
         "worksheet_schema_version": "caos.model.worksheet.v1",
+    }
+
+
+def _ready_model_build(ledger_set: Any) -> dict[str, Any]:
+    queued, created = ledger_set.models.queue_build(
+        {
+            **_accepted_model_input(ledger_set),
+            "calculation_runtime": {
+                "assumption_registry_version": "cp-model.assumptions.v1",
+                "assumption_registry_digest": "a" * 64,
+                "calculation_contract_version": "cp-model.calculation.v1",
+            },
+        },
+        ACTOR,
+    )
+    assert created is True
+    token = ledger_set.models.claim(queued["id"], "model-worker")
+    assert token is not None
+    return ledger_set.models.complete(
+        queued["id"], token, _model_result(), "model-worker"
+    )
+
+
+def _newer_ready_model_build(
+    ledger_set: Any, prior: dict[str, Any]
+) -> dict[str, Any]:
+    queued, created = ledger_set.models.queue_build(
+        {
+            "case_id": prior["case_id"],
+            "accepted_run_id": prior["accepted_run_id"],
+            "accepted_snapshot_id": prior["accepted_snapshot_id"],
+            "source_set_id": prior["source_set_id"],
+            "input_fingerprint": "d" * 64,
+            "worksheet_schema_version": prior["worksheet_schema_version"],
+            "calculation_runtime": copy.deepcopy(prior["calculation_runtime"]),
+        },
+        ACTOR,
+    )
+    assert created is True
+    token = ledger_set.models.claim(queued["id"], "new-model-worker")
+    assert token is not None
+    return ledger_set.models.complete(
+        queued["id"], token, _model_result(), "new-model-worker"
+    )
+
+
+def _model_revision(build: dict[str, Any], *, preview_digest: str = "b" * 64) -> dict[str, Any]:
+    assumptions = [
+        {
+            "assumption_id": "operating.revenue_growth.consolidated",
+            "case": "BASE",
+            "period_id": "FY2025",
+            "unit": "PERCENT",
+            "status": "READY",
+            "value": 0.03,
+            "gap_code": None,
+        }
+    ]
+    outputs = {
+        "BASE": {"FY2025": {"revenue": 103.0}},
+        "DOWNSIDE": {"FY2025": {"revenue": 97.0}},
+    }
+    return {
+        "case_id": build["case_id"],
+        "build_id": build["id"],
+        "accepted_snapshot_id": build["accepted_snapshot_id"],
+        "build_input_fingerprint": build["input_fingerprint"],
+        "build_payload_digest": build["payload_digest"],
+        "registry_version": build["calculation_runtime"][
+            "assumption_registry_version"
+        ],
+        "registry_digest": build["calculation_runtime"][
+            "assumption_registry_digest"
+        ],
+        "calculation_contract_version": build["calculation_runtime"][
+            "calculation_contract_version"
+        ],
+        "effective_assumptions": assumptions,
+        "assumptions_digest": digest(assumptions),
+        "outputs": outputs,
+        "outputs_digest": digest(outputs),
+        "preview_digest": preview_digest,
+        "parent_revision_id": None,
+        "note": "Quarterly earnings review",
     }
 
 
@@ -1700,6 +1785,319 @@ def test_model_errors_and_export_failure_requeue_are_bounded(ledger_set: Any) ->
     assert ledger_set.models.pending_jobs() == [(queued["id"], "analyst", "export")]
 
 
+def test_model_revision_signoff_is_append_only_atomic_and_cas_guarded(
+    ledger_set: Any,
+) -> None:
+    build = _ready_model_build(ledger_set)
+    proposal = _model_revision(build)
+    before_audit = ledger_set.publications.list_audit()
+
+    signed = ledger_set.models.sign_off_revision(
+        proposal,
+        ACTOR,
+        expected_head_revision_id=None,
+        expected_current_build_id=build["id"],
+        expected_current_input_fingerprint=build["input_fingerprint"],
+    )
+
+    assert "id" not in proposal
+    assert signed["revision_number"] == 1
+    assert signed["signed_by"] == ACTOR
+    assert signed["export"] == {"status": "QUEUED", "error": None}
+    assert ledger_set.models.get_revision(signed["id"]) == signed
+    assert ledger_set.models.list_revisions(build["case_id"]) == [signed]
+    assert ledger_set.models.get_revision_head(build["case_id"]) == signed
+    assert ledger_set.models.pending_revision_exports() == [(signed["id"], ACTOR)]
+    assert len(ledger_set.publications.list_audit()) == len(before_audit) + 1
+
+    competing = _model_revision(build, preview_digest="c" * 64)
+    with pytest.raises(ledgers.RevisionConflictError) as conflict:
+        ledger_set.models.sign_off_revision(
+            competing,
+            "second-analyst",
+            expected_head_revision_id=None,
+            expected_current_build_id=build["id"],
+            expected_current_input_fingerprint=build["input_fingerprint"],
+        )
+    assert conflict.value.current["id"] == signed["id"]
+    assert ledger_set.models.list_revisions(build["case_id"]) == [signed]
+    assert ledger_set.models.get_revision_head(build["case_id"]) == signed
+    assert len(ledger_set.publications.list_audit()) == len(before_audit) + 1
+
+    successor = ledger_set.models.sign_off_revision(
+        {**competing, "parent_revision_id": signed["id"]},
+        "second-analyst",
+        expected_head_revision_id=signed["id"],
+        expected_current_build_id=build["id"],
+        expected_current_input_fingerprint=build["input_fingerprint"],
+    )
+    assert successor["revision_number"] == 2
+    assert [item["id"] for item in ledger_set.models.list_revisions(build["case_id"])] == [
+        signed["id"],
+        successor["id"],
+    ]
+    assert ledger_set.models.get_revision_head(build["case_id"]) == successor
+
+
+def test_model_revision_signoff_validates_exact_current_build_identity(
+    ledger_set: Any,
+) -> None:
+    build = _ready_model_build(ledger_set)
+    proposal = _model_revision(build)
+    before_audit = ledger_set.publications.list_audit()
+
+    invalid_changes = (
+        {"build_input_fingerprint": "0" * 64},
+        {"build_payload_digest": "0" * 64},
+        {"registry_digest": "0" * 64},
+        {"accepted_snapshot_id": "snap_foreign"},
+        {"assumptions_digest": "0" * 64},
+        {"outputs_digest": "0" * 64},
+    )
+    for change in invalid_changes:
+        with pytest.raises(ValueError, match="MODEL_REVISION_INVALID"):
+            ledger_set.models.sign_off_revision(
+                {**proposal, **change},
+                ACTOR,
+                expected_head_revision_id=None,
+                expected_current_build_id=build["id"],
+                expected_current_input_fingerprint=build["input_fingerprint"],
+            )
+    assert ledger_set.models.list_revisions(build["case_id"]) == []
+    assert ledger_set.models.get_revision_head(build["case_id"]) is None
+    assert ledger_set.publications.list_audit() == before_audit
+
+
+def test_model_revision_signoff_cas_rejects_newer_ready_build_without_partial_state(
+    ledger_set: Any,
+) -> None:
+    previewed_build = _ready_model_build(ledger_set)
+    proposal = _model_revision(previewed_build)
+    current_build = _newer_ready_model_build(ledger_set, previewed_build)
+    before_audit = ledger_set.publications.list_audit()
+
+    with pytest.raises(ledgers.RevisionConflictError) as conflict:
+        ledger_set.models.sign_off_revision(
+            proposal,
+            ACTOR,
+            expected_head_revision_id=None,
+            expected_current_build_id=previewed_build["id"],
+            expected_current_input_fingerprint=previewed_build["input_fingerprint"],
+        )
+
+    assert conflict.value.current is None
+    assert conflict.value.current_build == {
+        "id": current_build["id"],
+        "input_fingerprint": current_build["input_fingerprint"],
+        "accepted_snapshot_id": current_build["accepted_snapshot_id"],
+        "status": "READY",
+    }
+    assert ledger_set.models.list_revisions(previewed_build["case_id"]) == []
+    assert ledger_set.models.get_revision_head(previewed_build["case_id"]) is None
+    assert ledger_set.models.pending_revision_exports() == []
+    assert ledger_set.publications.list_audit() == before_audit
+
+
+def test_model_build_authority_order_ignores_equal_timestamps_and_opposed_ids(
+    ledger_set: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = _accepted_model_input(ledger_set)
+    controlled_ids = iter(("model_z_older", "model_a_newer"))
+    if isinstance(ledger_set, MemoryLedgerSet):
+        state = ledger_set.models._state
+        original_new_id = state.new_id
+
+        def controlled_new_id(prefix: str) -> str:
+            return next(controlled_ids) if prefix == "model" else original_new_id(prefix)
+
+        monkeypatch.setattr(state, "new_id", controlled_new_id)
+    else:
+        original_new_id = postgres_ledgers_module._new_id
+
+        def controlled_new_id(prefix: str) -> str:
+            return next(controlled_ids) if prefix == "model" else original_new_id(prefix)
+
+        monkeypatch.setattr(postgres_ledgers_module, "_new_id", controlled_new_id)
+
+    queued_at = "2026-08-26T00:00:00+00:00"
+    builds: list[dict[str, Any]] = []
+    for fingerprint, worker in (("c" * 64, "older-worker"), ("d" * 64, "newer-worker")):
+        queued, created = ledger_set.models.queue_build(
+            {
+                **accepted,
+                "input_fingerprint": fingerprint,
+                "queued_at": queued_at,
+                "calculation_runtime": {
+                    "assumption_registry_version": "cp-model.assumptions.v1",
+                    "assumption_registry_digest": "a" * 64,
+                    "calculation_contract_version": "cp-model.calculation.v1",
+                },
+            },
+            ACTOR,
+        )
+        assert created is True
+        token = ledger_set.models.claim(queued["id"], worker)
+        assert token is not None
+        builds.append(
+            ledger_set.models.complete(queued["id"], token, _model_result(), worker)
+        )
+    older, newer = builds
+
+    listed = ledger_set.models.list_builds(older["case_id"])
+    assert [build["id"] for build in listed] == [newer["id"], older["id"]]
+    assert all("authority_order" not in build for build in listed)
+    before_audit = ledger_set.publications.list_audit()
+    with pytest.raises(ledgers.RevisionConflictError) as conflict:
+        ledger_set.models.sign_off_revision(
+            _model_revision(older),
+            ACTOR,
+            expected_head_revision_id=None,
+            expected_current_build_id=older["id"],
+            expected_current_input_fingerprint=older["input_fingerprint"],
+        )
+
+    assert conflict.value.current is None
+    assert conflict.value.current_build == {
+        "id": newer["id"],
+        "input_fingerprint": newer["input_fingerprint"],
+        "accepted_snapshot_id": newer["accepted_snapshot_id"],
+        "status": "READY",
+    }
+    assert ledger_set.models.list_revisions(older["case_id"]) == []
+    assert ledger_set.models.get_revision_head(older["case_id"]) is None
+    assert ledger_set.models.pending_revision_exports() == []
+    assert ledger_set.publications.list_audit() == before_audit
+
+
+def test_model_build_authority_order_rejects_caller_supplied_values(
+    ledger_set: Any,
+) -> None:
+    accepted = _accepted_model_input(ledger_set)
+    before_audit = ledger_set.publications.list_audit()
+
+    with pytest.raises(ValueError, match="MODEL_BUILD_INVALID"):
+        ledger_set.models.queue_build(
+            {
+                **accepted,
+                "authority_order": 999,
+                "calculation_runtime": {
+                    "assumption_registry_version": "cp-model.assumptions.v1",
+                    "assumption_registry_digest": "a" * 64,
+                    "calculation_contract_version": "cp-model.calculation.v1",
+                },
+            },
+            ACTOR,
+        )
+
+    assert ledger_set.models.list_builds(accepted["case_id"]) == []
+    assert ledger_set.publications.list_audit() == before_audit
+
+
+def test_postgres_model_revision_signoff_serializes_with_newer_build_completion(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    database_url = postgres_ledger_set._database_url
+    previewed_build = _ready_model_build(postgres_ledger_set)
+    proposal = _model_revision(previewed_build)
+    queued, created = postgres_ledger_set.models.queue_build(
+        {
+            "case_id": previewed_build["case_id"],
+            "accepted_run_id": previewed_build["accepted_run_id"],
+            "accepted_snapshot_id": previewed_build["accepted_snapshot_id"],
+            "source_set_id": previewed_build["source_set_id"],
+            "input_fingerprint": "e" * 64,
+            "worksheet_schema_version": previewed_build["worksheet_schema_version"],
+            "calculation_runtime": copy.deepcopy(
+                previewed_build["calculation_runtime"]
+            ),
+        },
+        ACTOR,
+    )
+    assert created is True
+    token = postgres_ledger_set.models.claim(queued["id"], "new-model-worker")
+    assert token is not None
+    before_audit = postgres_ledger_set.publications.list_audit()
+
+    completing = _GatedPostgresLedgerSet(database_url)
+    signing = _ObservedPostgresLedgerSet(database_url)
+    gate = completing.gate_next_case_lock()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            completed = executor.submit(
+                completing.models.complete,
+                queued["id"],
+                token,
+                _model_result(),
+                "new-model-worker",
+            )
+            assert gate.acquired.wait(timeout=5)
+            signing.observe_next_connection()
+            signed = executor.submit(
+                signing.models.sign_off_revision,
+                proposal,
+                ACTOR,
+                expected_head_revision_id=None,
+                expected_current_build_id=previewed_build["id"],
+                expected_current_input_fingerprint=previewed_build[
+                    "input_fingerprint"
+                ],
+            )
+            signing_pid = signing.wait_for_observed_connection()
+            _wait_for_postgres_blocker(database_url, signing_pid)
+            gate.release.set()
+            current_build = completed.result(timeout=15)
+            with pytest.raises(ledgers.RevisionConflictError) as conflict:
+                signed.result(timeout=15)
+    finally:
+        gate.release.set()
+
+    assert conflict.value.current is None
+    assert conflict.value.current_build == {
+        "id": current_build["id"],
+        "input_fingerprint": current_build["input_fingerprint"],
+        "accepted_snapshot_id": current_build["accepted_snapshot_id"],
+        "status": "READY",
+    }
+    assert postgres_ledger_set.models.list_revisions(previewed_build["case_id"]) == []
+    assert postgres_ledger_set.models.get_revision_head(previewed_build["case_id"]) is None
+    assert postgres_ledger_set.models.pending_revision_exports() == []
+    added_audit = postgres_ledger_set.publications.list_audit()[len(before_audit) :]
+    assert [event["action"] for event in added_audit] == ["model.calculate.succeeded"]
+
+
+def test_model_revision_export_failure_is_retryable_without_demoting_revision(
+    ledger_set: Any,
+) -> None:
+    build = _ready_model_build(ledger_set)
+    signed = ledger_set.models.sign_off_revision(
+        _model_revision(build),
+        ACTOR,
+        expected_head_revision_id=None,
+        expected_current_build_id=build["id"],
+        expected_current_input_fingerprint=build["input_fingerprint"],
+    )
+    token = ledger_set.models.claim_revision_export(signed["id"], "export-worker")
+    assert token is not None
+    assert ledger_set.models.renew_revision_export(signed["id"], token) is True
+    assert ledger_set.models.revision_export_is_current(signed["id"], token) is True
+
+    failed = ledger_set.models.fail_revision_export(
+        signed["id"],
+        token,
+        {"code": "MODEL_REVISION_EXPORT_FAILED", "detail": "bounded"},
+        "export-worker",
+    )
+    assert failed["signed_by"] == ACTOR
+    assert failed["export"]["status"] == "FAILED"
+    assert ledger_set.models.get_revision_head(build["case_id"])["id"] == signed["id"]
+    retried, queued = ledger_set.models.queue_revision_export(
+        signed["id"], "reviewer"
+    )
+    assert queued is True and retried["export"]["status"] == "QUEUED"
+    assert ledger_set.models.pending_revision_exports() == [(signed["id"], "reviewer")]
+
+
 def test_model_build_rejects_cross_case_and_superseded_authority(
     ledger_set: Any,
 ) -> None:
@@ -1979,6 +2377,45 @@ def test_postgres_concurrent_model_queue_is_idempotent_and_preserves_actor(
     assert postgres_ledger_set.models.pending_jobs() == [
         (queued["id"], winner, "calculate")
     ]
+
+
+def test_postgres_two_writer_revision_cas_has_one_atomic_winner(
+    postgres_ledger_set: PostgresLedgerSet,
+) -> None:
+    build = _ready_model_build(postgres_ledger_set)
+    proposal = _model_revision(build)
+
+    def sign(actor: str) -> tuple[str, str]:
+        try:
+            revision = postgres_ledger_set.models.sign_off_revision(
+                proposal,
+                actor,
+                expected_head_revision_id=None,
+                expected_current_build_id=build["id"],
+                expected_current_input_fingerprint=build["input_fingerprint"],
+            )
+            return "signed", revision["id"]
+        except ledgers.RevisionConflictError as exc:
+            assert exc.current is not None
+            return "conflict", exc.current["id"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(sign, ("analyst-a", "analyst-b")))
+
+    assert sorted(status for status, _revision_id in outcomes) == [
+        "conflict",
+        "signed",
+    ]
+    assert len({revision_id for _status, revision_id in outcomes}) == 1
+    revisions = postgres_ledger_set.models.list_revisions(build["case_id"])
+    assert len(revisions) == 1
+    assert postgres_ledger_set.models.get_revision_head(build["case_id"]) == revisions[0]
+    signed_audits = [
+        event
+        for event in postgres_ledger_set.publications.list_audit()
+        if event["action"] == "model.revision.signed"
+    ]
+    assert len(signed_audits) == 1
 
 
 def test_postgres_stale_attempt_cannot_change_fenced_authority(

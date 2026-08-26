@@ -358,6 +358,31 @@ class CaseBuildFailedAuditEventResponse(AuditEventBaseResponse):
     code: str
 
 
+class ModelRevisionSignedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["model.revision.signed"]
+    case_id: str
+    build_id: str
+    revision_id: str
+    revision_number: int
+
+
+class ModelRevisionExportAuditEventResponse(AuditEventBaseResponse):
+    action: Literal[
+        "model.revision.export.queued",
+        "model.revision.export.succeeded",
+        "model.revision.export.downloaded",
+    ]
+    case_id: str
+    revision_id: str
+
+
+class ModelRevisionExportFailedAuditEventResponse(AuditEventBaseResponse):
+    action: Literal["model.revision.export.failed"]
+    case_id: str
+    revision_id: str
+    code: str
+
+
 class ThesisVersionedAuditEventResponse(AuditEventBaseResponse):
     action: Literal["thesis.versioned"]
     case_id: str
@@ -441,6 +466,9 @@ AuditEvent = Annotated[
     | SnapshotVisibleSwitchedAuditEventResponse
     | CaseBuildAuditEventResponse
     | CaseBuildFailedAuditEventResponse
+    | ModelRevisionSignedAuditEventResponse
+    | ModelRevisionExportAuditEventResponse
+    | ModelRevisionExportFailedAuditEventResponse
     | ThesisVersionedAuditEventResponse
     | RecommendationVersionedAuditEventResponse
     | CaseReportAuditEventResponse
@@ -1213,6 +1241,103 @@ class ModelWorksheetResponse(WireModel):
 
 class QueueModelExportResponse(WireModel):
     build: ModelBuildRouteResponse
+    queued: bool
+
+
+class AssumptionRegistryRouteResponse(WireModel):
+    version: str
+    digest: str
+    definitions: list[dict[str, Any]]
+    build_id: str
+    accepted_snapshot_id: str
+    input_fingerprint: str
+    defaults: list[dict[str, Any]]
+
+
+class ModelPreviewRouteResponse(WireModel):
+    case_id: str
+    build_id: str
+    accepted_snapshot_id: str
+    build_input_fingerprint: str
+    build_payload_digest: str
+    registry_version: str
+    registry_digest: str
+    calculation_contract_version: str
+    parent_revision_id: str | None
+    draft_generation: int
+    effective_assumptions: list[dict[str, Any]]
+    assumptions_digest: str
+    outputs: dict[str, Any]
+    outputs_digest: str
+    deltas: dict[str, Any]
+    preview_digest: str
+
+
+class ModelRevisionRouteResponse(WireModel):
+    id: str
+    case_id: str
+    build_id: str
+    accepted_snapshot_id: str
+    build_input_fingerprint: str
+    build_payload_digest: str
+    registry_version: str
+    registry_digest: str
+    calculation_contract_version: str
+    effective_assumptions: list[dict[str, Any]]
+    assumptions_digest: str
+    outputs: dict[str, Any]
+    outputs_digest: str
+    preview_digest: str
+    parent_revision_id: str | None
+    note: str
+    revision_number: int
+    signed_by: str
+    signed_at: str
+    export: dict[str, Any]
+    state: Literal["ACTIVE", "SUPERSEDED", "STALE"] | None = None
+
+
+class ModelRevisionListResponse(WireModel):
+    revisions: list[ModelRevisionRouteResponse]
+
+
+class ModelRebasePreviewRouteResponse(WireModel):
+    case_id: str
+    source_revision_id: str
+    source_build_id: str
+    build_id: str
+    draft_generation: int
+    compatible: list[dict[str, Any]]
+    changed: list[dict[str, Any]]
+    invalidated: list[dict[str, Any]]
+    candidate_assumptions: list[dict[str, Any]]
+    preview: ModelPreviewRouteResponse | None
+
+
+class ModelScenarioRouteResponse(WireModel):
+    draft_generation: int
+    baseline: dict[str, Any]
+    scenario: dict[str, Any]
+    scenario_digest: str
+
+
+class ModelSensitivityRouteResponse(WireModel):
+    case_id: str
+    build_id: str
+    base_revision_id: str | None
+    registry_version: str
+    registry_digest: str
+    assumption_id: str
+    case: Literal["BASE", "DOWNSIDE"]
+    period_scope: str
+    output_id: str
+    draft_generation: int
+    points: list[dict[str, Any]]
+    breakpoint: dict[str, Any] | None
+
+
+class QueueRevisionExportResponse(WireModel):
+    revision: ModelRevisionRouteResponse
     queued: bool
 
 

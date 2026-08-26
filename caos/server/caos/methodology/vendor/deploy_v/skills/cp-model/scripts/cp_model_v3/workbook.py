@@ -77,6 +77,14 @@ class RenderMetadata:
 
 
 @dataclass(frozen=True)
+class RevisionRenderContext:
+    assumptions: Sequence[Mapping[str, Any]]
+    defaults: Sequence[Mapping[str, Any]]
+    definitions: Sequence[Mapping[str, Any]]
+    record: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class RenderResult:
     formulas: tuple[FormulaExpectation, ...]
     mappings: tuple[MappingRecord, ...]
@@ -2160,6 +2168,7 @@ def _render_audit(
     model: CreditModelIR,
     calculations: CalculationBook,
     metadata: RenderMetadata,
+    revision: RevisionRenderContext | None = None,
 ) -> None:
     ws = workbook.create_sheet("_AUDIT")
     _append_literal_row(ws, ("key", "value", "sha256"))
@@ -2197,6 +2206,31 @@ def _render_audit(
     )
     for row in rows:
         _append_literal_row(ws, row)
+    if revision is not None:
+        for key in (
+            "id",
+            "build_id",
+            "parent_revision_id",
+            "revision_number",
+            "signed_by",
+            "signed_at",
+            "note",
+            "preview_digest",
+            "assumptions_digest",
+            "outputs_digest",
+            "registry_version",
+            "registry_digest",
+            "calculation_contract_version",
+        ):
+            value = revision.record.get(key)
+            _append_literal_row(
+                ws,
+                (
+                    f"revision::{key}",
+                    "" if value is None else value,
+                    value if key.endswith("digest") and isinstance(value, str) else "",
+                ),
+            )
     for case in ("BASE", "DOWNSIDE"):
         for index, breach in enumerate(calculations.first_breaches[case], 1):
             _append_literal_row(
@@ -2218,6 +2252,141 @@ def _render_audit(
         )
     ws.sheet_state = "hidden"
     ws.freeze_panes = "A2"
+
+
+def _render_revision(
+    workbook: Workbook,
+    state: _RenderState,
+    revision: RevisionRenderContext,
+) -> None:
+    assumptions = workbook.create_sheet("Assumptions", 3)
+    headers = (
+        "Assumption ID",
+        "Label",
+        "Family",
+        "Case",
+        "Period",
+        "Unit",
+        "Status",
+        "Default",
+        "Signed value",
+        "Delta",
+        "Hard minimum",
+        "Hard maximum",
+        "Default source",
+        "Gap code",
+        "Affected outputs",
+    )
+    _append_literal_row(assumptions, headers)
+    definitions = {
+        item.get("assumption_id"): item for item in revision.definitions
+    }
+    defaults = {
+        (item.get("assumption_id"), item.get("case"), item.get("period_id")): item
+        for item in revision.defaults
+    }
+    for item in revision.assumptions:
+        key = (item.get("assumption_id"), item.get("case"), item.get("period_id"))
+        definition = definitions.get(item.get("assumption_id"), {})
+        default = defaults.get(key, {})
+        default_value = default.get("value")
+        signed_value = item.get("value")
+        default_number = (
+            Decimal(str(default_value)) if default_value is not None else None
+        )
+        signed_number = (
+            Decimal(str(signed_value)) if signed_value is not None else None
+        )
+        delta = (
+            signed_number - default_number
+            if signed_number is not None and default_number is not None
+            else None
+        )
+        row = _append_literal_row(
+            assumptions,
+            (
+                item.get("assumption_id", ""),
+                definition.get("label", ""),
+                definition.get("family", ""),
+                item.get("case", ""),
+                item.get("period_id", ""),
+                item.get("unit", ""),
+                item.get("status", ""),
+                default_number,
+                signed_number,
+                delta,
+                Decimal(str(definition["hard_min"]))
+                if definition.get("hard_min") is not None
+                else "",
+                Decimal(str(definition["hard_max"]))
+                if definition.get("hard_max") is not None
+                else "",
+                definition.get("default_value_source", ""),
+                item.get("gap_code", ""),
+                ", ".join(definition.get("affected_outputs", ())),
+            ),
+        )
+        state.mappings.append(
+            MappingRecord(
+                f"revision_assumption::{item.get('assumption_id')}",
+                "ANALYST",
+                f"Assumptions!I{row}",
+                "SIGNED_INPUT",
+                str(item.get("period_id", "")),
+                "",
+            )
+        )
+    assumptions.freeze_panes = "A2"
+    assumptions.auto_filter.ref = assumptions.dimensions
+
+    record_sheet = workbook.create_sheet("Revision Record", 4)
+    _append_literal_row(record_sheet, ("Key", "Value"))
+    for key in (
+        "id",
+        "revision_number",
+        "build_id",
+        "parent_revision_id",
+        "signed_by",
+        "signed_at",
+        "note",
+        "accepted_snapshot_id",
+        "build_input_fingerprint",
+        "build_payload_digest",
+        "registry_version",
+        "registry_digest",
+        "calculation_contract_version",
+        "assumptions_digest",
+        "outputs_digest",
+        "preview_digest",
+    ):
+        row = _append_literal_row(
+            record_sheet,
+            (key, "" if revision.record.get(key) is None else revision.record.get(key)),
+        )
+        state.mappings.append(
+            MappingRecord(
+                f"revision_record::{key}",
+                "CAOS",
+                f"Revision Record!B{row}",
+                "SIGNED_RECORD",
+                "",
+                "",
+            )
+        )
+    record_sheet.freeze_panes = "A2"
+
+    for ws in (assumptions, record_sheet):
+        for cell in ws[1]:
+            cell.fill = _fill(NAVY)
+            cell.font = Font(color=WHITE, bold=True)
+        for column in range(1, ws.max_column + 1):
+            ws.column_dimensions[get_column_letter(column)].width = min(
+                60,
+                max(
+                    12,
+                    max(len(str(ws.cell(row, column).value or "")) for row in range(1, ws.max_row + 1)) + 2,
+                ),
+            )
 
 
 def _style_hidden_sheets(workbook: Workbook) -> None:
@@ -2246,6 +2415,7 @@ def render_workbook(
     calculations: CalculationBook,
     metadata: RenderMetadata,
     output_path: Path,
+    revision: RevisionRenderContext | None = None,
 ) -> RenderResult:
     """Create the complete workbook from a blank OOXML package."""
 
@@ -2256,6 +2426,8 @@ def render_workbook(
     input_render = _render_inputs(workbook, model)
     state = _RenderState(workbook)
     state.mappings.extend(input_render.mappings)
+    if revision is not None:
+        _render_revision(workbook, state, revision)
     model_cells, _rows = _render_model(
         state,
         model,
@@ -2273,7 +2445,7 @@ def render_workbook(
         model,
         calculations,
     )
-    _render_audit(workbook, model, calculations, metadata)
+    _render_audit(workbook, model, calculations, metadata, revision)
     _style_hidden_sheets(workbook)
     workbook.calculation.calcMode = "auto"
     workbook.calculation.fullCalcOnLoad = True

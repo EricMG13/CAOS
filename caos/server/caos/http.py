@@ -41,7 +41,12 @@ from .contracts import (
     LoanUniverseImportRequest,
     MemberRequest,
     MethodologyDraftRequest,
+    ModelPreviewRequest,
+    ModelRebasePreviewRequest,
+    ModelScenarioRequest,
+    ModelSignOffRequest,
     NoteRequest,
+    OneWaySensitivityRequest,
     RecommendationMatrixRequest,
     ReportInputsRequest,
     RVUniverseRequest,
@@ -58,6 +63,7 @@ from .identity_cases.domain import (
 )
 from .methodology.bundle import DeployVBundle, MethodologyError
 from .models.domain import CpModelBundle
+from .models.revisions import ModelRevisionRuntime, ModelRevisionService
 from .models.runtime import (
     MAX_EXPORT_BYTES,
     ModelBuildRuntime,
@@ -66,6 +72,7 @@ from .models.runtime import (
 )
 from .memory_ledgers import MemoryLedgerSet
 from .postgres_ledgers import PostgresLedgerSet
+from .ledgers import RevisionConflictError
 from .publishing.domain import (
     freeze_report,
     render_pdf,
@@ -77,6 +84,7 @@ from .responses import (
     AdminBundleResponse,
     ArtifactResponse,
     AssumptionResponse,
+    AssumptionRegistryRouteResponse,
     AuditRouteResponse,
     CaseDetailResponse,
     CaseMemberResponse,
@@ -89,12 +97,17 @@ from .responses import (
     MethodologyVerificationResponse,
     ModelBuildRouteResponse,
     ModelListResponse,
+    ModelPreviewRouteResponse,
+    ModelRebasePreviewRouteResponse,
+    ModelRevisionListResponse,
+    ModelRevisionRouteResponse,
     ModelReadinessRouteResponse,
     ModelWorksheetResponse,
     NoteRouteResponse,
     PathwayFitResponse,
     QueueModelExportResponse,
     QueueModelResponse,
+    QueueRevisionExportResponse,
     RecommendationHistoryResponse,
     RecommendationResponse,
     ReportInputsResponse,
@@ -102,6 +115,8 @@ from .responses import (
     RunRouteResponse,
     RVRouteResponse,
     RVUniverseResponse,
+    ModelScenarioRouteResponse,
+    ModelSensitivityRouteResponse,
     SnapshotOverviewResponse,
     SnapshotResponse,
     SourceResponse,
@@ -155,6 +170,14 @@ def create_app(
     model_runtime = ModelBuildRuntime(
         models, model_readiness, model_bundle, runtime.executor, settings.storage_dir
     )
+    revision_service = ModelRevisionService(models, model_readiness, model_bundle)
+    revision_runtime = ModelRevisionRuntime(
+        models,
+        revision_service,
+        model_bundle,
+        runtime.executor,
+        settings.storage_dir,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -177,6 +200,8 @@ def create_app(
     app.state.runtime = runtime
     app.state.model_readiness = model_readiness
     app.state.model_runtime = model_runtime
+    app.state.revision_service = revision_service
+    app.state.revision_runtime = revision_runtime
 
     def identity(request: Request) -> Identity:
         return identity_from_request(request, settings)
@@ -774,6 +799,19 @@ def create_app(
         return {"build": public_model_build(build), "created": created}
 
     @app.get(
+        "/api/cases/{case_id}/models/assumption-registry",
+        response_model=AssumptionRegistryRouteResponse,
+    )
+    def model_assumption_registry(
+        case_id: str, build_id: str, request: Request
+    ) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        try:
+            return revision_service.assumption_registry(case_id, build_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
         "/api/cases/{case_id}/models/{build_id}", response_model=ModelBuildRouteResponse
     )
     def model_status(case_id: str, build_id: str, request: Request) -> dict[str, Any]:
@@ -819,6 +857,235 @@ def create_app(
         if queued and settings.environment != "production":
             model_runtime.schedule_export(build_id, who.subject)
         return {"build": public_model_build(build), "queued": queued}
+
+    @app.post(
+        "/api/cases/{case_id}/models/previews",
+        response_model=ModelPreviewRouteResponse,
+    )
+    def preview_model_revision(
+        case_id: str, payload: ModelPreviewRequest, request: Request
+    ) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        try:
+            return revision_service.preview(
+                case_id,
+                payload.build_id,
+                payload.registry_version,
+                payload.registry_digest,
+                [row.model_dump(mode="json") for row in payload.assumptions],
+                parent_revision_id=payload.parent_revision_id,
+                draft_generation=payload.draft_generation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/cases/{case_id}/model-revisions",
+        response_model=ModelRevisionListResponse,
+    )
+    def model_revisions(case_id: str, request: Request) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        return {"revisions": revision_service.list_revisions(case_id)}
+
+    @app.post(
+        "/api/cases/{case_id}/model-revisions/sign-off",
+        status_code=201,
+        response_model=ModelRevisionRouteResponse,
+    )
+    def sign_off_model_revision(
+        case_id: str, payload: ModelSignOffRequest, request: Request
+    ) -> dict[str, Any]:
+        who = identity(request)
+        require_case(runs, case_id, who, write=True)
+        try:
+            signed = revision_service.sign_off(
+                case_id,
+                payload.build_id,
+                payload.registry_version,
+                payload.registry_digest,
+                [row.model_dump(mode="json") for row in payload.assumptions],
+                parent_revision_id=payload.parent_revision_id,
+                expected_head_revision_id=payload.expected_head_revision_id,
+                preview_digest=payload.preview_digest,
+                note=payload.note,
+                actor=who.subject,
+                draft_generation=payload.draft_generation,
+            )
+        except RevisionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "MODEL_REVISION_CONFLICT",
+                    "current": exc.current,
+                    "current_build": exc.current_build,
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if settings.environment != "production":
+            try:
+                revision_runtime.schedule_export(signed["id"], who.subject)
+            except Exception:
+                pass
+        return next(
+            revision
+            for revision in revision_service.list_revisions(case_id)
+            if revision["id"] == signed["id"]
+        )
+
+    @app.post(
+        "/api/cases/{case_id}/model-revisions/rebase-preview",
+        response_model=ModelRebasePreviewRouteResponse,
+    )
+    def rebase_model_revision(
+        case_id: str, payload: ModelRebasePreviewRequest, request: Request
+    ) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        try:
+            return revision_service.rebase_preview(
+                case_id,
+                payload.revision_id,
+                payload.build_id,
+                draft_generation=payload.draft_generation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/cases/{case_id}/models/scenarios",
+        response_model=ModelScenarioRouteResponse,
+    )
+    def scenario_model(
+        case_id: str, payload: ModelScenarioRequest, request: Request
+    ) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        try:
+            return revision_service.scenario(
+                case_id,
+                payload.build_id,
+                payload.registry_version,
+                payload.registry_digest,
+                [shock.model_dump(mode="json") for shock in payload.shocks],
+                base_revision_id=payload.base_revision_id,
+                draft_generation=payload.draft_generation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/cases/{case_id}/models/sensitivities/one-way",
+        response_model=ModelSensitivityRouteResponse,
+    )
+    def one_way_sensitivity(
+        case_id: str, payload: OneWaySensitivityRequest, request: Request
+    ) -> dict[str, Any]:
+        require_case(runs, case_id, identity(request))
+        try:
+            return revision_service.one_way(
+                case_id,
+                payload.build_id,
+                payload.registry_version,
+                payload.registry_digest,
+                payload.assumption_id,
+                payload.case,
+                payload.period_scope,
+                minimum=payload.minimum,
+                maximum=payload.maximum,
+                step=payload.step,
+                output_id=payload.output_id,
+                base_revision_id=payload.base_revision_id,
+                draft_generation=payload.draft_generation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/cases/{case_id}/model-revisions/{revision_id}/export",
+        status_code=202,
+        response_model=QueueRevisionExportResponse,
+    )
+    def queue_model_revision_export(
+        case_id: str, revision_id: str, request: Request
+    ) -> dict[str, Any]:
+        who = identity(request)
+        require_case(runs, case_id, who, write=True)
+        revision = models.get_revision(revision_id)
+        if revision is None or revision.get("case_id") != case_id:
+            raise HTTPException(status_code=404, detail="model revision not found")
+        try:
+            queued_revision, queued = models.queue_revision_export(
+                revision_id, who.subject
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if queued and settings.environment != "production":
+            try:
+                revision_runtime.schedule_export(revision_id, who.subject)
+            except Exception:
+                pass
+        public = next(
+            (
+                item
+                for item in revision_service.list_revisions(case_id)
+                if item["id"] == queued_revision["id"]
+            ),
+            queued_revision,
+        )
+        return {"revision": public, "queued": queued}
+
+    @app.get(
+        "/api/cases/{case_id}/model-revisions/{revision_id}/download"
+    )
+    def download_model_revision(
+        case_id: str, revision_id: str, request: Request
+    ) -> Response:
+        who = identity(request)
+        require_case(runs, case_id, who)
+        revision = models.get_revision(revision_id)
+        if revision is None or revision.get("case_id") != case_id:
+            raise HTTPException(status_code=404, detail="model revision not found")
+        export = revision.get("export") or {}
+        key = export.get("vault_key")
+        if export.get("status") != "READY" or not isinstance(key, str):
+            raise HTTPException(
+                status_code=409, detail="MODEL_REVISION_EXPORT_NOT_READY"
+            )
+        root = settings.storage_dir.resolve()
+        candidate = root / key
+        try:
+            path = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=409, detail="MODEL_REVISION_EXPORT_UNAVAILABLE"
+            ) from exc
+        if not path.is_relative_to(root) or not path.is_file():
+            raise HTTPException(
+                status_code=409, detail="MODEL_REVISION_EXPORT_UNAVAILABLE"
+            )
+        size = path.stat().st_size
+        expected_size = export.get("size")
+        if (
+            not isinstance(expected_size, int)
+            or expected_size <= 0
+            or expected_size > MAX_EXPORT_BYTES
+            or size != expected_size
+        ):
+            raise HTTPException(
+                status_code=409, detail="MODEL_REVISION_EXPORT_INTEGRITY_FAILED"
+            )
+        with path.open("rb") as exported:
+            checksum = hashlib.file_digest(exported, "sha256").hexdigest()
+        if checksum != export.get("sha256"):
+            raise HTTPException(
+                status_code=409, detail="MODEL_REVISION_EXPORT_INTEGRITY_FAILED"
+            )
+        models.record_revision_export_download(revision_id, case_id, who.subject)
+        return FileResponse(
+            path,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=f"{revision_id}.xlsx",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.get("/api/cases/{case_id}/models/{build_id}/download")
     def download_model(case_id: str, build_id: str, request: Request) -> Response:

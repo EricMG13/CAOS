@@ -293,6 +293,36 @@ class CpModelBundle:
             )
         )
 
+    def export_revision(
+        self,
+        paths: dict[str, Path],
+        output_dir: Path,
+        *,
+        effective_assumptions: list[dict[str, Any]],
+        default_assumptions: list[dict[str, Any]],
+        revision: dict[str, Any],
+    ) -> Any:
+        return self._builder.build_cp_model(
+            self._builder.BuildRequest(
+                bundle=self._domain.BundlePaths(
+                    cp1=paths["CP-1"],
+                    cp1a=paths["CP-1A"],
+                    cp1b=paths["CP-1B"],
+                    cp2=paths["CP-2"],
+                    cp2b=paths["CP-2B"],
+                    cp2g=paths.get("CP-2G"),
+                ),
+                output_dir=output_dir,
+                effective_assumptions=effective_assumptions,
+                revision=self._workbook.RevisionRenderContext(
+                    assumptions=effective_assumptions,
+                    defaults=default_assumptions,
+                    definitions=self.assumption_registry["definitions"],
+                    record=revision,
+                ),
+            )
+        )
+
 
 def project_cp2b(
     cp2a_markdown: str,

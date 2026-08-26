@@ -769,7 +769,11 @@ def test_openapi_declares_strict_models_for_every_json_success_response(
 ) -> None:
     exempt = {
         ("get", "/api/runs/{run_id}/events"),
-        ("get", "/api/cases/{case_id}/models/{build_id}/download"),
+            ("get", "/api/cases/{case_id}/models/{build_id}/download"),
+            (
+                "get",
+                "/api/cases/{case_id}/model-revisions/{revision_id}/download",
+            ),
         ("get", "/api/cases/{case_id}/reports/export/{format_name}"),
     }
     paths = client.app.openapi()["paths"]

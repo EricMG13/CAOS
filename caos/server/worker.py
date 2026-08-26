@@ -7,7 +7,9 @@ import time
 from caos.http import app
 
 
-def dispatch_pending(runs, models, runtime, model_runtime, futures) -> None:
+def dispatch_pending(
+    runs, models, runtime, model_runtime, futures, revision_runtime=None
+) -> None:
     for run_id, actor in runs.pending_runs():
         key = ("workflow", run_id)
         if key in futures:
@@ -24,6 +26,12 @@ def dispatch_pending(runs, models, runtime, model_runtime, futures) -> None:
                 else model_runtime.schedule
             )
             futures[key] = schedule(build_id, actor)
+    if revision_runtime is not None:
+        for revision_id, actor in models.pending_revision_exports():
+            key = ("model-revision", revision_id)
+            if key in futures:
+                continue
+            futures[key] = revision_runtime.schedule_export(revision_id, actor)
     for key, future in list(futures.items()):
         if not future.done():
             continue
@@ -37,6 +45,7 @@ def dispatch_pending(runs, models, runtime, model_runtime, futures) -> None:
 def main() -> None:
     runtime = app.state.runtime
     model_runtime = getattr(app.state, "model_runtime", None)
+    revision_runtime = getattr(app.state, "revision_runtime", None)
     ledgers = app.state.ledgers
     poll_seconds = float(os.getenv("WORKER_POLL_SECONDS", "1"))
     if not math.isfinite(poll_seconds) or poll_seconds < 0.01:
@@ -47,7 +56,14 @@ def main() -> None:
         flush=True,
     )
     while True:
-        dispatch_pending(ledgers.runs, ledgers.models, runtime, model_runtime, futures)
+        dispatch_pending(
+            ledgers.runs,
+            ledgers.models,
+            runtime,
+            model_runtime,
+            futures,
+            revision_runtime,
+        )
         time.sleep(poll_seconds)
 
 

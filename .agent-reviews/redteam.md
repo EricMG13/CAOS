@@ -4671,3 +4671,82 @@ Decision: accept the calculation-boundary correction. Validator and calculator
 now fail closed independently at their own authority boundaries, while the
 methodology's explicitly optional unavailable inputs continue to degrade rather
 than block.
+
+## 2026-08-26 — Analyst authoring Phase 3 signed revision architecture
+
+Architecture under review: append-only signed Analyst Model Revisions, transient
+preview/rebase/scenario/sensitivity calculations, and stored exact revision XLSX
+publication through the existing CP-MODEL renderer.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-262 | Durability reviewer | Updating export lifecycle fields inside the signed revision record would make an allegedly immutable committee authority mutable after Sign-Off. | Critical | Resolved and verified | Signed calculation identity is stored only in `model_revisions`; mutable queue/lease/error/artifact metadata is isolated in `model_revision_exports` and composed only on reads. Memory and PostgreSQL tests mutate export state and prove the signed identity/digests remain unchanged. |
+| RT-2026-08-26-263 | Concurrency reviewer | Two analysts could both validate the same preview/head and overwrite shared authority, or a new accepted snapshot could race Sign-Off after calculation. | Critical | Resolved and verified | Sign-Off revalidates build identity inside the ledger transaction, locks the case/build/head boundary, compares the expected head, inserts one immutable revision, advances the head, creates its export job, and appends the audit together. A disposable real PostgreSQL two-writer test produces exactly one winner and one recoverable conflict with no partial revision/head/audit state. |
+| RT-2026-08-26-264 | Privacy/governance reviewer | Temporary previews, Rebase Candidates, Scenario Runs, or one-way points could leak unapproved analyst assumptions into shared durable history. | Critical | Resolved and verified | Every temporary calculation stays inside `ModelRevisionService` and calls no write-ledger method. Focused tests snapshot revision rows and audit history before each transient path and prove both remain byte-for-byte unchanged; only exact Sign-Off persists assumptions. |
+| RT-2026-08-26-265 | Historical reproducibility reviewer | Exporting after quarterly acceptance could accidentally resolve the latest build or renderer inputs rather than the signed revision's historical build, producing an XLSX that no longer matches its stored outputs. | Critical | Resolved and verified | The worker resolves the revision's immutable build with `current=False`, reloads that build's accepted snapshot and fingerprint, applies the exact signed effective assumptions, and uses the single existing workbook renderer. The altered-overlay LibreOffice regression proves formula/cache/Python parity, visible Assumptions and Revision Record sheets, audit mappings, stored SHA-256/size, and tamper-rejecting download. |
+| RT-2026-08-26-266 | Failure-path reviewer | Queue/scheduler or XLSX failure after Sign-Off could roll back or demote a valid signed revision, while duplicate retries could publish competing artifacts. | High | Resolved and verified | The atomic ledger transaction commits the revision and an idempotent queued export before best-effort scheduling. Fenced claim/renew/complete transitions isolate failures in export metadata, retain the signed revision as ACTIVE/SUPERSEDED/STALE, and permit retry. HTTP, worker, memory, and PostgreSQL regressions cover scheduler failure, export failure/retry, duplicate requests, and content-addressed publication. |
+| RT-2026-08-26-267 | Availability reviewer | A malformed or pathological temporary request could create unbounded calculation work. | High | Resolved with bounded deterministic scope | Strict contracts cap payload fields, assumption/shock counts, one-way points and numeric finiteness; the service has four calculation slots and a fail-closed elapsed-time deadline. CP-MODEL operates on exactly two cases and three forecast periods with no provider/network work. The deadline rejects over-budget results rather than attempting unsafe thread termination. |
+
+Decision: accept Phase 3 for independent review. The full server suite passes
+455 tests against disposable PostgreSQL with LibreOffice enabled and 406 tests
+with 49 explicit environment skips without a DSN. Route audit, Ruff, Bandit,
+Python and frontend dependency audits, corpus consistency, deterministic
+authority integrity, and clean-diff gates pass. The GitNexus critical blast
+radius is the expected authorized HTTP/ledger composition surface and is backed
+by the broad route and ledger suites.
+
+## 2026-08-26 — Analyst authoring Phase 3 independent-review corrections
+
+Correction under review: close the four Important findings concerning current
+build CAS, assumption provenance, aggregate deadlines, and historical export
+runtime identity.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-268 | Concurrency reviewer | Sign-Off compared only the previewed build and accepted snapshot, so a newer READY build for the same snapshot could commit concurrently without invalidating the revision. | Critical | Resolved and verified | Memory and PostgreSQL adapters now CAS the latest READY build inside the same case-locked transaction. A deterministic two-connection PostgreSQL race holds the build-completion case lock, observes Sign-Off blocked, commits the newer build, and proves a recoverable conflict with current build metadata and no revision/head/export/sign-off audit. The query uses the same queued-time/id ordering as the canonical build list. |
+| RT-2026-08-26-269 | Provenance reviewer | Same-valued defaults with changed source context appeared compatible, and assumptions removed by registry evolution could silently disappear. | Critical | Resolved and verified | Signed assumption rows now retain server-derived default value/status/gap plus structured CP-2G source context and its digest. Rebase classifies changed context as changed and every source-only or target-only identity as invalidated; any invalidation suppresses preview. Registry-evolution tests prove no transient rows or audits persist. |
+| RT-2026-08-26-270 | Availability reviewer | A fresh deadline per calculation allowed baseline plus many scenario/sensitivity calculations to multiply the request budget. | High | Resolved and verified | One monotonic deadline is created per request and passed through baseline, preview, scenario and every one-way point. Semaphore acquisition and post-calculation checks fail closed with typed `MODEL_CALCULATION_TIMEOUT`; deterministic clock tests cover preview, scenario and one-way with zero persistence. The service does not claim to terminate an already-running Python calculation thread. |
+| RT-2026-08-26-271 | Historical-export reviewer | Retrying an old revision after a methodology/runtime upgrade could recompute it with current bytes while retaining old signed identities. | Critical | Resolved and verified | Export now requires exact signed methodology build, worksheet schema, and calculation runtime identities before resolving inputs. Missing pinned runtime fails with typed `MODEL_REVISION_EXPORT_RUNTIME_UNAVAILABLE`; restoring the pinned runtime permits retry. Controlled A→B→A→B tests prove no identity substitution, real LibreOffice parity, READY-byte stability, idempotent retry, and perpetual hash-verified download of stored bytes. |
+
+Decision: accept the independent-review corrections for rereview. All four root
+causes have red-first permanent regressions. The full suite passes 460 tests
+with disposable PostgreSQL and LibreOffice, and 409 tests with 51 explicit
+environment skips without a DSN. Security, consistency, integrity, lint, and
+clean-diff gates pass; no known Critical or Important defect remains.
+
+## 2026-08-26 — Analyst authoring Phase 3 monotonic-build correction
+
+Correction under review: replace the timestamp/random-ID tie-break described in
+RT-268 with one immutable server-owned model-build authority order.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-272 | Authority-order reviewer | Equal or coarse `queued_at` values left memory insertion order and PostgreSQL random-ID ordering free to disagree about the current READY build, so Sign-Off could select different authority by adapter. | Critical | Resolved and verified | Migration 007 now backfills an immutable `GENERATED ALWAYS AS IDENTITY` bigint and unique index; PostgreSQL allocates it atomically while the case lock serializes same-case creation. Memory maintains the equivalent private monotonic sequence and id-to-order map under its single lock. Both `list_builds` and current READY Sign-Off CAS use only this order. Caller-supplied values are rejected and the private order never enters build or signed revision JSON. Red-first memory/live-PostgreSQL tests use identical timestamps with older `model_z_older` and newer `model_a_newer`, prove list/current agreement and recoverable conflict metadata, and leave no revision/head/export/sign-off audit. An isolated-schema test proves legacy backfill, idempotent rerun, native immutable-update rejection, and a higher atomically generated next value. |
+
+Decision: accept the monotonic-build correction for final Phase 3 rereview. The
+live Sign-Off/order slice passes 11 tests, the full disposable PostgreSQL and
+LibreOffice suite passes 465 tests, and the no-DSN suite passes 411 tests with
+54 explicit skips. Ruff, route security, Bandit, corpus consistency, authority
+integrity, production bundle verification, and clean-diff gates pass. RT-272
+supersedes only the queued-time/id-order sentence in RT-268; its transactional
+case-lock/CAS guarantees remain in force. No known Critical or Important defect
+remains.
+
+## 2026-08-26 — Analyst authoring Phase 3 logical-backfill correction
+
+Correction under review: make the one-time legacy authority backfill independent
+of PostgreSQL heap/MVCC tuple placement while retaining identity-only authority
+for every post-migration build.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-273 | Migration-order reviewer | Adding an identity directly to a populated table assigns legacy values in heap scan order. Updating an old row before migration can move its live tuple after newer builds and incorrectly make it current. | Critical | Resolved and verified | Migration 007 takes an access-exclusive lock, adds a temporary plain bigint only when authority is absent, explicitly ranks all legacy rows with `row_number() OVER (ORDER BY queued_at, id)`, then sets NOT NULL and converts the populated column to `GENERATED ALWAYS AS IDENTITY`. It resets the owned sequence with `setval(max + 1, false)`, so the next server-generated value is strictly newer. On rerun it skips ranking once the identity exists, preserves every assigned value, and re-advances the sequence. The live RED proof updated the oldest tuple and observed the former automatic backfill invert authority; GREEN proves canonical timestamp/ID rank, adapter list order, current-build Sign-Off conflict metadata, zero revision/head/export/audit residue, idempotence, post-migration precedence despite an older timestamp/ID, immutable update rejection, caller-injection rejection, and no JSON leakage. No `ctid` or `xmin` participates. |
+
+Decision: accept the logical-backfill correction for Phase 3 final approval.
+The combined migration/order/race slice passes 13 tests, the full live
+PostgreSQL and LibreOffice suite passes 465 tests, and the no-DSN suite passes
+411 tests with 54 explicit skips. Ruff, route security, Bandit, corpus
+consistency, deterministic authority integrity, production verification, and
+clean-diff gates pass. RT-273 supersedes RT-272 only for the one-time legacy
+backfill mechanism; post-migration monotonic identity authority is unchanged.
+No known Critical or Important defect remains.

@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import clean_json, digest
-from .ledgers import SourceCatalog, _validate_run_nodes
+from .ledgers import (
+    RevisionConflictError,
+    _revision_conflict_build,
+    SourceCatalog,
+    _validate_run_nodes,
+    _validated_revision_identity,
+)
 from .store import (
     MAX_ACTIVE_JOBS,
     MODEL_JOB_KINDS,
@@ -56,7 +62,12 @@ class _MemoryState:
         self.event_conditions: dict[str, threading.Condition] = {}
         self.jobs: dict[str, Record] = {}
         self.model_builds: dict[str, Record] = {}
+        self.model_build_authority_orders: dict[str, int] = {}
+        self.next_model_build_authority_order = 0
         self.model_jobs: dict[str, Record] = {}
+        self.model_revisions: dict[str, Record] = {}
+        self.model_revision_heads: dict[str, str] = {}
+        self.model_revision_export_jobs: dict[str, Record] = {}
 
     @staticmethod
     def new_id(prefix: str) -> str:
@@ -254,19 +265,35 @@ class _MemoryState:
         self, build: dict[str, Any], actor: str
     ) -> tuple[dict[str, Any], bool]:
         with self.lock:
-            prior = copy.deepcopy((self.model_builds, self.model_jobs, self.audit))
+            prior = copy.deepcopy(
+                (
+                    self.model_builds,
+                    self.model_build_authority_orders,
+                    self.next_model_build_authority_order,
+                    self.model_jobs,
+                    self.audit,
+                )
+            )
             try:
                 record, created = self._queue_model_build_locked(build, actor)
                 if not created:
                     return (record, False)
             except Exception:
-                self.model_builds, self.model_jobs, self.audit = prior
+                (
+                    self.model_builds,
+                    self.model_build_authority_orders,
+                    self.next_model_build_authority_order,
+                    self.model_jobs,
+                    self.audit,
+                ) = prior
                 raise
             return (copy.deepcopy(record), True)
 
     def _queue_model_build_locked(
         self, build: dict[str, Any], actor: str
     ) -> tuple[dict[str, Any], bool]:
+        if "authority_order" in build:
+            raise ValueError("MODEL_BUILD_INVALID")
         existing = next(
             (
                 value
@@ -314,7 +341,11 @@ class _MemoryState:
         )
         record["export"] = {"status": "NOT_REQUESTED", "error": None}
         key = _model_job_key(record["id"], "calculate")
+        self.next_model_build_authority_order += 1
         self.model_builds[record["id"]] = record
+        self.model_build_authority_orders[record["id"]] = (
+            self.next_model_build_authority_order
+        )
         self.model_jobs[key] = {
             "build_id": record["id"],
             "kind": "calculate",
@@ -392,7 +423,11 @@ class _MemoryState:
                 if value.get("case_id") == case_id
             ]
             return copy.deepcopy(
-                sorted(values, key=lambda value: value["queued_at"], reverse=True)
+                sorted(
+                    values,
+                    key=lambda value: self.model_build_authority_orders[value["id"]],
+                    reverse=True,
+                )
             )
 
     def queue_model_export(
@@ -2101,6 +2136,14 @@ class _MemoryPublicationLedger(_Adapter):
 
 
 class _MemoryModelLedger(_Adapter):
+    def _revision_with_export_locked(self, revision: Record) -> Record:
+        result = copy.deepcopy(revision)
+        job = self._state.model_revision_export_jobs.get(revision["id"])
+        result["export"] = copy.deepcopy(
+            (job or {}).get("export", {"status": "NOT_REQUESTED", "error": None})
+        )
+        return result
+
     def queue_build(self, build: Record, actor: str) -> tuple[Record, bool]:
         proposal = copy.deepcopy(build)
         proposal["id"] = self._state.new_id("model")
@@ -2216,6 +2259,321 @@ class _MemoryModelLedger(_Adapter):
                 actor,
                 case_id=case_id,
                 build_id=build_id,
+            )
+
+    def sign_off_revision(
+        self,
+        revision: Record,
+        actor: str,
+        expected_head_revision_id: str | None,
+        expected_current_build_id: str,
+        expected_current_input_fingerprint: str,
+    ) -> Record:
+        state = self._state
+        with state.lock:
+            prior = copy.deepcopy(
+                (
+                    state.model_revisions,
+                    state.model_revision_heads,
+                    state.model_revision_export_jobs,
+                    state.audit,
+                )
+            )
+            try:
+                build = state.model_builds.get(revision.get("build_id"))
+                case = state.cases.get(revision.get("case_id"))
+                if (
+                    build is None
+                    or case is None
+                    or case.get("accepted_snapshot_id")
+                    != build.get("accepted_snapshot_id")
+                    or expected_current_build_id != build.get("id")
+                    or expected_current_input_fingerprint
+                    != build.get("input_fingerprint")
+                ):
+                    raise ValueError("MODEL_REVISION_INVALID")
+                proposal = _validated_revision_identity(build, revision)
+                current_id = state.model_revision_heads.get(proposal["case_id"])
+                current = (
+                    state.model_revisions.get(current_id) if current_id is not None else None
+                )
+                ready_builds = [
+                    item
+                    for item in state.model_builds.values()
+                    if item.get("case_id") == proposal["case_id"]
+                    and item.get("accepted_snapshot_id")
+                    == case.get("accepted_snapshot_id")
+                    and item.get("status") == "READY"
+                ]
+                current_build = (
+                    max(
+                        ready_builds,
+                        key=lambda item: state.model_build_authority_orders[item["id"]],
+                    )
+                    if ready_builds
+                    else None
+                )
+                if (
+                    current_build is None
+                    or current_build.get("id") != expected_current_build_id
+                    or current_build.get("input_fingerprint")
+                    != expected_current_input_fingerprint
+                ):
+                    raise RevisionConflictError(
+                        copy.deepcopy(current),
+                        _revision_conflict_build(current_build),
+                    )
+                if current_id != expected_head_revision_id:
+                    raise RevisionConflictError(
+                        copy.deepcopy(current),
+                        _revision_conflict_build(current_build),
+                    )
+                if proposal.get("parent_revision_id") != current_id:
+                    raise ValueError("MODEL_REVISION_INVALID")
+                saved = copy.deepcopy(proposal)
+                saved.update(
+                    id=state.new_id("revision"),
+                    revision_number=1
+                    + max(
+                        (
+                            item["revision_number"]
+                            for item in state.model_revisions.values()
+                            if item.get("case_id") == proposal["case_id"]
+                        ),
+                        default=0,
+                    ),
+                    signed_by=actor,
+                    signed_at=now_iso(),
+                )
+                state.model_revisions[saved["id"]] = saved
+                state.model_revision_heads[saved["case_id"]] = saved["id"]
+                state.model_revision_export_jobs[saved["id"]] = {
+                    "revision_id": saved["id"],
+                    "actor": actor,
+                    "status": "queued",
+                    "worker": None,
+                    "attempt_token": None,
+                    "lease_until": 0.0,
+                    "error": None,
+                    "export": {"status": "QUEUED", "error": None},
+                }
+                state.audit_event(
+                    "model.revision.signed",
+                    actor,
+                    case_id=saved["case_id"],
+                    build_id=saved["build_id"],
+                    revision_id=saved["id"],
+                    revision_number=saved["revision_number"],
+                )
+                return self._revision_with_export_locked(saved)
+            except Exception:
+                (
+                    state.model_revisions,
+                    state.model_revision_heads,
+                    state.model_revision_export_jobs,
+                    state.audit,
+                ) = prior
+                raise
+
+    def get_revision(self, revision_id: str) -> Record | None:
+        with self._state.lock:
+            revision = self._state.model_revisions.get(revision_id)
+            return self._revision_with_export_locked(revision) if revision else None
+
+    def list_revisions(self, case_id: str) -> list[Record]:
+        with self._state.lock:
+            return [
+                self._revision_with_export_locked(revision)
+                for revision in sorted(
+                    (
+                        revision
+                        for revision in self._state.model_revisions.values()
+                        if revision.get("case_id") == case_id
+                    ),
+                    key=lambda revision: revision["revision_number"],
+                )
+            ]
+
+    def get_revision_head(self, case_id: str) -> Record | None:
+        with self._state.lock:
+            revision_id = self._state.model_revision_heads.get(case_id)
+            revision = (
+                self._state.model_revisions.get(revision_id) if revision_id else None
+            )
+            return self._revision_with_export_locked(revision) if revision else None
+
+    def queue_revision_export(
+        self, revision_id: str, actor: str
+    ) -> tuple[Record, bool]:
+        state = self._state
+        with state.lock:
+            revision = state.model_revisions.get(revision_id)
+            job = state.model_revision_export_jobs.get(revision_id)
+            if revision is None or job is None:
+                raise ValueError("MODEL_REVISION_EXPORT_NOT_READY")
+            if job["status"] in {"queued", "claimed", "succeeded"}:
+                return self._revision_with_export_locked(revision), False
+            job.update(
+                actor=actor,
+                status="queued",
+                worker=None,
+                attempt_token=None,
+                lease_until=0.0,
+                error=None,
+                export={"status": "QUEUED", "error": None},
+            )
+            state.audit_event(
+                "model.revision.export.queued",
+                actor,
+                case_id=revision["case_id"],
+                revision_id=revision_id,
+            )
+            return self._revision_with_export_locked(revision), True
+
+    def pending_revision_exports(self) -> list[tuple[str, str]]:
+        with self._state.lock:
+            return [
+                (job["revision_id"], job["actor"])
+                for job in self._state.model_revision_export_jobs.values()
+                if job["status"] in {"queued", "claimed"}
+            ]
+
+    def claim_revision_export(self, revision_id: str, worker: str) -> str | None:
+        state = self._state
+        with state.lock:
+            job = state.model_revision_export_jobs.get(revision_id)
+            revision = state.model_revisions.get(revision_id)
+            if job is None or revision is None:
+                return None
+            now = time.monotonic()
+            if job["status"] == "claimed" and job["lease_until"] > now:
+                return None
+            if job["status"] not in {"queued", "claimed"}:
+                return None
+            token = state.new_id("attempt")
+            job.update(
+                status="claimed",
+                worker=worker,
+                attempt_token=token,
+                lease_until=now + state.lease_seconds,
+                error=None,
+            )
+            job["export"] = {"status": "EXPORTING", "error": None}
+            return token
+
+    def _revision_export_is_current_locked(
+        self, revision_id: str, attempt_token: str
+    ) -> bool:
+        job = self._state.model_revision_export_jobs.get(revision_id)
+        return bool(
+            job
+            and job["status"] == "claimed"
+            and job.get("attempt_token") == attempt_token
+            and job["lease_until"] > time.monotonic()
+        )
+
+    def renew_revision_export(self, revision_id: str, attempt_token: str) -> bool:
+        with self._state.lock:
+            if not self._revision_export_is_current_locked(revision_id, attempt_token):
+                return False
+            self._state.model_revision_export_jobs[revision_id]["lease_until"] = (
+                time.monotonic() + self._state.lease_seconds
+            )
+            return True
+
+    def revision_export_is_current(
+        self, revision_id: str, attempt_token: str
+    ) -> bool:
+        with self._state.lock:
+            return self._revision_export_is_current_locked(revision_id, attempt_token)
+
+    def complete_revision_export(
+        self,
+        revision_id: str,
+        attempt_token: str,
+        result: Record,
+        actor: str,
+    ) -> Record:
+        state = self._state
+        with state.lock:
+            if not self._revision_export_is_current_locked(revision_id, attempt_token):
+                raise JobFencedError("stale model revision export attempt")
+            revision = state.model_revisions[revision_id]
+            validated = _validated_model_result(revision, result, "export")
+            state.model_revision_export_jobs[revision_id]["export"] = {
+                **validated,
+                "status": "READY",
+                "error": None,
+            }
+            state.model_revision_export_jobs[revision_id].update(
+                status="succeeded", lease_until=0.0, error=None
+            )
+            state.audit_event(
+                "model.revision.export.succeeded",
+                actor,
+                case_id=revision["case_id"],
+                revision_id=revision_id,
+            )
+            return self._revision_with_export_locked(revision)
+
+    def fail_revision_export(
+        self,
+        revision_id: str,
+        attempt_token: str,
+        error: Record,
+        actor: str,
+    ) -> Record:
+        state = self._state
+        with state.lock:
+            if not self._revision_export_is_current_locked(revision_id, attempt_token):
+                raise JobFencedError("stale model revision export attempt")
+            if (
+                not isinstance(error, dict)
+                or set(error) != {"code", "detail"}
+                or not isinstance(error["code"], str)
+                or len(error["code"]) > 80
+                or not isinstance(error["detail"], str)
+                or len(error["detail"]) > 500
+            ):
+                raise ValueError("MODEL_ERROR_INVALID")
+            revision = state.model_revisions[revision_id]
+            stored_error = copy.deepcopy(error)
+            state.model_revision_export_jobs[revision_id]["export"] = {
+                "status": "FAILED",
+                "error": stored_error,
+            }
+            state.model_revision_export_jobs[revision_id].update(
+                status="failed", lease_until=0.0, error=stored_error
+            )
+            state.audit_event(
+                "model.revision.export.failed",
+                actor,
+                case_id=revision["case_id"],
+                revision_id=revision_id,
+                code=stored_error["code"],
+            )
+            return self._revision_with_export_locked(revision)
+
+    def record_revision_export_download(
+        self, revision_id: str, case_id: str, actor: str
+    ) -> None:
+        state = self._state
+        with state.lock:
+            revision = state.model_revisions.get(revision_id)
+            if (
+                revision is None
+                or revision.get("case_id") != case_id
+                or state.model_revision_export_jobs.get(revision_id, {})
+                .get("export", {})
+                .get("status")
+                != "READY"
+            ):
+                raise ValueError("MODEL_REVISION_EXPORT_NOT_READY")
+            state.audit_event(
+                "model.revision.export.downloaded",
+                actor,
+                case_id=case_id,
+                revision_id=revision_id,
             )
 
 

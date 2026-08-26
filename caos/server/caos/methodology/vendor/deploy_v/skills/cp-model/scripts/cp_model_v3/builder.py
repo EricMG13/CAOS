@@ -23,7 +23,12 @@ from .domain import (
     build_ir,
     sha256,
 )
-from .workbook import FormulaExpectation, RenderMetadata, render_workbook
+from .workbook import (
+    FormulaExpectation,
+    RenderMetadata,
+    RevisionRenderContext,
+    render_workbook,
+)
 
 
 VISIBLE_SHEETS = ("Credit Snapshot", "Model", "KPIs")
@@ -45,6 +50,8 @@ class BuildRequest:
     output_dir: Path
     quarter_count: int | None = None
     soffice_path: Path | None = None
+    effective_assumptions: Sequence[Mapping[str, Any]] | None = None
+    revision: RevisionRenderContext | None = None
 
 
 @dataclass(frozen=True)
@@ -188,8 +195,15 @@ def _index_expectations(
     return tracked
 
 
-def _validate_sheet_registry(formula_book: Any, value_book: Any) -> None:
-    expected_sheets = (*VISIBLE_SHEETS, *CONTROL_SHEETS)
+def _validate_sheet_registry(
+    formula_book: Any, value_book: Any, *, revision: bool
+) -> None:
+    visible_sheets = (
+        (*VISIBLE_SHEETS, "Assumptions", "Revision Record")
+        if revision
+        else VISIBLE_SHEETS
+    )
+    expected_sheets = (*visible_sheets, *CONTROL_SHEETS)
     formula_sheets = tuple(formula_book.sheetnames)
     value_sheets = tuple(value_book.sheetnames)
     if formula_sheets != expected_sheets:
@@ -202,7 +216,7 @@ def _validate_sheet_registry(formula_book: Any, value_book: Any) -> None:
             f"cached-value worksheet registry mismatch: expected {expected_sheets}, "
             f"found {value_sheets}"
         )
-    if any(formula_book[name].sheet_state != "visible" for name in VISIBLE_SHEETS):
+    if any(formula_book[name].sheet_state != "visible" for name in visible_sheets):
         raise CpModelV3Error("all public sheets must be visible")
     if any(formula_book[name].sheet_state != "hidden" for name in CONTROL_SHEETS):
         raise CpModelV3Error("all control sheets must be hidden")
@@ -291,6 +305,8 @@ def _validate_formula_values(
 def _validate_recalculated(
     path: Path,
     expectations: Sequence[FormulaExpectation],
+    *,
+    revision: bool = False,
 ) -> None:
     tracked = _index_expectations(expectations)
     try:
@@ -306,7 +322,7 @@ def _validate_recalculated(
         ) from exc
 
     try:
-        _validate_sheet_registry(formula_book, value_book)
+        _validate_sheet_registry(formula_book, value_book, revision=revision)
         formula_cells = _enumerate_formula_cells(formula_book, value_book)
         _validate_formula_inventory(formula_cells, tracked)
         _validate_formula_values(value_book, tracked)
@@ -349,7 +365,15 @@ def _publish_exclusive(source: Path, destination: Path) -> None:
 def build_cp_model(request: BuildRequest) -> BuildResult:
     """Build, recalculate, validate, and exclusively publish CP-MODEL v3."""
 
-    model = build_ir(request.bundle, quarter_count=request.quarter_count)
+    model = build_ir(
+        request.bundle,
+        quarter_count=request.quarter_count,
+        effective_assumptions=(
+            [dict(item) for item in request.effective_assumptions]
+            if request.effective_assumptions is not None
+            else None
+        ),
+    )
     calculations = calculate(model)
     soffice = _resolve_soffice(request.soffice_path)
     engine = _engine_version(soffice)
@@ -377,6 +401,7 @@ def build_cp_model(request: BuildRequest) -> BuildResult:
             calculations,
             RenderMetadata(renderer_hash, engine),
             draft,
+            request.revision,
         )
         _validate_draft_formula_inventory(draft, render.formulas)
         recalculated = _recalculate(
@@ -385,7 +410,11 @@ def build_cp_model(request: BuildRequest) -> BuildResult:
             workspace / "recalculated",
             workspace / "libreoffice-profile",
         )
-        _validate_recalculated(recalculated, render.formulas)
+        _validate_recalculated(
+            recalculated,
+            render.formulas,
+            revision=request.revision is not None,
+        )
         _publish_exclusive(recalculated, output_path)
 
     if not output_path.is_file():

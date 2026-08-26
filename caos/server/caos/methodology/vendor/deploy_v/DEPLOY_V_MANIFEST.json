@@ -1531,8 +1531,8 @@
           "sha256": "5c280d0447f736643c95460c8670ba721ca9444d3cb7e1fcd85d2c89fcfb7e86"
         },
         "scripts/cp_model_v3/builder.py": {
-          "bytes": 15173,
-          "sha256": "6a737713793b0d1dfacb65055340d3c54d442b9bdada955efd27b8fdee92760b"
+          "bytes": 15880,
+          "sha256": "3ab01b5195165253455a45fcf3e204d9a08ce9ed52cb85113be3f832b6d242fa"
         },
         "scripts/cp_model_v3/calculations.py": {
           "bytes": 57836,
@@ -1543,8 +1543,8 @@
           "sha256": "9b4c7a54303daff1f5ccce9351167d52dc4e9da7c7b928ca7276d67438cfd3c8"
         },
         "scripts/cp_model_v3/workbook.py": {
-          "bytes": 88742,
-          "sha256": "be63d463c0c9b5251f7b3c09828d33b7f476a824504941728ffd5a895ac772f2"
+          "bytes": 94284,
+          "sha256": "adfe9efa69a02376de1a57cc5c39c60a3132fc91045e55102da6ec222a67a88a"
         },
         "scripts/export_cp_model_v3.py": {
           "bytes": 4276,

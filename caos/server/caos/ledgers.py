@@ -5,8 +5,97 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from .contracts import digest
+
 
 Record = dict[str, Any]
+
+
+class RevisionConflictError(ValueError):
+    def __init__(
+        self, current: Record | None, current_build: Record | None = None
+    ) -> None:
+        super().__init__("MODEL_REVISION_CONFLICT")
+        self.current = current
+        self.current_build = current_build
+
+
+def _revision_conflict_build(build: Record | None) -> Record | None:
+    if build is None:
+        return None
+    return {
+        "id": build.get("id"),
+        "input_fingerprint": build.get("input_fingerprint"),
+        "accepted_snapshot_id": build.get("accepted_snapshot_id"),
+        "status": build.get("status"),
+    }
+
+
+def _validated_revision_identity(build: Record, revision: Record) -> Record:
+    proposal = dict(revision) if isinstance(revision, dict) else {}
+    runtime = build.get("calculation_runtime") or {}
+    required = {
+        "case_id",
+        "build_id",
+        "accepted_snapshot_id",
+        "build_input_fingerprint",
+        "build_payload_digest",
+        "registry_version",
+        "registry_digest",
+        "calculation_contract_version",
+        "effective_assumptions",
+        "assumptions_digest",
+        "outputs",
+        "outputs_digest",
+        "preview_digest",
+        "parent_revision_id",
+        "note",
+    }
+    hex_fields = (
+        "build_input_fingerprint",
+        "build_payload_digest",
+        "registry_digest",
+        "assumptions_digest",
+        "outputs_digest",
+        "preview_digest",
+    )
+    if (
+        set(proposal) != required
+        or build.get("status") != "READY"
+        or proposal.get("case_id") != build.get("case_id")
+        or proposal.get("build_id") != build.get("id")
+        or proposal.get("accepted_snapshot_id") != build.get("accepted_snapshot_id")
+        or proposal.get("build_input_fingerprint") != build.get("input_fingerprint")
+        or proposal.get("build_payload_digest") != build.get("payload_digest")
+        or proposal.get("registry_version")
+        != runtime.get("assumption_registry_version")
+        or proposal.get("registry_digest")
+        != runtime.get("assumption_registry_digest")
+        or proposal.get("calculation_contract_version")
+        != runtime.get("calculation_contract_version")
+        or any(
+            not isinstance(proposal.get(field), str)
+            or len(proposal[field]) != 64
+            or any(character not in "0123456789abcdef" for character in proposal[field])
+            for field in hex_fields
+        )
+        or not isinstance(proposal.get("effective_assumptions"), list)
+        or not isinstance(proposal.get("outputs"), dict)
+        or not isinstance(proposal.get("note"), str)
+        or not proposal["note"].strip()
+        or len(proposal["note"]) > 2000
+    ):
+        raise ValueError("MODEL_REVISION_INVALID")
+    try:
+        if (
+            proposal["assumptions_digest"]
+            != digest(proposal["effective_assumptions"])
+            or proposal["outputs_digest"] != digest(proposal["outputs"])
+        ):
+            raise ValueError("MODEL_REVISION_INVALID")
+    except (TypeError, ValueError):
+        raise ValueError("MODEL_REVISION_INVALID") from None
+    return proposal
 
 
 def _validate_run_nodes(nodes: list[Record]) -> None:
@@ -310,4 +399,53 @@ class ModelLedger(Protocol):
 
     def record_export_download(
         self, build_id: str, case_id: str, actor: str
+    ) -> None: ...
+
+    def sign_off_revision(
+        self,
+        revision: Record,
+        actor: str,
+        expected_head_revision_id: str | None,
+        expected_current_build_id: str,
+        expected_current_input_fingerprint: str,
+    ) -> Record: ...
+
+    def get_revision(self, revision_id: str) -> Record | None: ...
+
+    def list_revisions(self, case_id: str) -> list[Record]: ...
+
+    def get_revision_head(self, case_id: str) -> Record | None: ...
+
+    def queue_revision_export(
+        self, revision_id: str, actor: str
+    ) -> tuple[Record, bool]: ...
+
+    def pending_revision_exports(self) -> list[tuple[str, str]]: ...
+
+    def claim_revision_export(self, revision_id: str, worker: str) -> str | None: ...
+
+    def renew_revision_export(self, revision_id: str, attempt_token: str) -> bool: ...
+
+    def revision_export_is_current(
+        self, revision_id: str, attempt_token: str
+    ) -> bool: ...
+
+    def complete_revision_export(
+        self,
+        revision_id: str,
+        attempt_token: str,
+        result: Record,
+        actor: str,
+    ) -> Record: ...
+
+    def fail_revision_export(
+        self,
+        revision_id: str,
+        attempt_token: str,
+        error: Record,
+        actor: str,
+    ) -> Record: ...
+
+    def record_revision_export_download(
+        self, revision_id: str, case_id: str, actor: str
     ) -> None: ...

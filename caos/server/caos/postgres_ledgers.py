@@ -14,7 +14,12 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from .contracts import clean_json, digest
-from .ledgers import _validate_run_nodes
+from .ledgers import (
+    RevisionConflictError,
+    _revision_conflict_build,
+    _validate_run_nodes,
+    _validated_revision_identity,
+)
 from .migrations import apply_migrations
 from .store import (
     MAX_ACTIVE_JOBS,
@@ -2262,6 +2267,14 @@ class _PostgresPublicationLedger(_Adapter):
 
 
 class _PostgresModelLedger(_Adapter):
+    @staticmethod
+    def _revision_with_export(revision: Record, export: Record | None) -> Record:
+        result = copy.deepcopy(revision)
+        result["export"] = copy.deepcopy(
+            export or {"status": "NOT_REQUESTED", "error": None}
+        )
+        return result
+
     def _save_build(self, cursor: Any, build: Record) -> None:
         cursor.execute(
             "UPDATE model_builds SET status=%s, record=%s, started_at=%s, "
@@ -2291,6 +2304,8 @@ class _PostgresModelLedger(_Adapter):
         return copy.deepcopy(row[0]), row[1]
 
     def queue_build(self, build: Record, actor: str) -> tuple[Record, bool]:
+        if "authority_order" in build:
+            raise ValueError("MODEL_BUILD_INVALID")
         case_id = build.get("case_id")
         run_id = build.get("accepted_run_id")
         snapshot_id = build.get("accepted_snapshot_id")
@@ -2459,7 +2474,7 @@ class _PostgresModelLedger(_Adapter):
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT record FROM model_builds WHERE case_id=%s "
-                    "ORDER BY queued_at DESC, id DESC",
+                    "ORDER BY authority_order DESC",
                     (case_id,),
                 )
                 return [copy.deepcopy(row[0]) for row in cursor.fetchall()]
@@ -2599,6 +2614,16 @@ class _PostgresModelLedger(_Adapter):
         proposal = copy.deepcopy(result)
         with self._owner._connect() as connection:
             with connection.cursor() as cursor:
+                if kind == "calculate":
+                    cursor.execute(
+                        "SELECT case_id FROM model_builds WHERE id=%s", (build_id,)
+                    )
+                    case_row = cursor.fetchone()
+                    if case_row is None:
+                        raise JobFencedError("stale model attempt")
+                    cursor.execute(
+                        "SELECT 1 FROM cases WHERE id=%s FOR UPDATE", (case_row[0],)
+                    )
                 build, _ = self._assert_job(cursor, build_id, attempt_token, kind)
                 validated = _validated_model_result(build, proposal, kind)
                 if kind == "calculate":
@@ -2691,6 +2716,372 @@ class _PostgresModelLedger(_Adapter):
                     actor,
                     case_id=case_id,
                     build_id=build_id,
+                )
+
+    def sign_off_revision(
+        self,
+        revision: Record,
+        actor: str,
+        expected_head_revision_id: str | None,
+        expected_current_build_id: str,
+        expected_current_input_fingerprint: str,
+    ) -> Record:
+        proposal = copy.deepcopy(revision)
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT accepted_snapshot_id FROM cases WHERE id=%s FOR UPDATE",
+                    (proposal.get("case_id"),),
+                )
+                case_row = cursor.fetchone()
+                cursor.execute(
+                    "SELECT record FROM model_builds WHERE id=%s FOR UPDATE",
+                    (proposal.get("build_id"),),
+                )
+                build_row = cursor.fetchone()
+                if (
+                    case_row is None
+                    or build_row is None
+                    or case_row[0] != build_row[0].get("accepted_snapshot_id")
+                    or expected_current_build_id != build_row[0].get("id")
+                    or expected_current_input_fingerprint
+                    != build_row[0].get("input_fingerprint")
+                ):
+                    raise ValueError("MODEL_REVISION_INVALID")
+                validated = _validated_revision_identity(build_row[0], proposal)
+                cursor.execute(
+                    "SELECT revision.record, export.record FROM model_revision_heads AS head "
+                    "JOIN model_revisions AS revision ON revision.id=head.revision_id "
+                    "LEFT JOIN model_revision_exports AS export "
+                    "ON export.revision_id=revision.id WHERE head.case_id=%s "
+                    "FOR UPDATE OF head",
+                    (validated["case_id"],),
+                )
+                current_row = cursor.fetchone()
+                current = (
+                    self._revision_with_export(current_row[0], current_row[1])
+                    if current_row
+                    else None
+                )
+                current_id = current["id"] if current else None
+                cursor.execute(
+                    "SELECT record FROM model_builds WHERE case_id=%s "
+                    "AND accepted_snapshot_id=%s AND status='READY' "
+                    "ORDER BY authority_order DESC "
+                    "LIMIT 1 FOR SHARE",
+                    (validated["case_id"], validated["accepted_snapshot_id"]),
+                )
+                current_build_row = cursor.fetchone()
+                current_build = current_build_row[0] if current_build_row else None
+                if (
+                    current_build is None
+                    or current_build.get("id") != expected_current_build_id
+                    or current_build.get("input_fingerprint")
+                    != expected_current_input_fingerprint
+                ):
+                    raise RevisionConflictError(
+                        current, _revision_conflict_build(current_build)
+                    )
+                if current_id != expected_head_revision_id:
+                    raise RevisionConflictError(
+                        current, _revision_conflict_build(current_build)
+                    )
+                if validated.get("parent_revision_id") != current_id:
+                    raise ValueError("MODEL_REVISION_INVALID")
+                cursor.execute(
+                    "SELECT COALESCE(max(revision_number), 0) + 1 "
+                    "FROM model_revisions WHERE case_id=%s",
+                    (validated["case_id"],),
+                )
+                saved = copy.deepcopy(validated)
+                saved.update(
+                    id=_new_id("revision"),
+                    revision_number=cursor.fetchone()[0],
+                    signed_by=actor,
+                    signed_at=now_iso(),
+                )
+                export = {"status": "QUEUED", "error": None}
+                cursor.execute(
+                    "INSERT INTO model_revisions(id, case_id, build_id, "
+                    "parent_revision_id, revision_number, preview_digest, record, "
+                    "signed_by, signed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        saved["id"],
+                        saved["case_id"],
+                        saved["build_id"],
+                        saved.get("parent_revision_id"),
+                        saved["revision_number"],
+                        saved["preview_digest"],
+                        Jsonb(saved),
+                        actor,
+                        saved["signed_at"],
+                    ),
+                )
+                cursor.execute(
+                    "INSERT INTO model_revision_heads(case_id, build_id, revision_id) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (case_id) DO UPDATE SET "
+                    "build_id=EXCLUDED.build_id, revision_id=EXCLUDED.revision_id, "
+                    "updated_at=now()",
+                    (saved["case_id"], saved["build_id"], saved["id"]),
+                )
+                cursor.execute(
+                    "INSERT INTO model_revision_exports(revision_id, actor, state, record) "
+                    "VALUES (%s, %s, 'queued', %s)",
+                    (saved["id"], actor, Jsonb(export)),
+                )
+                self._audit(
+                    cursor,
+                    "model.revision.signed",
+                    actor,
+                    case_id=saved["case_id"],
+                    build_id=saved["build_id"],
+                    revision_id=saved["id"],
+                    revision_number=saved["revision_number"],
+                )
+                return self._revision_with_export(saved, export)
+
+    def get_revision(self, revision_id: str) -> Record | None:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT revision.record, export.record FROM model_revisions AS revision "
+                    "LEFT JOIN model_revision_exports AS export "
+                    "ON export.revision_id=revision.id WHERE revision.id=%s",
+                    (revision_id,),
+                )
+                row = cursor.fetchone()
+                return self._revision_with_export(row[0], row[1]) if row else None
+
+    def list_revisions(self, case_id: str) -> list[Record]:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT revision.record, export.record FROM model_revisions AS revision "
+                    "LEFT JOIN model_revision_exports AS export "
+                    "ON export.revision_id=revision.id WHERE revision.case_id=%s "
+                    "ORDER BY revision.revision_number",
+                    (case_id,),
+                )
+                return [
+                    self._revision_with_export(row[0], row[1])
+                    for row in cursor.fetchall()
+                ]
+
+    def get_revision_head(self, case_id: str) -> Record | None:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT revision.record, export.record FROM model_revision_heads AS head "
+                    "JOIN model_revisions AS revision ON revision.id=head.revision_id "
+                    "LEFT JOIN model_revision_exports AS export "
+                    "ON export.revision_id=revision.id WHERE head.case_id=%s",
+                    (case_id,),
+                )
+                row = cursor.fetchone()
+                return self._revision_with_export(row[0], row[1]) if row else None
+
+    def queue_revision_export(
+        self, revision_id: str, actor: str
+    ) -> tuple[Record, bool]:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT revision.record, export.state, export.record "
+                    "FROM model_revisions AS revision JOIN model_revision_exports AS export "
+                    "ON export.revision_id=revision.id WHERE revision.id=%s "
+                    "FOR UPDATE OF export",
+                    (revision_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise ValueError("MODEL_REVISION_EXPORT_NOT_READY")
+                revision, state, export = row
+                if state in {"queued", "claimed", "succeeded"}:
+                    return self._revision_with_export(revision, export), False
+                next_export = {"status": "QUEUED", "error": None}
+                cursor.execute(
+                    "UPDATE model_revision_exports SET actor=%s, state='queued', "
+                    "worker_id=NULL, attempt_token=NULL, lease_until=NULL, error=NULL, "
+                    "record=%s, updated_at=now() WHERE revision_id=%s",
+                    (actor, Jsonb(next_export), revision_id),
+                )
+                self._audit(
+                    cursor,
+                    "model.revision.export.queued",
+                    actor,
+                    case_id=revision["case_id"],
+                    revision_id=revision_id,
+                )
+                return self._revision_with_export(revision, next_export), True
+
+    def pending_revision_exports(self) -> list[tuple[str, str]]:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT revision_id, actor FROM model_revision_exports "
+                    "WHERE state IN ('queued', 'claimed') ORDER BY created_at, revision_id"
+                )
+                return list(cursor.fetchall())
+
+    def claim_revision_export(self, revision_id: str, worker: str) -> str | None:
+        token = _new_id("attempt")
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT state, lease_until > now() FROM model_revision_exports "
+                    "WHERE revision_id=%s FOR UPDATE SKIP LOCKED",
+                    (revision_id,),
+                )
+                row = cursor.fetchone()
+                if (
+                    row is None
+                    or (row[0] == "claimed" and row[1])
+                    or row[0] not in {"queued", "claimed"}
+                ):
+                    return None
+                export = {"status": "EXPORTING", "error": None}
+                cursor.execute(
+                    "UPDATE model_revision_exports SET state='claimed', worker_id=%s, "
+                    "attempt_token=%s, lease_until=now() + (%s * interval '1 second'), "
+                    "error=NULL, record=%s, updated_at=now() WHERE revision_id=%s",
+                    (
+                        worker,
+                        token,
+                        self._owner._lease_seconds,
+                        Jsonb(export),
+                        revision_id,
+                    ),
+                )
+                return token
+
+    def renew_revision_export(self, revision_id: str, attempt_token: str) -> bool:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE model_revision_exports SET lease_until=now() + "
+                    "(%s * interval '1 second'), updated_at=now() WHERE revision_id=%s "
+                    "AND state='claimed' AND attempt_token=%s AND lease_until > now() "
+                    "RETURNING revision_id",
+                    (self._owner._lease_seconds, revision_id, attempt_token),
+                )
+                return cursor.fetchone() is not None
+
+    def revision_export_is_current(
+        self, revision_id: str, attempt_token: str
+    ) -> bool:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM model_revision_exports WHERE revision_id=%s "
+                    "AND state='claimed' AND attempt_token=%s AND lease_until > now()",
+                    (revision_id, attempt_token),
+                )
+                return cursor.fetchone() is not None
+
+    def _assert_revision_export(
+        self, cursor: Any, revision_id: str, attempt_token: str
+    ) -> Record:
+        cursor.execute(
+            "SELECT revision.record FROM model_revision_exports AS export "
+            "JOIN model_revisions AS revision ON revision.id=export.revision_id "
+            "WHERE export.revision_id=%s AND export.state='claimed' "
+            "AND export.attempt_token=%s AND export.lease_until > now() "
+            "FOR UPDATE OF export",
+            (revision_id, attempt_token),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise JobFencedError("stale model revision export attempt")
+        return copy.deepcopy(row[0])
+
+    def complete_revision_export(
+        self,
+        revision_id: str,
+        attempt_token: str,
+        result: Record,
+        actor: str,
+    ) -> Record:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                revision = self._assert_revision_export(
+                    cursor, revision_id, attempt_token
+                )
+                validated = _validated_model_result(revision, result, "export")
+                export = {**validated, "status": "READY", "error": None}
+                cursor.execute(
+                    "UPDATE model_revision_exports SET state='succeeded', "
+                    "lease_until=NULL, error=NULL, record=%s, updated_at=now() "
+                    "WHERE revision_id=%s",
+                    (Jsonb(export), revision_id),
+                )
+                self._audit(
+                    cursor,
+                    "model.revision.export.succeeded",
+                    actor,
+                    case_id=revision["case_id"],
+                    revision_id=revision_id,
+                )
+                return self._revision_with_export(revision, export)
+
+    def fail_revision_export(
+        self,
+        revision_id: str,
+        attempt_token: str,
+        error: Record,
+        actor: str,
+    ) -> Record:
+        stored_error = copy.deepcopy(error)
+        if (
+            not isinstance(stored_error, dict)
+            or set(stored_error) != {"code", "detail"}
+            or not isinstance(stored_error["code"], str)
+            or len(stored_error["code"]) > 80
+            or not isinstance(stored_error["detail"], str)
+            or len(stored_error["detail"]) > 500
+        ):
+            raise ValueError("MODEL_ERROR_INVALID")
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                revision = self._assert_revision_export(
+                    cursor, revision_id, attempt_token
+                )
+                export = {"status": "FAILED", "error": stored_error}
+                cursor.execute(
+                    "UPDATE model_revision_exports SET state='failed', lease_until=NULL, "
+                    "error=%s, record=%s, updated_at=now() WHERE revision_id=%s",
+                    (Jsonb(stored_error), Jsonb(export), revision_id),
+                )
+                self._audit(
+                    cursor,
+                    "model.revision.export.failed",
+                    actor,
+                    case_id=revision["case_id"],
+                    revision_id=revision_id,
+                    code=stored_error["code"],
+                )
+                return self._revision_with_export(revision, export)
+
+    def record_revision_export_download(
+        self, revision_id: str, case_id: str, actor: str
+    ) -> None:
+        with self._owner._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT revision.record, export.record FROM model_revisions AS revision "
+                    "JOIN model_revision_exports AS export "
+                    "ON export.revision_id=revision.id WHERE revision.id=%s "
+                    "AND revision.case_id=%s",
+                    (revision_id, case_id),
+                )
+                row = cursor.fetchone()
+                if row is None or row[1].get("status") != "READY":
+                    raise ValueError("MODEL_REVISION_EXPORT_NOT_READY")
+                self._audit(
+                    cursor,
+                    "model.revision.export.downloaded",
+                    actor,
+                    case_id=case_id,
+                    revision_id=revision_id,
                 )
 
 

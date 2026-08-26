@@ -32,6 +32,9 @@ def test_dispatch_pending_uses_public_interfaces_and_reaps_failures() -> None:
                 ("build-export", "approver", "export"),
             ]
 
+        def pending_revision_exports(self) -> list[tuple[str, str]]:
+            return [("revision-new", "analyst")]
+
     class Runtime:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str]] = []
@@ -52,8 +55,17 @@ def test_dispatch_pending_uses_public_interfaces_and_reaps_failures() -> None:
             self.calls.append((build_id, actor, "export"))
             return _Future()
 
+    class RevisionRuntime:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def schedule_export(self, revision_id: str, actor: str) -> _Future:
+            self.calls.append((revision_id, actor))
+            return _Future()
+
     runtime = Runtime()
     model_runtime = ModelRuntime()
+    revision_runtime = RevisionRuntime()
     futures: dict[tuple[str, str], Any] = {
         ("workflow", "run-active"): _Future(),
         ("model", "build-failed:calculate"): _Future(
@@ -61,13 +73,16 @@ def test_dispatch_pending_uses_public_interfaces_and_reaps_failures() -> None:
         ),
     }
 
-    dispatch_pending(Runs(), Models(), runtime, model_runtime, futures)
+    dispatch_pending(
+        Runs(), Models(), runtime, model_runtime, futures, revision_runtime
+    )
 
     assert runtime.calls == [("run-new", "reviewer")]
     assert model_runtime.calls == [
         ("build-new", "reviewer", "calculate"),
         ("build-export", "approver", "export"),
     ]
+    assert revision_runtime.calls == [("revision-new", "analyst")]
     assert ("workflow", "run-active") in futures
     assert ("model", "build-failed:calculate") not in futures
 

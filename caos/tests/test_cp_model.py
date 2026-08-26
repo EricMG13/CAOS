@@ -9,6 +9,7 @@ import subprocess
 import sys
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,11 +27,13 @@ from caos.methodology.canonical import (
 )
 from caos.models import CpModelBundle, ModelInputError, project_cp2b
 from caos.models import runtime as model_runtime
+from caos.models import revisions as model_revisions
 from caos.models.runtime import (
     ModelBuildRuntime,
     ModelReadinessService,
     _serialize_worksheet,
 )
+from caos.models.revisions import ModelRevisionRuntime, ModelRevisionService
 from caos.workflows.domain import WorkflowRuntime
 from caos.workflows.provider import (
     AgentError,
@@ -1555,6 +1558,730 @@ def test_accepted_full_credit_queues_and_builds_idempotent_python_model() -> Non
         assert built["payload_digest"] == digest(built["payload"])
         assert built["qa"]["status"] == "PASS"
         assert readiness.readiness(case["id"])["status"] == "READY"
+    finally:
+        workflow.close()
+
+
+def test_revision_preview_and_signoff_share_exact_calculation_without_transient_rows() -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models,
+        readiness,
+        model_bundle,
+        workflow.executor,
+        workflow.settings.storage_dir,
+    )
+    service = ModelRevisionService(ledgers.models, readiness, model_bundle)
+    try:
+        queued, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(queued["id"], "analyst")
+        registry = service.assumption_registry(case["id"], queued["id"])
+        assert all(
+            row["source_context"]
+            and row["source_context_digest"] == digest(row["source_context"])
+            and row["default_value"] == row["value"]
+            and row["default_status"] == row["status"]
+            for row in registry["defaults"]
+        )
+        before_audit = ledgers.publications.list_audit()
+        preview = service.preview(
+            case["id"],
+            queued["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            draft_generation=7,
+        )
+
+        assert preview["draft_generation"] == 7
+        assert preview["build_id"] == queued["id"]
+        assert preview["assumptions_digest"] == digest(registry["defaults"])
+        assert preview["outputs_digest"] == digest(preview["outputs"])
+        assert ledgers.models.list_revisions(case["id"]) == []
+        assert ledgers.publications.list_audit() == before_audit
+
+        signed = service.sign_off(
+            case["id"],
+            queued["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            expected_head_revision_id=None,
+            preview_digest=preview["preview_digest"],
+            note="Reviewed quarterly earnings assumptions",
+            actor="analyst",
+            draft_generation=7,
+        )
+        assert signed["preview_digest"] == preview["preview_digest"]
+        assert signed["outputs"] == preview["outputs"]
+        assert signed["export"]["status"] == "QUEUED"
+        assert len(ledgers.models.list_revisions(case["id"])) == 1
+    finally:
+        workflow.close()
+
+
+def test_scenario_and_sensitivity_are_transient_and_use_registry_guardrails() -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models,
+        readiness,
+        model_bundle,
+        workflow.executor,
+        workflow.settings.storage_dir,
+    )
+    service = ModelRevisionService(ledgers.models, readiness, model_bundle)
+    try:
+        queued, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(queued["id"], "analyst")
+        registry = service.assumption_registry(case["id"], queued["id"])
+        available = next(
+            row
+            for row in registry["defaults"]
+            if row["status"] == "READY" and row["case"] == "BASE"
+        )
+        definition = next(
+            item
+            for item in registry["definitions"]
+            if item["assumption_id"] == available["assumption_id"]
+        )
+        before_audit = ledgers.publications.list_audit()
+        scenario = service.scenario(
+            case["id"],
+            queued["id"],
+            registry["version"],
+            registry["digest"],
+            [
+                {
+                    "assumption_id": available["assumption_id"],
+                    "case": available["case"],
+                    "period_id": available["period_id"],
+                    "value": float(available["value"]) + 0.001,
+                }
+            ],
+            base_revision_id=None,
+            draft_generation=3,
+        )
+        direct_assumptions = copy.deepcopy(registry["defaults"])
+        direct_value = float(available["value"]) + 0.001
+        for row in direct_assumptions:
+            if (
+                row["assumption_id"],
+                row["case"],
+                row["period_id"],
+            ) == (
+                available["assumption_id"],
+                available["case"],
+                available["period_id"],
+            ):
+                row["value"] = direct_value
+        direct = service.preview(
+            case["id"],
+            queued["id"],
+            registry["version"],
+            registry["digest"],
+            direct_assumptions,
+            parent_revision_id=None,
+            draft_generation=3,
+        )
+        sensitivity = service.one_way(
+            case["id"],
+            queued["id"],
+            registry["version"],
+            registry["digest"],
+            available["assumption_id"],
+            available["case"],
+            available["period_id"],
+            minimum=float(available["value"]),
+            maximum=float(available["value"])
+            + float(definition["sensitivity_default"]["step"]),
+            step=float(definition["sensitivity_default"]["step"]),
+            output_id="total_leverage",
+            base_revision_id=None,
+            draft_generation=4,
+        )
+
+        assert scenario["draft_generation"] == 3
+        assert scenario["scenario_digest"] == digest(scenario["scenario"])
+        assert scenario["scenario"]["outputs"] == direct["outputs"]
+        assert sensitivity["draft_generation"] == 4
+        assert len(sensitivity["points"]) == 2
+        with pytest.raises(ValueError, match="MODEL_SENSITIVITY_INVALID"):
+            service.one_way(
+                case["id"],
+                queued["id"],
+                registry["version"],
+                registry["digest"],
+                available["assumption_id"],
+                available["case"],
+                available["period_id"],
+                minimum=float(definition["hard_min"]) - 1,
+                maximum=float(available["value"]),
+                step=float(definition["sensitivity_default"]["step"]),
+                output_id="total_leverage",
+                base_revision_id=None,
+                draft_generation=5,
+            )
+        with pytest.raises(ValueError, match="MODEL_SENSITIVITY_POINT_LIMIT"):
+            service.one_way(
+                case["id"],
+                queued["id"],
+                registry["version"],
+                registry["digest"],
+                available["assumption_id"],
+                available["case"],
+                available["period_id"],
+                minimum=float(available["value"]),
+                maximum=float(available["value"]) + 0.05,
+                step=0.0001,
+                output_id="total_leverage",
+                base_revision_id=None,
+                draft_generation=6,
+            )
+        assert ledgers.models.list_revisions(case["id"]) == []
+        assert ledgers.publications.list_audit() == before_audit
+    finally:
+        workflow.close()
+
+
+def test_preview_and_one_way_share_one_aggregate_request_deadline_without_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models,
+        readiness,
+        model_bundle,
+        workflow.executor,
+        workflow.settings.storage_dir,
+    )
+    service = ModelRevisionService(ledgers.models, readiness, model_bundle)
+    try:
+        queued, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(queued["id"], "analyst")
+        registry = service.assumption_registry(case["id"], queued["id"])
+        available = next(
+            row
+            for row in registry["defaults"]
+            if row["status"] == "READY" and row["case"] == "BASE"
+        )
+        definition = next(
+            item
+            for item in registry["definitions"]
+            if item["assumption_id"] == available["assumption_id"]
+        )
+        before_revisions = ledgers.models.list_revisions(case["id"])
+        before_audit = ledgers.publications.list_audit()
+        original_calculate = model_bundle.calculate
+        clock = [0.0]
+
+        def slow_calculate(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
+            result = original_calculate(*args, **kwargs)
+            clock[0] += 0.6
+            return result
+
+        monkeypatch.setattr(model_revisions, "MAX_CALCULATION_SECONDS", 1.0)
+        monkeypatch.setattr(model_revisions.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(model_bundle, "calculate", slow_calculate)
+        with pytest.raises(model_revisions.ModelCalculationTimeout):
+            service.preview(
+                case["id"],
+                queued["id"],
+                registry["version"],
+                registry["digest"],
+                registry["defaults"],
+                parent_revision_id=None,
+                draft_generation=1,
+            )
+
+        clock[0] = 0.0
+        with pytest.raises(model_revisions.ModelCalculationTimeout):
+            service.scenario(
+                case["id"],
+                queued["id"],
+                registry["version"],
+                registry["digest"],
+                [
+                    {
+                        "assumption_id": available["assumption_id"],
+                        "case": available["case"],
+                        "period_id": available["period_id"],
+                        "value": float(available["value"]) + 0.001,
+                    }
+                ],
+                base_revision_id=None,
+                draft_generation=2,
+            )
+
+        clock[0] = 0.0
+        step = float(definition["sensitivity_default"]["step"])
+        with pytest.raises(model_revisions.ModelCalculationTimeout):
+            service.one_way(
+                case["id"],
+                queued["id"],
+                registry["version"],
+                registry["digest"],
+                available["assumption_id"],
+                available["case"],
+                available["period_id"],
+                minimum=float(available["value"]),
+                maximum=float(available["value"]) + step,
+                step=step,
+                output_id="total_leverage",
+                base_revision_id=None,
+                draft_generation=3,
+            )
+        assert ledgers.models.list_revisions(case["id"]) == before_revisions
+        assert ledgers.publications.list_audit() == before_audit
+    finally:
+        workflow.close()
+
+
+def test_model_revision_http_preview_signoff_history_and_conflict(tmp_path: Path) -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models, readiness, model_bundle, workflow.executor, tmp_path
+    )
+    queued, _ = readiness.queue(case["id"], "analyst")
+    build_runtime._execute(queued["id"], "analyst")
+    app = create_app(
+        Settings(environment="test", storage_dir=tmp_path, deploy_v_root=DEPLOY_V),
+        ledgers,
+    )
+    def fail_revision_schedule(_revision_id: str, _actor: str) -> None:
+        raise RuntimeError("scheduler unavailable")
+
+    app.state.revision_runtime.schedule_export = fail_revision_schedule
+    headers = {"x-forwarded-user": "analyst", "x-caos-role": "ANALYST"}
+    try:
+        with TestClient(app) as client:
+            registry_response = client.get(
+                f"/api/cases/{case['id']}/models/assumption-registry",
+                params={"build_id": queued["id"]},
+                headers=headers,
+            )
+            assert registry_response.status_code == 200
+            registry = registry_response.json()
+            preview_request = {
+                "build_id": queued["id"],
+                "parent_revision_id": None,
+                "registry_version": registry["version"],
+                "registry_digest": registry["digest"],
+                "assumptions": registry["defaults"],
+                "draft_generation": 5,
+            }
+            preview_response = client.post(
+                f"/api/cases/{case['id']}/models/previews",
+                json=preview_request,
+                headers=headers,
+            )
+            assert preview_response.status_code == 200
+            preview = preview_response.json()
+            signoff_request = {
+                **preview_request,
+                "preview_digest": preview["preview_digest"],
+                "expected_head_revision_id": None,
+                "note": "Signed after earnings review",
+            }
+            signed_response = client.post(
+                f"/api/cases/{case['id']}/model-revisions/sign-off",
+                json=signoff_request,
+                headers=headers,
+            )
+            assert signed_response.status_code == 201
+            signed = signed_response.json()
+            assert signed["state"] == "ACTIVE"
+            assert signed["export"]["status"] == "QUEUED"
+            history = client.get(
+                f"/api/cases/{case['id']}/model-revisions", headers=headers
+            )
+            assert history.status_code == 200
+            assert history.json()["revisions"] == [signed]
+
+            conflict = client.post(
+                f"/api/cases/{case['id']}/model-revisions/sign-off",
+                json=signoff_request,
+                headers=headers,
+            )
+            assert conflict.status_code == 409
+            assert conflict.json()["detail"]["code"] == "MODEL_REVISION_CONFLICT"
+            assert conflict.json()["detail"]["current"]["id"] == signed["id"]
+    finally:
+        workflow.close()
+
+
+def test_signed_revision_export_uses_overlay_and_stores_hash_verified_workbook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models, readiness, model_bundle, workflow.executor, tmp_path
+    )
+    service = ModelRevisionService(ledgers.models, readiness, model_bundle)
+    revision_runtime = ModelRevisionRuntime(
+        ledgers.models, service, model_bundle, workflow.executor, tmp_path
+    )
+    try:
+        queued, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(queued["id"], "analyst")
+        registry = service.assumption_registry(case["id"], queued["id"])
+        effective = copy.deepcopy(registry["defaults"])
+        changed = next(
+            row
+            for row in effective
+            if row["status"] == "READY" and row["case"] == "BASE"
+        )
+        changed["value"] = float(changed["value"]) + 0.001
+        preview = service.preview(
+            case["id"],
+            queued["id"],
+            registry["version"],
+            registry["digest"],
+            effective,
+            parent_revision_id=None,
+            draft_generation=1,
+        )
+        revision = service.sign_off(
+            case["id"],
+            queued["id"],
+            registry["version"],
+            registry["digest"],
+            effective,
+            parent_revision_id=None,
+            expected_head_revision_id=None,
+            preview_digest=preview["preview_digest"],
+            note="Exact export proof",
+            actor="analyst",
+            draft_generation=1,
+        )
+        runtime_a = copy.deepcopy(model_bundle.calculation_runtime)
+        runtime_b = {**runtime_a, "sha256": "f" * 64}
+        inputs_calls = 0
+        original_inputs_for_build = readiness.inputs_for_build
+
+        def observed_inputs_for_build(build: dict[str, Any]) -> dict[str, Any]:
+            nonlocal inputs_calls
+            inputs_calls += 1
+            return original_inputs_for_build(build)
+
+        monkeypatch.setattr(readiness, "inputs_for_build", observed_inputs_for_build)
+        model_bundle.calculation_runtime = runtime_b
+        revision_runtime._execute_export(revision["id"], "analyst")
+        unavailable = ledgers.models.get_revision(revision["id"])
+        assert unavailable is not None
+        assert unavailable["export"] == {
+            "status": "FAILED",
+            "error": {
+                "code": "MODEL_REVISION_EXPORT_RUNTIME_UNAVAILABLE",
+                "detail": "The signed revision's pinned calculation runtime is unavailable.",
+            },
+        }
+        assert inputs_calls == 0
+        assert unavailable["outputs_digest"] == revision["outputs_digest"]
+
+        model_bundle.calculation_runtime = runtime_a
+        retried, queued_export = ledgers.models.queue_revision_export(
+            revision["id"], "analyst"
+        )
+        assert queued_export is True and retried["export"]["status"] == "QUEUED"
+        revision_runtime._execute_export(revision["id"], "analyst")
+        exported = ledgers.models.get_revision(revision["id"])
+        assert exported is not None
+        assert exported["export"]["status"] == "READY"
+        assert inputs_calls == 2
+        workbook_path = tmp_path / exported["export"]["vault_key"]
+        stored_bytes = workbook_path.read_bytes()
+        assert workbook_path.stat().st_size == exported["export"]["size"]
+        assert hashlib.sha256(workbook_path.read_bytes()).hexdigest() == exported[
+            "export"
+        ]["sha256"]
+
+        workbook = model_runtime.load_workbook(
+            workbook_path, data_only=False, read_only=True
+        )
+        try:
+            assert workbook.sheetnames == [
+                "Credit Snapshot",
+                "Model",
+                "KPIs",
+                "Assumptions",
+                "Revision Record",
+                "_INPUTS",
+                "_MAP",
+                "_CHECKS",
+                "_AUDIT",
+            ]
+            changed_row = next(
+                row
+                for row in workbook["Assumptions"].iter_rows(min_row=2)
+                if row[0].value == changed["assumption_id"]
+                and row[3].value == changed["case"]
+                and row[4].value == changed["period_id"]
+            )
+            assert changed_row[8].value == pytest.approx(changed["value"])
+            record = {
+                row[0].value: row[1].value
+                for row in workbook["Revision Record"].iter_rows(min_row=2)
+            }
+            assert record["id"] == revision["id"]
+            assert record["preview_digest"] == revision["preview_digest"]
+            mappings = {
+                row[2].value for row in workbook["_MAP"].iter_rows(min_row=2)
+            }
+            assert "Assumptions!I2" in mappings
+            assert "Revision Record!B2" in mappings
+            audit = {
+                row[0].value: row[1].value
+                for row in workbook["_AUDIT"].iter_rows(min_row=2)
+            }
+            assert audit["revision::id"] == revision["id"]
+            assert audit["revision::outputs_digest"] == revision["outputs_digest"]
+        finally:
+            workbook.close()
+
+        app = create_app(
+            Settings(environment="test", storage_dir=tmp_path, deploy_v_root=DEPLOY_V),
+            ledgers,
+        )
+        headers = {"x-forwarded-user": "analyst", "x-caos-role": "ANALYST"}
+        model_bundle.calculation_runtime = runtime_b
+        unchanged, queued_again = ledgers.models.queue_revision_export(
+            revision["id"], "analyst"
+        )
+        assert queued_again is False and unchanged["export"]["status"] == "READY"
+        assert workbook_path.read_bytes() == stored_bytes
+        with TestClient(app) as client:
+            downloaded = client.get(
+                f"/api/cases/{case['id']}/model-revisions/{revision['id']}/download",
+                headers=headers,
+            )
+            assert downloaded.status_code == 200
+            assert hashlib.sha256(downloaded.content).hexdigest() == exported["export"][
+                "sha256"
+            ]
+            workbook_path.write_bytes(workbook_path.read_bytes() + b"tamper")
+            tampered = client.get(
+                f"/api/cases/{case['id']}/model-revisions/{revision['id']}/download",
+                headers=headers,
+            )
+            assert tampered.status_code == 409
+            assert tampered.json()["detail"] == "MODEL_REVISION_EXPORT_INTEGRITY_FAILED"
+    finally:
+        workflow.close()
+
+
+def test_new_accepted_build_stales_revision_and_rebase_preview_is_transient() -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models,
+        readiness,
+        model_bundle,
+        workflow.executor,
+        workflow.settings.storage_dir,
+    )
+    service = ModelRevisionService(ledgers.models, readiness, model_bundle)
+    try:
+        first_build, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(first_build["id"], "analyst")
+        registry = service.assumption_registry(case["id"], first_build["id"])
+        preview = service.preview(
+            case["id"],
+            first_build["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            draft_generation=1,
+        )
+        signed = service.sign_off(
+            case["id"],
+            first_build["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            expected_head_revision_id=None,
+            preview_digest=preview["preview_digest"],
+            note="Prior-quarter authority",
+            actor="analyst",
+            draft_generation=1,
+        )
+
+        next_run = workflow.start_run(
+            case["id"], "analyst", "FULL_CREDIT", "full", []
+        )
+        workflow._execute(next_run["id"], "analyst")
+        workflow.accept_run(case["id"], next_run["id"], "analyst")
+        second_build, created = readiness.queue(case["id"], "analyst")
+        assert created is True
+        build_runtime._execute(second_build["id"], "analyst")
+        assert service.list_revisions(case["id"])[0]["state"] == "STALE"
+        with pytest.raises(ValueError, match="MODEL_BUILD_STALE"):
+            service.preview(
+                case["id"],
+                first_build["id"],
+                registry["version"],
+                registry["digest"],
+                registry["defaults"],
+                parent_revision_id=signed["id"],
+                draft_generation=2,
+            )
+
+        before_audit = ledgers.publications.list_audit()
+        before_revisions = ledgers.models.list_revisions(case["id"])
+        candidate = service.rebase_preview(
+            case["id"], signed["id"], second_build["id"], draft_generation=3
+        )
+        assert candidate["source_revision_id"] == signed["id"]
+        assert candidate["build_id"] == second_build["id"]
+        assert candidate["invalidated"] == []
+        assert candidate["preview"] is not None
+        assert ledgers.models.list_revisions(case["id"]) == before_revisions
+        assert ledgers.publications.list_audit() == before_audit
+    finally:
+        workflow.close()
+
+
+def test_rebase_marks_source_context_changes_and_removed_assumptions_without_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledgers, workflow, case = _accepted_model_case()
+    model_bundle = CpModelBundle(DEPLOY_V)
+    readiness = ModelReadinessService(
+        ledgers.runs, ledgers.sources, ledgers.models, workflow.bundle, model_bundle
+    )
+    build_runtime = ModelBuildRuntime(
+        ledgers.models,
+        readiness,
+        model_bundle,
+        workflow.executor,
+        workflow.settings.storage_dir,
+    )
+    service = ModelRevisionService(ledgers.models, readiness, model_bundle)
+    try:
+        first_build, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(first_build["id"], "analyst")
+        registry = service.assumption_registry(case["id"], first_build["id"])
+        preview = service.preview(
+            case["id"],
+            first_build["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            draft_generation=1,
+        )
+        signed = service.sign_off(
+            case["id"],
+            first_build["id"],
+            registry["version"],
+            registry["digest"],
+            registry["defaults"],
+            parent_revision_id=None,
+            expected_head_revision_id=None,
+            preview_digest=preview["preview_digest"],
+            note="Registry evolution source authority",
+            actor="analyst",
+            draft_generation=1,
+        )
+        next_run = workflow.start_run(
+            case["id"], "analyst", "FULL_CREDIT", "full", []
+        )
+        workflow._execute(next_run["id"], "analyst")
+        workflow.accept_run(case["id"], next_run["id"], "analyst")
+        second_build, _ = readiness.queue(case["id"], "analyst")
+        build_runtime._execute(second_build["id"], "analyst")
+
+        source_rows = signed["effective_assumptions"]
+        changed_key = tuple(
+            source_rows[0][field]
+            for field in ("assumption_id", "case", "period_id")
+        )
+        removed_key = tuple(
+            source_rows[1][field]
+            for field in ("assumption_id", "case", "period_id")
+        )
+        original_calculate = service._calculate
+
+        def evolved_calculate(
+            build: dict[str, Any],
+            effective_assumptions: list[dict[str, Any]] | None,
+            *,
+            deadline: float,
+        ) -> tuple[Any, Any, list[dict[str, Any]], dict[str, Any]]:
+            result = original_calculate(
+                build, effective_assumptions, deadline=deadline
+            )
+            if build["id"] != second_build["id"] or effective_assumptions is not None:
+                return result
+            model, calculations, defaults, outputs = result
+            evolved = copy.deepcopy(defaults)
+            evolved[0]["source_context"] = {
+                "authority_module": "CP-2G",
+                "gap_code": evolved[0]["gap_code"],
+                "provenance": [
+                    {
+                        "source_id": "new-quarter-source",
+                        "source_locator": "T2G.1/source-context-change",
+                        "as_of": "2026-08-26",
+                    }
+                ],
+            }
+            evolved[0]["source_context_digest"] = digest(
+                evolved[0]["source_context"]
+            )
+            evolved = [
+                row
+                for row in evolved
+                if tuple(
+                    row[field] for field in ("assumption_id", "case", "period_id")
+                )
+                != removed_key
+            ]
+            return model, calculations, evolved, outputs
+
+        monkeypatch.setattr(service, "_calculate", evolved_calculate)
+        before_revisions = ledgers.models.list_revisions(case["id"])
+        before_audit = ledgers.publications.list_audit()
+        candidate = service.rebase_preview(
+            case["id"], signed["id"], second_build["id"], draft_generation=2
+        )
+
+        assert {tuple(item["identity"]) for item in candidate["changed"]} == {
+            changed_key
+        }
+        assert {
+            tuple(item["identity"]): item["reason"]
+            for item in candidate["invalidated"]
+        }[removed_key] == "ASSUMPTION_NO_LONGER_MAPS"
+        assert candidate["preview"] is None
+        assert ledgers.models.list_revisions(case["id"]) == before_revisions
+        assert ledgers.publications.list_audit() == before_audit
     finally:
         workflow.close()
 

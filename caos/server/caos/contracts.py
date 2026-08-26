@@ -209,6 +209,111 @@ class AssumptionRequest(StrictModel):
     affected_module_ids: list[str] = Field(default_factory=list, max_length=30)
 
 
+class ModelAssumptionSourceRef(StrictModel):
+    source_id: str = Field(min_length=1, max_length=200)
+    source_locator: str = Field(min_length=1, max_length=1000)
+    as_of: str = Field(min_length=1, max_length=40)
+
+
+class ModelAssumptionSourceContext(StrictModel):
+    authority_module: Literal["CP-2G"]
+    gap_code: str = Field(max_length=160)
+    provenance: list[ModelAssumptionSourceRef] = Field(max_length=8)
+
+
+class ModelAssumptionValue(StrictModel):
+    assumption_id: str = Field(min_length=1, max_length=160)
+    case: Literal["BASE", "DOWNSIDE"]
+    period_id: str = Field(pattern=r"^FY[0-9]{4}$")
+    unit: str = Field(min_length=1, max_length=40)
+    status: Literal["READY", "UNAVAILABLE", "NOT_APPLICABLE"]
+    value: float | None
+    gap_code: str | None = Field(default=None, max_length=160)
+    default_value: float | None = None
+    default_status: Literal["READY", "UNAVAILABLE", "NOT_APPLICABLE"] | None = None
+    default_gap_code: str | None = Field(default=None, max_length=160)
+    source_context: ModelAssumptionSourceContext | None = None
+    source_context_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+
+    @field_validator("value", "default_value")
+    @classmethod
+    def finite_value(cls, value: float | None) -> float | None:
+        return finite_or_none(value)
+
+
+class ModelPreviewRequest(StrictModel):
+    build_id: str = Field(min_length=1, max_length=120)
+    parent_revision_id: str | None = Field(default=None, max_length=120)
+    registry_version: str = Field(min_length=1, max_length=160)
+    registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    assumptions: list[ModelAssumptionValue] = Field(min_length=1, max_length=256)
+    draft_generation: int = Field(default=0, ge=0, le=2_147_483_647)
+
+
+class ModelSignOffRequest(ModelPreviewRequest):
+    preview_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_head_revision_id: str | None = Field(default=None, max_length=120)
+    note: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def nonblank_note(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("sign-off note must not be blank")
+        return value
+
+
+class ModelRebasePreviewRequest(StrictModel):
+    revision_id: str = Field(min_length=1, max_length=120)
+    build_id: str = Field(min_length=1, max_length=120)
+    draft_generation: int = Field(default=0, ge=0, le=2_147_483_647)
+
+
+class ModelShock(StrictModel):
+    assumption_id: str = Field(min_length=1, max_length=160)
+    case: Literal["BASE", "DOWNSIDE"]
+    period_id: str = Field(pattern=r"^FY[0-9]{4}$")
+    value: float
+
+    @field_validator("value")
+    @classmethod
+    def finite_value(cls, value: float) -> float:
+        checked = finite_or_none(value)
+        assert checked is not None
+        return checked
+
+
+class ModelScenarioRequest(StrictModel):
+    build_id: str = Field(min_length=1, max_length=120)
+    base_revision_id: str | None = Field(default=None, max_length=120)
+    registry_version: str = Field(min_length=1, max_length=160)
+    registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    shocks: list[ModelShock] = Field(min_length=1, max_length=256)
+    draft_generation: int = Field(default=0, ge=0, le=2_147_483_647)
+
+
+class OneWaySensitivityRequest(StrictModel):
+    build_id: str = Field(min_length=1, max_length=120)
+    base_revision_id: str | None = Field(default=None, max_length=120)
+    registry_version: str = Field(min_length=1, max_length=160)
+    registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    assumption_id: str = Field(min_length=1, max_length=160)
+    case: Literal["BASE", "DOWNSIDE"]
+    period_scope: str = Field(pattern=r"^(ALL|FY[0-9]{4})$")
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+    output_id: str = Field(default="total_leverage", min_length=1, max_length=120)
+    draft_generation: int = Field(default=0, ge=0, le=2_147_483_647)
+
+    @field_validator("minimum", "maximum", "step")
+    @classmethod
+    def finite_range(cls, value: float | None) -> float | None:
+        return finite_or_none(value)
+
+
 class RVRow(StrictModel):
     instrument: str = Field(min_length=1, max_length=160)
     observation_date: str = Field(min_length=10, max_length=10)
