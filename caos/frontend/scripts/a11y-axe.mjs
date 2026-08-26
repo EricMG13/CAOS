@@ -142,6 +142,75 @@ try {
     }
   }
   await modelContext.close();
+
+  const reportContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: identityHeaders });
+  const reportPage = await reportContext.newPage();
+  const reportCaseId = "case_a11y_report_studio";
+  const reportBuildId = "build_a11y_report_studio";
+  const reportRevisionId = "revision_a11y_report_studio";
+  const reportCase = { id: reportCaseId, name: "Report studio", issuer: "Northstar", sector: "Services", current_execution_id: null };
+  const reportTemplateBlocks = [
+    { block_id: "full-credit.section.01", slot_id: "section.01", kind: "NARRATIVE", title: "Credit Thesis", required: true, order: 1 },
+    { block_id: "full-credit.section.02", slot_id: "section.02", kind: "NARRATIVE", title: "Capital Structure and Liquidity", required: true, order: 2 },
+    { block_id: "full-credit.evidence-register", slot_id: "appendix.evidence-register", kind: "EVIDENCE_REGISTER", title: "Evidence Register", required: true, order: 3 },
+  ];
+  const reportModelSelection = { kind: "ANALYST_REVISION", build_id: reportBuildId, revision_id: reportRevisionId };
+  const reportBlocks = [
+    { kind: "NARRATIVE", block_id: "full-credit.section.01", slot_id: "section.01", text: "Leverage remains elevated, but liquidity supports the current rating case.", content_mode: "EVIDENCE", citations: [{ source_id: "source_a11y_report", block_ids: ["source-block-1"] }] },
+    { kind: "NARRATIVE", block_id: "full-credit.section.02", slot_id: "section.02", text: "No near-term maturity wall under the Base case.", content_mode: "ANALYST_JUDGMENT", citations: [] },
+    { kind: "EVIDENCE_REGISTER", block_id: "full-credit.evidence-register", slot_id: "appendix.evidence-register", citations: [{ source_id: "source_a11y_report", block_ids: ["source-block-1"] }] },
+  ];
+  const reportDraft = { id: "deliverable_a11y_report", case_id: reportCaseId, pathway: "FULL_CREDIT", version: 2, author: "analyst.qa@local.invalid", created_at: "2026-08-26T10:00:00Z", template_id: "caos.full-credit.v1", template_version: "caos.deliverable-template.v1", digest: "6".repeat(64), content: { template_id: "caos.full-credit.v1", template_version: "caos.deliverable-template.v1", model_selection: reportModelSelection, model_identity: reportModelSelection, blocks: reportBlocks, generated_blocks: {} } };
+  const reportWorkspace = {
+    template: {
+      template_id: "caos.full-credit.v1",
+      template_version: "caos.deliverable-template.v1",
+      pathway: "FULL_CREDIT",
+      title: "Investment Committee Credit Memo",
+      model_requirement: "REQUIRED",
+      allowed_appendices: ["GENERATED_METRIC", "GENERATED_TABLE", "GENERATED_CHART", "SCENARIO_EXHIBIT", "MODEL_APPENDIX", "LIMITATIONS"],
+      optional_blocks: [
+        { kind: "GENERATED_METRIC", slot_stem: "appendix.generated-metric", max_items: 20, order: 1, model_dependent: true },
+        { kind: "GENERATED_TABLE", slot_stem: "appendix.generated-table", max_items: 20, order: 2, model_dependent: true },
+        { kind: "GENERATED_CHART", slot_stem: "appendix.generated-chart", max_items: 20, order: 3, model_dependent: true },
+        { kind: "SCENARIO_EXHIBIT", slot_stem: "appendix.scenario", max_items: 20, order: 4, model_dependent: true },
+        { kind: "MODEL_APPENDIX", slot_stem: "appendix.model-appendix", max_items: 1, order: 5, model_dependent: true },
+        { kind: "LIMITATIONS", slot_stem: "appendix.limitations", max_items: 1, order: 6, model_dependent: false },
+      ],
+      blocks: reportTemplateBlocks,
+    },
+    current: reportDraft,
+    history: [reportDraft],
+    frozen_history: [],
+    model_eligibility: {
+      active_revision: { revision_id: reportRevisionId, build_id: reportBuildId, revision_number: 2, signed_by: "analyst", signed_at: "2026-08-26T09:00:00Z" },
+      application_build: { build_id: reportBuildId, accepted_snapshot_id: "snapshot_a11y_report", input_fingerprint: "7".repeat(64), payload_digest: "8".repeat(64), status: "READY" },
+      fallback_acknowledgement_required: false,
+      default_model_selection: reportModelSelection,
+    },
+  };
+  const reportSources = [{ id: "source_a11y_report", filename: "earnings.txt", blocks: [{ block_id: "source-block-1", text: "Liquidity was $210 million at quarter end." }] }];
+  await reportPage.route((url) => url.pathname === "/api/cases", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([reportCase]) }));
+  await reportPage.route((url) => url.pathname === `/api/cases/${reportCaseId}`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reportCase) }));
+  await reportPage.route((url) => url.pathname === `/api/cases/${reportCaseId}/snapshot`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: null, latest_accepted: null, switch_required: false, diff: null }) }));
+  await reportPage.route((url) => url.pathname === `/api/cases/${reportCaseId}/sources`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reportSources) }));
+  await reportPage.route((url) => url.pathname === `/api/cases/${reportCaseId}/deliverables/FULL_CREDIT`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reportWorkspace) }));
+  await reportPage.route((url) => url.pathname === `/api/cases/${reportCaseId}/models/assumption-registry`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ version: "cp-model-assumptions.v1", digest: "9".repeat(64), definitions: [{ assumption_id: "operating.consolidated_revenue_growth", label: "Revenue growth", cases: ["BASE", "DOWNSIDE"], periods: ["FY2025", "FY2026", "FY2027"] }] }) }));
+  const populatedReportViewports = [{ name: "desktop", width: 1440, height: 1000 }, { name: "tablet", width: 768, height: 1024 }, { name: "mobile", width: 390, height: 844 }];
+  for (const viewport of populatedReportViewports) {
+    await reportPage.setViewportSize({ width: viewport.width, height: viewport.height });
+    await reportPage.goto(`${baseUrl}/report-studio/?case=${reportCaseId}&fixture=ready-report-${viewport.name}`, { waitUntil: "networkidle" });
+    await reportPage.getByRole("region", { name: "Deliverable paper preview" }).waitFor();
+    const pathwaySelect = reportPage.getByLabel("Pathway template");
+    await pathwaySelect.focus();
+    await reportPage.keyboard.press("Tab");
+    assert.equal(await reportPage.evaluate(() => document.activeElement?.closest(".report-section-nav") !== null), true, `${viewport.name} Report Studio Tab did not move into the section navigator`);
+    await reportPage.locator(".evidence-source-list summary").filter({ hasText: "earnings.txt" }).click();
+    await reportPage.getByText("Liquidity was $210 million at quarter end.", { exact: true }).waitFor();
+    const reportResult = await new AxeBuilder({ page: reportPage }).analyze();
+    for (const violation of reportResult.violations) violations.push({ viewport: `ready-report-${viewport.name}`, route: "/report-studio/", id: violation.id, impact: violation.impact, nodes: violation.nodes.map((node) => ({ target: node.target, html: node.html, summary: node.failureSummary })) });
+  }
+  await reportContext.close();
 } finally {
   await browser.close();
 }
@@ -150,5 +219,5 @@ if (violations.length) {
   console.error(JSON.stringify({ violations }, null, 2));
   process.exitCode = 1;
 } else {
-  console.log(JSON.stringify({ routes: routes.length, viewports: viewports.length, combinations: routes.length * viewports.length + 13, pendingPlanFixture: true, readyModelFixture: true, modelBuilderAxeChecks: 12, modelBuilderKeyboardTabChecks: 3, violations: 0 }));
+  console.log(JSON.stringify({ routes: routes.length, viewports: viewports.length, combinations: routes.length * viewports.length + 16, pendingPlanFixture: true, readyModelFixture: true, readyReportFixture: true, modelBuilderAxeChecks: 12, modelBuilderKeyboardTabChecks: 3, reportStudioAxeChecks: 3, reportStudioKeyboardTabChecks: 3, violations: 0 }));
 }

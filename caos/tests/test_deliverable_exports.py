@@ -188,7 +188,7 @@ def test_freeze_pins_and_renders_exact_active_revision_model_authority(
                 "adjusted_ebitda_calc": 150.0,
                 "total_debt_reported": 630.0,
                 "net_debt": 590.0,
-                "total_leverage": 4.2,
+                "total_leverage": 123456.78,
                 "covenant_headroom": None,
             }
         },
@@ -199,7 +199,7 @@ def test_freeze_pins_and_renders_exact_active_revision_model_authority(
                 "adjusted_ebitda_calc": 125.0,
                 "total_debt_reported": 630.0,
                 "net_debt": 605.0,
-                "total_leverage": 5.04,
+                "total_leverage": 234567.89,
                 "covenant_headroom": None,
             }
         },
@@ -353,7 +353,8 @@ def test_freeze_pins_and_renders_exact_active_revision_model_authority(
     assert "BASE" in pdf_text
     assert "FY2027" in pdf_text
     assert "total_leverage" in pdf_text
-    assert "4.2" in pdf_text
+    assert "123456.78" in pdf_text
+    assert "234567.89" in pdf_text
 
     xlsx = (tmp_path / "vault" / frozen["exports"]["xlsx"]["vault_key"]).read_bytes()
     workbook = load_workbook(io.BytesIO(xlsx), data_only=False)
@@ -370,7 +371,8 @@ def test_freeze_pins_and_renders_exact_active_revision_model_authority(
         for row in sheet.iter_rows()
         for cell in row
     }
-    assert 4.2 in values
+    assert 123456.78 in values
+    assert 234567.89 in values
     assert "Covenant headroom cannot be calculated." in values
 
 
@@ -751,6 +753,11 @@ def test_http_freeze_file_and_download_exact_stored_bytes(
         )
         assert frozen_response.status_code == 201, frozen_response.text
         frozen = frozen_response.json()
+        workspace = client.get(route)
+        assert workspace.status_code == 200
+        assert [item["id"] for item in workspace.json()["frozen_history"]] == [
+            frozen["id"]
+        ]
         duplicate = client.post(
             f"{route}/freeze",
             json={

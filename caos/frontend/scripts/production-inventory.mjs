@@ -201,12 +201,10 @@ async function inventoryLoadedRoute(context, role, slug, title) {
         await page.getByText("CANONICAL MODEL INPUTS INVALID", { exact: true }).waitFor();
       }
     } else if (slug === "report-studio") {
-      await page.getByRole("button", { name: "Freeze report snapshot" }).waitFor();
-      if (phase4ModelOnly) {
-        await page.getByText("No frozen report for this case.", { exact: true }).waitFor();
-      } else {
-        for (const name of ["Markdown", "PDF", "XLSX"]) await page.getByRole("link", { name, exact: true }).waitFor();
-      }
+      await page.getByLabel("Pathway template").waitFor();
+      await page.getByRole("region", { name: "Deliverable paper preview" }).waitFor();
+      await page.getByRole("navigation", { name: "Deliverable sections" }).waitFor();
+      await page.getByRole("button", { name: /^Freeze saved v/ }).waitFor();
     }
     return result;
   } finally {
@@ -295,8 +293,8 @@ try {
   const issuer = `Inventory-${suffix}`;
   const caseName = "Production inventory journey";
   let journeyCase;
-  let firstSource;
   let firstRun;
+  let journeyFrozen;
   try {
     await journeyPage.goto(`${baseURL}/cases/`, { waitUntil: "networkidle" });
     await journeyPage.getByLabel("Case name").fill(caseName);
@@ -319,7 +317,6 @@ try {
     await journeyPage.getByRole("button", { name: "Upload and version source set" }).click();
     const uploaded = await caseUploadResponse;
     assert.equal(uploaded.status(), 201);
-    firstSource = await uploaded.json();
     await journeyPage.getByText("READY", { exact: true }).waitFor();
 
     await journeyPage.goto(`${baseURL}/sources/?case=${journeyCase.id}`, { waitUntil: "networkidle" });
@@ -429,15 +426,24 @@ try {
     await journeyPage.getByRole("columnheader", { name: /Margin \(bps\)/ }).getAttribute("aria-sort").then((value) => assert.equal(value, "ascending"));
 
     await journeyPage.goto(`${baseURL}/report-studio/?case=${journeyCase.id}`, { waitUntil: "networkidle" });
-    await journeyPage.getByLabel("Core thesis").fill("Synthetic issuer has stable leverage and adequate liquidity.");
-    await journeyPage.getByLabel("Primary instrument").fill("Synthetic 1L 2030");
-    await journeyPage.getByLabel("Recommendation").selectOption("MARKET WEIGHT");
-    await journeyPage.getByLabel("Evidence IDs").fill(firstSource.id);
-    const freezeResponse = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/reports/freeze`) && response.request().method() === "POST");
-    await journeyPage.getByRole("button", { name: "Freeze report snapshot" }).click();
-    assert.equal((await freezeResponse).status(), 201);
-    await journeyPage.getByText("PENDING_APPROVAL", { exact: true }).waitFor();
-    assert.equal(await journeyPage.getByRole("button", { name: "Approve frozen report" }).count(), 0);
+    await journeyPage.getByLabel("Pathway template").selectOption("RELATIVE_VALUE");
+    await journeyPage.getByRole("region", { name: "Deliverable paper preview" }).getByText("Relative Value Note", { exact: true }).waitFor();
+    const saveResponse = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/deliverables/RELATIVE_VALUE/draft`) && response.request().method() === "PUT");
+    const sectionButtons = journeyPage.getByRole("navigation", { name: "Deliverable sections" }).getByRole("button");
+    for (let index = 0; index < await sectionButtons.count(); index += 1) {
+      await sectionButtons.nth(index).click();
+      const editor = journeyPage.locator('.report-compose textarea[id^="narrative-"]');
+      if (await editor.count()) await editor.fill(`Synthetic inventory conclusion ${index + 1}: liquidity and relative value remain supportable.`);
+    }
+    assert.equal((await saveResponse).status(), 200);
+    await journeyPage.getByText("Saved v1", { exact: true }).waitFor();
+    const freezeResponse = journeyPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/deliverables/RELATIVE_VALUE/freeze`) && response.request().method() === "POST");
+    await journeyPage.getByRole("button", { name: "Freeze saved v1" }).click();
+    const frozenResponse = await freezeResponse;
+    assert.equal(frozenResponse.status(), 201);
+    journeyFrozen = await frozenResponse.json();
+    await journeyPage.getByText("Immutable FROZEN review · Draft v1", { exact: true }).waitFor();
+    assert.equal(await journeyPage.getByRole("button", { name: "File exact Frozen version" }).count(), 0);
   } finally {
     await journeyPage.close();
   }
@@ -457,15 +463,17 @@ try {
   const exports = {};
   try {
     await approvalPage.goto(`${baseURL}/report-studio/?case=${journeyCase.id}`, { waitUntil: "networkidle" });
-    const approvalResponse = approvalPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/reports/approve`) && response.request().method() === "POST");
-    await approvalPage.getByRole("button", { name: "Approve frozen report" }).click();
+    await approvalPage.getByLabel("Pathway template").selectOption("RELATIVE_VALUE");
+    await approvalPage.getByRole("button", { name: "FROZEN · Draft v1" }).click();
+    const approvalResponse = approvalPage.waitForResponse((response) => response.url() === exactURL(`/api/cases/${journeyCase.id}/deliverables/by-id/${journeyFrozen.id}/approve`) && response.request().method() === "POST");
+    await approvalPage.getByRole("button", { name: "File exact Frozen version" }).click();
     assert.equal((await approvalResponse).status(), 200);
-    await approvalPage.getByText("APPROVED", { exact: true }).waitFor();
+    await approvalPage.getByText("Immutable FILED review · Draft v1", { exact: true }).waitFor();
     for (const format of ["md", "pdf", "xlsx"]) {
-      const response = await approvalPage.request.get(`${baseURL}/api/cases/${journeyCase.id}/reports/export/${format}`);
+      const response = await approvalPage.request.get(`${baseURL}/api/cases/${journeyCase.id}/deliverables/by-id/${journeyFrozen.id}/export/${format}`);
       const body = await response.body();
       assert.equal(response.status(), 200);
-      if (format === "md") assert.ok(body.toString().includes("Synthetic issuer has stable leverage"));
+      if (format === "md") assert.ok(body.toString().includes("Synthetic inventory conclusion"));
       if (format === "pdf") assert.equal(body.subarray(0, 4).toString(), "%PDF");
       if (format === "xlsx") assert.equal(body.subarray(0, 2).toString(), "PK");
       exports[format] = { bytes: body.length, content_type: response.headers()["content-type"] };
@@ -488,7 +496,7 @@ try {
     { slug: "rv-screener", endpoint: `/api/cases/${emptyCase.id}/rv/loan-universes/active`, url: `${baseURL}/rv-screener/?case=${emptyCase.id}`, emptyText: "Upload the fixed CP-3 workbook to activate a leveraged-loan universe." },
     { slug: "command-center", endpoint: `/api/cases/${emptyCase.id}/lens`, url: `${baseURL}/command-center/?case=${emptyCase.id}`, emptyText: "No accepted snapshot yet. Posture becomes reviewable after an explicit acceptance." },
     { slug: "model-builder", endpoint: `/api/cases/${emptyCase.id}/models`, url: `${baseURL}/model-builder/?case=${emptyCase.id}`, emptyText: "ACCEPTED FULL CREDIT REQUIRED", emptyEndpoint: null },
-    { slug: "report-studio", endpoint: `/api/cases/${emptyCase.id}/reports`, url: `${baseURL}/report-studio/?case=${emptyCase.id}`, emptyText: "No frozen report for this case." },
+    { slug: "report-studio", endpoint: `/api/cases/${emptyCase.id}/deliverables/FULL_CREDIT`, url: `${baseURL}/report-studio/?case=${emptyCase.id}`, errorText: "Unable to load Report Studio." },
   ];
 
   for (const [role, context] of roleContexts) {

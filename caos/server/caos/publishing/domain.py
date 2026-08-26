@@ -138,6 +138,9 @@ class DeliverableService:
             "template": template,
             "current": copy.deepcopy(history[-1]) if history else None,
             "history": copy.deepcopy(history),
+            "frozen_history": self.publications.list_frozen_deliverables(
+                case_id, pathway
+            ),
             "model_eligibility": self._model_eligibility(case_id),
         }
 

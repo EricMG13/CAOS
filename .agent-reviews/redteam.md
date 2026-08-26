@@ -4927,3 +4927,68 @@ single reviewable boundary. The confidence review additionally found and fixed
 the missing-`O_NOFOLLOW` fail-closed guard. RT-306 through RT-308 supersede the
 affected assurances in RT-301 and RT-302. No known Critical or Important Phase
 6 defect remains.
+
+## 2026-08-26 — Analyst authoring Phase 7 Report Studio
+
+Decision under review: replace the compatibility Report view with a structured,
+server-authoritative Report Studio while keeping every unsigned edit ephemeral
+until the shared append-only draft endpoint accepts an exact revision.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-309 | Concurrency reviewer | An 850 ms autosave response from an older case, pathway, or local generation could overwrite newer work or advance the wrong expected version. | Critical | Resolved and verified | Report Studio serializes saves through one promise chain, binds each request to case/pathway/draft generation, adopts a response only when its generation remains current, and aborts scope-owned reads on cleanup. Conflict retains the local document and exposes current server metadata instead of overwriting it. The routed workbench exercises save, held-response fencing, conflict, case switch, and pathway switch. |
+| RT-2026-08-26-310 | Historical-authority reviewer | A historical draft could be shown or frozen as though it were current, and Restore could race a same-tick dirty edit before React exposed DIRTY state. | Critical | Resolved and verified | Historical revisions are read-only review surfaces. Restore always invokes the server restore-as-new route, never installs historical blocks locally. A synchronous unsaved ref is set in the edit handler before React commits, mirrored by reactive disabled state, and rechecked inside Restore and Freeze; only an authoritative load/save/restore clears it. A held autosave browser regression proves Restore remains disabled while the edit is unsaved. |
+| RT-2026-08-26-311 | Model-integrity reviewer | The browser could calculate or forge generated metrics/Scenario Exhibits and save them as authoritative output. | Critical | Resolved and verified | The UI performs no model math and never accepts editable generated content. Scenario insertion consumes the exact temporary server response; generated/scenario blocks render read-only, carry model and generation identities, and are fenced by current case/pathway/generation before adoption. The server remains the sole validator and calculator. |
+| RT-2026-08-26-312 | Approval reviewer | Writer/approver actions or Filed downloads could target a different revision/Frozen payload than the one visibly reviewed. | Critical | Resolved and verified | Freeze sends the exact saved draft version/digest and preview identities. File/change-request actions are restricted to APPROVER/ADMIN and exact Frozen identifiers; historical MD/PDF/XLSX downloads use the filed stored-byte endpoints. The normalized production inventory reopened real stored exports and the full live PostgreSQL suite remained green. |
+| RT-2026-08-26-313 | Accessibility and navigation reviewer | A dense three-pane studio could trap keyboard focus, silently lose edits on destination/case/back navigation, or overflow on narrow screens. | High | Resolved and verified | Workspace owns one combined Model Builder/Report Studio dirty fence for destination links, case selection, browser history, and unload. All actions are native keyboard controls with live save/error announcements, the paper/evidence panes collapse into bounded narrow layouts, and reduced motion is honored. Populated desktop/tablet/mobile axe completed 43 checks with zero violations; workbench covers 390 px overflow and keyboard interaction. |
+| RT-2026-08-26-314 | Release-harness reviewer | A successful frontend build could be copied to a package-local `caos/server/caos/static` directory while the combined app continued serving an older bundle from `caos/server/static`, making browser evidence false. | Critical | Resolved and verified | The false target was isolated and removed from the worktree. The canonical build output is now copied using the repository's exact `out/.` to `caos/server/static/.` semantics; both report-studio HTML files reference the same `layout-202d9c066778c797.js`. A hard-reloaded, clean, marker-free combined-app workbench run passes. |
+
+Decision: accept Phase 7 for independent review. Focused Report Studio tests pass
+5/5, the frontend unit suite passes 48/48, TypeScript, ESLint, and the 12-page
+webpack production export pass, and the clean combined-app workbench passes all
+six pathways, roles, conflict/history/lifecycle, keyboard, and narrow-layout
+journeys. Populated axe reports 43 checks and zero violations. The normalized
+production inventory reports zero loader/alert/overflow failures and reopens
+stored MD/PDF/XLSX bytes. The unrestricted no-DSN server suite passes 451 tests
+with 63 PostgreSQL skips and the disposable live PostgreSQL/LibreOffice suite
+passes 514/514. No known Critical or Important Phase 7 defect remains.
+
+## 2026-08-26 — Analyst authoring Phase 7 independent-review corrections
+
+Correction under review: close the three Important Report Studio findings at
+the async authority, immutable review, and browser-history ownership boundaries
+without adding client calculation, server drafts, or a second navigation guard.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-315 | Async-authority reviewer | A late Scenario, Restore, Freeze, filing, or change-request response could adopt Full Credit state after the analyst switched to Earnings Update; operation-specific pending flags also allowed two lifecycle actions to overlap. | Critical | Resolved and verified | Every lifecycle mutation now enters one synchronous ref-backed in-flight gate and receives the current case/pathway/scope generation. Case/pathway changes and unmount increment the generation before new work can begin. Every post-await adoption, error, focus, and completion rechecks that token. The mounted browser holds and releases all five operations across pathway changes; Earnings remains selected and editable, no stale immutable/status state is adopted, while durable server-side Restore/Freeze results remain visible only after an explicit return to Full Credit. |
+| RT-2026-08-26-316 | Committee-review reviewer | The Frozen paper displayed structured author blocks but omitted the immutable accepted/source/evidence authority and the selected signed model's exact Base/Downside calculations, assumptions, debt, gaps, QA, runtime, export, methodology, renderer, and digest record. | Critical | Resolved and verified | The strict Frozen response type now carries the full canonical payload. `DeliverableDocument` renders exhaustive read-only authority/model sections before the immutable structured content, including full arrays and application payload details without calculating anything. Base `123456.78` and Downside `234567.89` appear in the mounted paper and the same server fixture values appear in extracted PDF text and typed reopened XLSX cells. Confidence review additionally raised numeric display precision from two to twenty fractional digits so exact stored values are not visually truncated. |
+| RT-2026-08-26-317 | Browser-history reviewer | Autosave repeatedly cleared dirty state, so each subsequent edit pushed another same-URL sentinel; clean Back required multiple clicks and compensating Back/Forward events could prompt again. | High | Resolved and verified | Workspace now owns one shared Model Builder/Report Studio sentinel. It arms only when none is owned, retires the entry with one fenced programmatic Back when both drafts are clean, and rearms exactly once if a new edit arrives during retirement. The mounted browser performs three Report Studio autosave cycles, then proves one clean Back leaves the route once; a dirty Back prompts once, retains the exact URL/value when dismissed, and does not stack restoration entries. |
+| RT-2026-08-26-318 | Release-harness reviewer | The canonical build script's unconditional `npm ci` could replace the protected worktree dependency symlink, and Turbopack could panic before publication. | High | Resolved with local disposition | The unexpected installed tree was preserved in `/private/tmp`, the approved shared dependency tree and worktree symlink were restored exactly, and the supported webpack production build completed all 12 pages. Canonical `out/.` to `server/static/.` copy semantics produced matching `layout-954ddbfdb394b2f9.js` references. No lockfile or dependency version changed. |
+
+Decision: accept the Phase 7 independent-review corrections for rereview. The
+focused Report Studio suite passes 8/8 and the full frontend suite passes 51/51;
+TypeScript, ESLint, the 12-page webpack export, current-bundle mounted workbench,
+and 43 populated axe checks (zero violations) pass. The exact server PDF/XLSX
+sentinel parity regression passes. A proportional inventory rerun reached the
+normalized journey but its unrelated Run Console SSE prevented `networkidle`;
+the unchanged default six-pathway invariant correctly rejected the preserved
+Phase 4 model-only seed. The prior default normalized inventory evidence remains
+valid, while the current changed Report Studio surface is covered by the mounted
+workbench and populated axe. No known Critical or Important Phase 7 defect remains.
+
+## 2026-08-26 — Analyst authoring Phase 7 final lifecycle authoring lock
+
+Correction under review: make one in-flight lifecycle operation an atomic UI
+boundary so an analyst cannot create local draft state that the eventual
+authoritative response would overwrite.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-319 | Async-authoring reviewer | Although lifecycle handlers rejected same-tick overlap and stale-scope responses, an analyst could still edit narrative, citations, model selection, optional composition, or Scenario inputs while Restore or Freeze was pending. A successful response could then replace work created after the request began. | Critical | Resolved and verified | The existing single lifecycle gate now also exposes one `authoringLocked` predicate. Every draft-mutating native control in the current scope is disabled while any lifecycle operation is in flight: narrative and claim mode, citations, model/fallback selection, optional add/remove, Scenario inputs/insertion, conflict adoption, Restore, Freeze, File, and Request Changes. Navigation remains available because the existing scope-generation fence rejects late adoption, and the immutable paper/evidence search remain readable. A held Restore browser regression proves editing is natively rejected and the saved restore is adopted after release; a held Freeze proves the complete authoring surface plus Restore/File/Change is mutually locked; the prior cross-pathway late-response journeys remain green. |
+
+Decision: accept the final Phase 7 residual correction. The focused Report
+Studio suite passes 9/9 and the full frontend suite passes 52/52; TypeScript,
+ESLint, the 12-page webpack export, canonical static publication, and the
+current-bundle mounted workbench pass. No known Critical or Important Phase 7
+defect remains.

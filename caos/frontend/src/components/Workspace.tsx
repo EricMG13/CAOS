@@ -4,12 +4,11 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { FormEvent, ReactNode, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import EvidenceChip from "./EvidenceChip";
-import FiledProof from "./FiledProof";
 import ModelBuilder from "./model/ModelBuilder";
-import { api as request, type ArtifactRecord, type CaseRecord, type EvidenceOption, type LoanFinding, type LoanRow, type LoanUniverseResponse, type ModelBuild, type ModelInventory, type ReportDraft, type ResearchPlan, type RunRecord, type SourceRecord } from "../lib/api";
+import ReportStudio from "./report/ReportStudio";
+import { api as request, type ArtifactRecord, type CaseRecord, type LoanFinding, type LoanRow, type LoanUniverseResponse, type ResearchPlan, type RunRecord, type SourceRecord } from "../lib/api";
 import { initialAuthorityState, matchesAuthority, requestContext, workspaceAuthorityReducer, type AuthorityEvent } from "../lib/workspaceAuthority";
 
-const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
 import WorkbenchShell, { type DrawerState } from "./WorkbenchShell";
 import { type Destination, type Snapshot, type SnapshotView, destinationFromSlug, routeDestinations, withQuery } from "../lib/workbench";
 
@@ -31,10 +30,6 @@ function formatDate(value?: string) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
-function evidenceIdsFrom(value: string) {
-  return [...new Set(value.split(",").map((id) => id.trim()).filter(Boolean))];
 }
 
 export default function Workspace({ destination, children }: { destination?: Destination; children?: ReactNode } = {}) {
@@ -76,25 +71,70 @@ export default function Workspace({ destination, children }: { destination?: Des
   const runCreation = useRef(0);
   const routeAuthorityRef = useRef("");
   const modelDraftDirtyRef = useRef(false);
+  const reportDraftDirtyRef = useRef(false);
   const modelHistoryGuardRef = useRef(false);
+  const historyGuardRetiringRef = useRef(false);
+  const historyGuardRearmRef = useRef(false);
   const suppressNextModelHistoryPopRef = useRef(false);
   const modelHistoryPopFenceTimerRef = useRef<number | null>(null);
   const selectedCase = useMemo(() => cases.find((item) => item.id === caseId) || null, [cases, caseId]);
   const caseIsAuthorized = selectedCase !== null;
 
-  const onModelDraftStateChange = useCallback((dirty: boolean) => {
-    if (dirty && !modelDraftDirtyRef.current && typeof window !== "undefined") {
-      window.history.pushState({ ...window.history.state, caosModelDraftGuard: true }, "", window.location.href);
+  const armOwnedHistoryGuard = useCallback((marker: "model" | "report") => {
+    if (typeof window === "undefined") return;
+    if (historyGuardRetiringRef.current) {
+      historyGuardRearmRef.current = true;
+      return;
+    }
+    if (!modelHistoryGuardRef.current && !historyGuardRetiringRef.current) {
+      window.history.pushState({ ...window.history.state, [marker === "model" ? "caosModelDraftGuard" : "caosReportDraftGuard"]: true }, "", window.location.href);
       modelHistoryGuardRef.current = true;
     }
-    modelDraftDirtyRef.current = dirty;
   }, []);
+
+  const retireOwnedHistoryGuard = useCallback(() => {
+    if (typeof window === "undefined" || modelDraftDirtyRef.current || reportDraftDirtyRef.current || !modelHistoryGuardRef.current || historyGuardRetiringRef.current) return;
+    modelHistoryGuardRef.current = false;
+    historyGuardRetiringRef.current = true;
+    historyGuardRearmRef.current = false;
+    suppressNextModelHistoryPopRef.current = true;
+    window.history.back();
+    if (modelHistoryPopFenceTimerRef.current !== null) window.clearTimeout(modelHistoryPopFenceTimerRef.current);
+    modelHistoryPopFenceTimerRef.current = window.setTimeout(() => {
+      if (!historyGuardRetiringRef.current) return;
+      historyGuardRetiringRef.current = false;
+      suppressNextModelHistoryPopRef.current = false;
+      modelHistoryGuardRef.current = true;
+      historyGuardRearmRef.current = false;
+      modelHistoryPopFenceTimerRef.current = null;
+    }, 1000);
+  }, []);
+
+  const onModelDraftStateChange = useCallback((dirty: boolean) => {
+    modelDraftDirtyRef.current = dirty;
+    if (dirty) armOwnedHistoryGuard("model");
+    else if (!modelDraftDirtyRef.current && !reportDraftDirtyRef.current) retireOwnedHistoryGuard();
+  }, [armOwnedHistoryGuard, retireOwnedHistoryGuard]);
+
+  const onReportDraftStateChange = useCallback((dirty: boolean) => {
+    reportDraftDirtyRef.current = dirty;
+    if (dirty) armOwnedHistoryGuard("report");
+    else if (!modelDraftDirtyRef.current && !reportDraftDirtyRef.current) retireOwnedHistoryGuard();
+  }, [armOwnedHistoryGuard, retireOwnedHistoryGuard]);
 
   const confirmModelDraftDiscard = useCallback((detail: string) => {
     if (!modelDraftDirtyRef.current) return true;
     if (!window.confirm(detail)) return false;
     modelDraftDirtyRef.current = false;
-    modelHistoryGuardRef.current = false;
+    if (!reportDraftDirtyRef.current) modelHistoryGuardRef.current = false;
+    return true;
+  }, []);
+
+  const confirmReportDraftDiscard = useCallback((detail: string) => {
+    if (!reportDraftDirtyRef.current) return true;
+    if (!window.confirm(detail)) return false;
+    reportDraftDirtyRef.current = false;
+    if (!modelDraftDirtyRef.current) modelHistoryGuardRef.current = false;
     return true;
   }, []);
 
@@ -102,9 +142,7 @@ export default function Workspace({ destination, children }: { destination?: Des
     const currentCaseId = authorityRef.current.caseId || "";
     if (nextCaseId === currentCaseId) return true;
     if (!confirmModelDraftDiscard("Discard the unsigned Model Builder Draft Revision before changing case?")) return false;
-    const draftKey = currentCaseId ? `caos-report-draft:${currentCaseId}` : "";
-    if (draftKey && window.sessionStorage.getItem(draftKey) && !window.confirm("Discard the unsaved Report Studio draft before changing case?")) return false;
-    if (draftKey) window.sessionStorage.removeItem(draftKey);
+    if (!confirmReportDraftDiscard("Discard the unsaved Report Studio changes before changing case?")) return false;
     dispatchAuthority({ type: "selectCase", caseId: nextCaseId || null });
     const nextRunId = availableCases.find((item) => item.id === nextCaseId)?.current_execution_id || "";
     if (nextRunId) dispatchAuthority({ type: "selectRun", caseId: nextCaseId, runId: nextRunId });
@@ -116,7 +154,7 @@ export default function Workspace({ destination, children }: { destination?: Des
     setRunError("");
     setError("");
     return true;
-  }, [cases, confirmModelDraftDiscard, dispatchAuthority]);
+  }, [cases, confirmModelDraftDiscard, confirmReportDraftDiscard, dispatchAuthority]);
 
   const refreshCases = async (signal?: AbortSignal) => {
     const requestId = ++casesRequest.current;
@@ -227,23 +265,27 @@ export default function Workspace({ destination, children }: { destination?: Des
         event.stopImmediatePropagation();
         return;
       }
-      const currentCaseId = queryParam("case");
-      const draftKey = currentCaseId ? `caos-report-draft:${currentCaseId}` : "";
-      if (!draftKey || !window.sessionStorage.getItem(draftKey)) return;
-      if (window.confirm("Discard the unsaved Report Studio draft before leaving?")) window.sessionStorage.removeItem(draftKey);
-      else { event.preventDefault(); event.stopImmediatePropagation(); }
+      if (!confirmReportDraftDiscard("Discard the unsaved Report Studio changes and leave this page?")) { event.preventDefault(); event.stopImmediatePropagation(); }
     };
     const guardBrowserHistory = (event: PopStateEvent) => {
       if (suppressNextModelHistoryPopRef.current) {
         suppressNextModelHistoryPopRef.current = false;
         if (modelHistoryPopFenceTimerRef.current !== null) window.clearTimeout(modelHistoryPopFenceTimerRef.current);
         modelHistoryPopFenceTimerRef.current = null;
+        if (historyGuardRetiringRef.current) {
+          historyGuardRetiringRef.current = false;
+          const rearm = historyGuardRearmRef.current || modelDraftDirtyRef.current || reportDraftDirtyRef.current;
+          historyGuardRearmRef.current = false;
+          if (rearm) armOwnedHistoryGuard(modelDraftDirtyRef.current ? "model" : "report");
+        }
         return;
       }
-      if (!modelDraftDirtyRef.current) return;
+      if (!modelDraftDirtyRef.current && !reportDraftDirtyRef.current) return;
       event.stopImmediatePropagation();
-      if (window.confirm("Discard the unsigned Model Builder Draft Revision and use browser history?")) {
+      const label = modelDraftDirtyRef.current && reportDraftDirtyRef.current ? "Discard the unsigned Model Builder Draft Revision and unsaved Report Studio changes, then use browser history?" : modelDraftDirtyRef.current ? "Discard the unsigned Model Builder Draft Revision and use browser history?" : "Discard the unsaved Report Studio changes and use browser history?";
+      if (window.confirm(label)) {
         modelDraftDirtyRef.current = false;
+        reportDraftDirtyRef.current = false;
         modelHistoryGuardRef.current = false;
         window.history.back();
       } else if (modelHistoryGuardRef.current) {
@@ -256,7 +298,7 @@ export default function Workspace({ destination, children }: { destination?: Des
       }
     };
     const guardUnload = (event: BeforeUnloadEvent) => {
-      if (!modelDraftDirtyRef.current) return;
+      if (!modelDraftDirtyRef.current && !reportDraftDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -267,10 +309,10 @@ export default function Workspace({ destination, children }: { destination?: Des
       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(caught instanceof Error ? caught.message : "Unable to load identity");
     });
     const timer = window.setTimeout(() => void refreshCases(controller.signal), 0);
-    return () => { controller.abort(); window.clearTimeout(timer); if (modelHistoryPopFenceTimerRef.current !== null) window.clearTimeout(modelHistoryPopFenceTimerRef.current); suppressNextModelHistoryPopRef.current = false; modelHistoryPopFenceTimerRef.current = null; document.removeEventListener("click", guardDraftNavigation, true); window.removeEventListener("popstate", guardBrowserHistory, true); window.removeEventListener("beforeunload", guardUnload); };
+    return () => { controller.abort(); window.clearTimeout(timer); if (modelHistoryPopFenceTimerRef.current !== null) window.clearTimeout(modelHistoryPopFenceTimerRef.current); suppressNextModelHistoryPopRef.current = false; historyGuardRetiringRef.current = false; historyGuardRearmRef.current = false; modelHistoryPopFenceTimerRef.current = null; document.removeEventListener("click", guardDraftNavigation, true); window.removeEventListener("popstate", guardBrowserHistory, true); window.removeEventListener("beforeunload", guardUnload); };
     // The selected case is intentionally not a fetch dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [confirmModelDraftDiscard]);
+  }, [armOwnedHistoryGuard, confirmModelDraftDiscard, confirmReportDraftDiscard]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -517,7 +559,7 @@ export default function Workspace({ destination, children }: { destination?: Des
       case "RV Screener": return <RVView key={caseId} caseId={caseId} />;
       case "Command Center": return <CommandView caseId={caseId} question={routeQuestion} />;
       case "Model Builder": return <ModelBuilder caseId={caseId} role={role} onDraftStateChange={onModelDraftStateChange} />;
-      case "Report Studio": return <ReportView key={caseId} acceptedSnapshot={authority?.accepted ?? null} caseId={caseId} role={role} selectedCase={selectedCase} />;
+      case "Report Studio": return <ReportStudio key={caseId} caseId={caseId} role={role} selectedCase={selectedCase} onDraftStateChange={onReportDraftStateChange} />;
       case "Admin Studio": return <AdminView />;
     }
   };
@@ -890,139 +932,4 @@ function AdminView() {
   const [stepUp, setStepUp] = useState(""); const [bundle, setBundle] = useState<{ build_id: string; integrity: { checked: number; mismatches: number } } | null>(null); const [audit, setAudit] = useState<{ action: string; actor: string; at: string }[]>([]); const [message, setMessage] = useState(""); const [pending, setPending] = useState(false); const headers = { "x-oidc-step-up": stepUp };
   const load = async () => { setMessage(""); setPending(true); try { const [nextBundle, nextAudit] = await Promise.all([request<typeof bundle>("/api/admin/bundle", { headers }), request<typeof audit>("/api/admin/audit", { headers })]); setBundle(nextBundle); setAudit(nextAudit); } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Admin verification failed"); } finally { setPending(false); } };
   return <div className="grid"><section className="panel span-4"><div className="panel-header"><h2>Step-up</h2><span className="eyebrow">ADMIN ONLY</span></div><div className="panel-body"><form onSubmit={(event) => { event.preventDefault(); void load(); }}><div className="field"><label htmlFor="step-up">OIDC step-up token</label><input id="step-up" name="step-up" autoComplete="one-time-code" type="password" value={stepUp} onChange={(event) => setStepUp(event.target.value)} required /></div><button className="button primary" type="submit" disabled={pending}>{pending ? "Verifying…" : "Verify authority"}</button>{message && <p className="error" role="alert">{message}</p>}</form></div></section><section className="panel span-8"><div className="panel-header"><h2>Bundle integrity</h2><span className="eyebrow">DEPLOY V</span></div><div className="panel-body">{bundle ? <><p className="mono">Build {bundle.build_id}</p><p className="status success">{bundle.integrity.checked} files verified · {bundle.integrity.mismatches} mismatches</p></> : <div className="empty">Step up to inspect the signed methodology bundle and audit trail.</div>}</div></section><section className="panel span-12"><div className="panel-header"><h2>Audit trail</h2><span className="eyebrow">IMMUTABLE EVENTS</span></div><div className="panel-body table-wrap" tabIndex={0} role="region" aria-label="Scrollable table"><table><thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th></tr></thead><tbody>{audit.map((event, index) => <tr key={`${event.at}-${index}`}><td className="mono">{formatDate(event.at)}</td><td>{event.actor}</td><td className="mono">{event.action}</td></tr>)}</tbody></table>{!audit.length && <div className="empty">No audit events loaded.</div>}</div></section></div>;
-}
-
-function ReportView({ acceptedSnapshot, caseId, role, selectedCase }: { acceptedSnapshot: Snapshot | null; caseId: string; role: string; selectedCase: CaseRecord | null }) {
-  type DraftState = Required<ReportDraft> & { dirty: boolean };
-  type ModelConsent = { buildId: string; includeExport: boolean } | null;
-  const [report, setReport] = useState<{ id?: string; status: string; digest: string; preview_digest?: string; input_fingerprint?: string; snapshot_digest: string; markdown: string; content?: { model?: { build_id: string; payload_digest: string } | null } } | null>(null);
-  const [versions, setVersions] = useState({ thesis: 0, recommendation: 0 });
-  const [draft, setDraft] = useState<DraftState>({ thesis: "", instrument: "", recommendation: "MARKET WEIGHT", evidenceIds: "", dirty: false });
-  const [readyModel, setReadyModel] = useState<ModelBuild | null>(null); const [modelConsent, setModelConsent] = useState<ModelConsent>(null);
-  const includeModel = Boolean(readyModel && modelConsent?.buildId === readyModel.id); const includeModelExport = includeModel && modelConsent?.includeExport === true;
-  const [message, setMessage] = useState(""); const [error, setError] = useState(""); const [loadError, setLoadError] = useState(""); const [sources, setSources] = useState<SourceRecord[]>([]); const [evidenceError, setEvidenceError] = useState(""); const [evidenceQuery, setEvidenceQuery] = useState(""); const [loading, setLoading] = useState(true); const [pending, setPending] = useState(""); const [readyCaseId, setReadyCaseId] = useState("");
-  const requestId = useRef(0);
-  const draftKey = `caos-report-draft:${caseId}`;
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    if (!caseId) { setLoading(false); return; }
-    const expectedCaseId = caseId;
-    const currentRequest = ++requestId.current;
-    setLoading(true); setLoadError(""); setEvidenceError("");
-    try {
-      const [nextReport, nextThesis, nextRecommendations, sourceResult, nextModels] = await Promise.all([
-        request<typeof report>(`/api/cases/${caseId}/reports`, {}, signal),
-        request<{ current?: { version: number; core_thesis: string; evidence_ids?: string[] } }>(`/api/cases/${caseId}/thesis`, {}, signal),
-        request<{ current?: { version: number; rows: { instrument: string; recommendation: string; primary?: boolean }[] } }>(`/api/cases/${caseId}/recommendations`, {}, signal),
-        request<SourceRecord[]>(`/api/cases/${caseId}/sources`, {}, signal).then((value) => ({ value, error: "" })).catch((caught) => ({ value: [], error: caught instanceof Error ? caught.message : "Unable to load evidence inventory" })),
-        request<ModelInventory>(`/api/cases/${caseId}/models`, {}, signal).catch(() => null),
-      ]);
-      if (currentRequest !== requestId.current) return;
-      const primary = nextRecommendations.current?.rows.find((row) => row.primary) || nextRecommendations.current?.rows[0];
-      const stored = window.sessionStorage.getItem(draftKey);
-      let storedDraft: ReportDraft | null = null;
-      if (stored) {
-        try {
-          const parsed: unknown = JSON.parse(stored);
-          const fields = ["thesis", "instrument", "recommendation", "evidenceIds"] as const;
-          if (parsed && typeof parsed === "object" && fields.every((field) => (parsed as Record<string, unknown>)[field] === undefined || typeof (parsed as Record<string, unknown>)[field] === "string")) storedDraft = parsed as ReportDraft;
-          else window.sessionStorage.removeItem(draftKey);
-        } catch { window.sessionStorage.removeItem(draftKey); }
-      }
-      const model = nextModels?.readiness.build?.status === "READY" ? nextModels.readiness.build : null;
-      setReport(nextReport); setSources(sourceResult.value); setEvidenceError(sourceResult.error); setReadyModel(model); setModelConsent((current) => {
-        if (!current || current.buildId !== model?.id) return null;
-        return current.includeExport && model.export.status !== "READY" ? { ...current, includeExport: false } : current;
-      });
-      setVersions({ thesis: nextThesis.current?.version ?? 0, recommendation: nextRecommendations.current?.version ?? 0 });
-      setDraft({
-        thesis: storedDraft?.thesis ?? nextThesis.current?.core_thesis ?? "",
-        instrument: storedDraft?.instrument ?? primary?.instrument ?? "",
-        recommendation: storedDraft?.recommendation ?? primary?.recommendation ?? "MARKET WEIGHT",
-        evidenceIds: storedDraft?.evidenceIds ?? nextThesis.current?.evidence_ids?.join(", ") ?? "",
-        dirty: Boolean(storedDraft),
-      });
-      setReadyCaseId(expectedCaseId);
-    } catch (caught) {
-      if (currentRequest !== requestId.current || caught instanceof DOMException && caught.name === "AbortError") return;
-      setLoadError(caught instanceof Error ? caught.message : "Unable to load report workspace");
-      setReadyCaseId(expectedCaseId);
-    }
-    finally { if (currentRequest === requestId.current) setLoading(false); }
-  }, [caseId, draftKey]);
-  // Draft loading synchronizes persisted browser state with the selected case.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { requestId.current += 1; setReadyCaseId(""); setModelConsent(null); const controller = new AbortController(); void refresh(controller.signal); return () => { controller.abort(); requestId.current += 1; }; }, [refresh]);
-  useEffect(() => { if (readyCaseId !== caseId || !draft.dirty) return; window.sessionStorage.setItem(draftKey, JSON.stringify({ thesis: draft.thesis, instrument: draft.instrument, recommendation: draft.recommendation, evidenceIds: draft.evidenceIds })); }, [caseId, draft, draftKey, readyCaseId]);
-  useEffect(() => { if (!draft.dirty) return; const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; }; window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn); }, [draft.dirty]);
-  const updateDraft = (field: keyof ReportDraft, value: string) => setDraft((current) => ({ ...current, [field]: value, dirty: true }));
-  const evidenceOptions = useMemo<EvidenceOption[]>(() => [
-    ...(acceptedSnapshot ? [{ id: acceptedSnapshot.id, kind: "Snapshot" as const, label: `Accepted snapshot · ${acceptedSnapshot.digest.slice(0, 12)}…` }] : []),
-    ...(acceptedSnapshot?.artifacts.map((artifact) => ({ id: artifact.id, kind: "Artifact" as const, label: `${artifact.module_id} · ${artifact.digest.slice(0, 12)}…` })) ?? []),
-    ...sources.map((source) => ({ id: source.id, kind: "Source" as const, label: source.filename })),
-  ], [acceptedSnapshot, sources]);
-  const selectedEvidence = useMemo(() => new Set(evidenceIdsFrom(draft.evidenceIds)), [draft.evidenceIds]);
-  const visibleEvidence = useMemo(() => { const query = evidenceQuery.toLowerCase(); return evidenceOptions.filter((option) => `${option.kind} ${option.label} ${option.id}`.toLowerCase().includes(query)); }, [evidenceOptions, evidenceQuery]);
-  const toggleEvidence = (id: string) => setDraft((current) => { const ids = evidenceIdsFrom(current.evidenceIds); return { ...current, evidenceIds: (ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]).join(", "), dirty: true }; });
-  const save = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setMessage(""); setError("");
-    if (!acceptedSnapshot) { setError("Accept an analytical snapshot before freezing this report. Your draft is saved locally."); return; }
-    const refs = evidenceIdsFrom(draft.evidenceIds);
-    setPending("freeze");
-    try {
-      const saved = await request<{ thesis: { version: number }; recommendations: { version: number } }>(`/api/cases/${caseId}/report-inputs`, {
-        method: "POST",
-        body: JSON.stringify({
-          thesis: { expected_version: versions.thesis, core_thesis: draft.thesis, drivers: [], risks: [], catalysts: [], unresolved_questions: [], evidence_ids: refs },
-          recommendations: { expected_version: versions.recommendation, market_snapshot_id: "internal-market-latest", rows: [{ instrument_id: draft.instrument, instrument: draft.instrument, recommendation: draft.recommendation, rationale: "Analyst-owned recommendation pending committee review.", primary: true }], analytical_dependency_ids: [] },
-        }),
-      });
-      setVersions({ thesis: saved.thesis.version, recommendation: saved.recommendations.version });
-      await request(`/api/cases/${caseId}/reports/freeze`, { method: "POST", body: JSON.stringify({ thesis_version: saved.thesis.version, recommendation_version: saved.recommendations.version, ...(includeModel && readyModel ? { model_build_id: readyModel.id, ...(includeModelExport ? { include_model_export: true } : {}) } : {}) }) });
-      window.sessionStorage.removeItem(draftKey);
-      setDraft((current) => ({ ...current, dirty: false }));
-      setMessage("Frozen report pending Approver ratification.");
-      await refresh();
-    } catch (caught) {
-      const detail = caught instanceof Error ? caught.message : "Unable to freeze report";
-      setError(detail.includes("SNAPSHOT_REQUIRED")
-        ? "Accept an analytical snapshot before freezing this report. Your draft is saved locally."
-        : detail.includes("EVIDENCE_CASE_MISMATCH")
-          ? "One or more evidence IDs do not belong to this case."
-          : detail.includes("EVIDENCE_SOURCE_WITHDRAWN")
-            ? "Remove withdrawn sources before freezing this report."
-            : detail);
-    } finally { setPending(""); }
-  };
-  const approve = async () => { if (!report?.preview_digest || !report.input_fingerprint) return; setPending("approve"); setError(""); try { await request(`/api/cases/${caseId}/reports/approve`, { method: "POST", body: JSON.stringify({ expected_status: "PENDING_APPROVAL", preview_digest: report.preview_digest, input_fingerprint: report.input_fingerprint }) }); setMessage("Report approved; exports are available."); await refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to approve report"); } finally { setPending(""); } };
-  const busy = pending === "freeze";
-  return <div className="report-studio">
-    <section className="panel report-editor">
-      <div className="panel-header"><h2>Compose</h2><span className="panel-meta">Analyst authority</span></div>
-      <div className="panel-body report-editor-scroll">{loading || loadError || readyCaseId !== caseId ? <LoadState loading={loading || readyCaseId !== caseId} error={loadError} /> : <form className="flow" onSubmit={save}>
-        <div className="field"><label htmlFor="thesis">Core thesis</label><textarea id="thesis" name="core-thesis" autoComplete="off" value={draft.thesis} onChange={(event) => updateDraft("thesis", event.target.value)} required disabled={busy} placeholder="State the defensible credit view…" /></div>
-        <div className="field"><label htmlFor="instrument">Primary instrument</label><input id="instrument" name="instrument" autoComplete="off" value={draft.instrument} onChange={(event) => updateDraft("instrument", event.target.value)} required disabled={busy} placeholder="Issuer 1L 2029…" /></div>
-        <div className="field"><label htmlFor="recommendation">Recommendation</label><select id="recommendation" name="recommendation" value={draft.recommendation} onChange={(event) => updateDraft("recommendation", event.target.value)} disabled={busy}><option>OVERWEIGHT</option><option>MARKET WEIGHT</option><option>UNDERWEIGHT</option><option>N/A</option></select></div>
-        <fieldset className="evidence-picker">
-          <legend>Case evidence</legend>
-          <div className="field"><label htmlFor="evidence-search">Find evidence</label><input id="evidence-search" type="search" value={evidenceQuery} onChange={(event) => setEvidenceQuery(event.target.value)} placeholder="Search sources and accepted artifacts…" disabled={busy} /></div>
-          <div className="evidence-options">{visibleEvidence.slice(0, 12).map((option) => <label className="evidence-option" key={option.id}><input type="checkbox" checked={selectedEvidence.has(option.id)} onChange={() => toggleEvidence(option.id)} disabled={busy} /><span><strong>{option.kind}</strong> {option.label}<span className="mono">{option.id}</span></span></label>)}</div>
-          {!visibleEvidence.length && <p className="muted">No case-scoped evidence matches this search.</p>}
-          {visibleEvidence.length > 12 && <p className="muted">Showing 12 of {visibleEvidence.length} matches. Narrow the search to attach another item.</p>}
-        </fieldset>
-        {evidenceError && <p className="error" role="alert">Evidence inventory unavailable: {evidenceError}</p>}
-        <div className="field"><label htmlFor="evidence-ids">Evidence IDs</label><input id="evidence-ids" name="evidence-ids" autoComplete="off" value={draft.evidenceIds} onChange={(event) => updateDraft("evidenceIds", event.target.value)} placeholder="src_…, art_…, snapshot_…" disabled={busy} /><span className="muted">Paste case-scoped IDs or use the picker above.</span></div>
-        <fieldset className="evidence-picker"><legend>CP-MODEL appendix</legend><label className="evidence-option"><input type="checkbox" checked={includeModel} onChange={(event) => setModelConsent(event.target.checked && readyModel ? { buildId: readyModel.id, includeExport: false } : null)} disabled={busy || !readyModel} /><span><strong>{readyModel ? "Include ready model" : "No ready model"}</strong><span className="mono">{readyModel ? `${readyModel.id} · ${readyModel.payload_digest}` : "Build the accepted snapshot in Model Builder to include it."}</span></span></label><label className="evidence-option"><input type="checkbox" checked={includeModelExport} onChange={(event) => { if (readyModel && includeModel) setModelConsent({ buildId: readyModel.id, includeExport: event.target.checked }); }} disabled={busy || !includeModel || readyModel?.export.status !== "READY"} /><span><strong>Include ready XLSX export</strong><span className="mono">{readyModel?.export.status === "READY" ? `${readyModel.export.filename || "Workbook"} · ${readyModel.export.sha256}` : "Export the model in Model Builder before attaching the workbook identity."}</span></span></label></fieldset>
-        {draft.dirty && <p className="status warning" role="status">Draft saved locally</p>}
-        {!acceptedSnapshot && <ActionState title="Freeze unavailable" detail="Accept an analytical snapshot before freezing this report. Your draft remains available in this browser." action="Open Run Console" href={withQuery("/run-console", { case: caseId })} warning />}
-        <div className="report-actions"><button className="button primary" type="submit" disabled={busy || !acceptedSnapshot}>{busy ? "Freezing…" : "Freeze report snapshot"}</button>{acceptedSnapshot ? <span className="muted">Server authority is checked again at freeze.</span> : <Link className="button small" href={withQuery("/run-console", { case: caseId })}>Accept a snapshot first</Link>}</div>
-        {message && <p className="muted" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
-      </form>}</div>
-    </section>
-    <section className="report-proof-stage" aria-labelledby="paper-proof-title">
-      <article className="paper report-paper">
-        <header className="report-paper-header"><div><span className="paper-kicker">CAOS · filed proof</span><h2 id="paper-proof-title">{selectedCase ? `${selectedCase.issuer} — ${selectedCase.name}` : "Filed proof"}</h2></div>{report && <span className={`status ${report.status === "APPROVED" ? "success" : "warning"}`}>{report.status}</span>}</header>
-        <div className="report-paper-body">{loading || loadError || readyCaseId !== caseId ? <LoadState loading={loading || readyCaseId !== caseId} error={loadError} /> : report ? <div className="flow"><p className="mono">{report.digest}</p><p className="muted mono">Snapshot {report.snapshot_digest}</p>{report.content?.model ? <p className="muted mono">Model {report.content.model.build_id} · {report.content.model.payload_digest}</p> : null}{report.status === "PENDING_APPROVAL" && (role === "APPROVER" || role === "ADMIN") && <button className="button primary" type="button" onClick={approve} disabled={pending === "approve"}>{pending === "approve" ? "Approving…" : "Approve frozen report"}</button>}{report.status === "APPROVED" && <div className="proof-actions"><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/md`}>Markdown</a><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/pdf`}>PDF</a><a className="button small" download href={`${apiBase}/api/cases/${caseId}/reports/export/xlsx`}>XLSX</a></div>}<FiledProof markdown={report.markdown} /></div> : <div className="empty">No frozen report for this case.</div>}</div>
-      </article>
-    </section>
-  </div>;
 }

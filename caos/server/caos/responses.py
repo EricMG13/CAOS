@@ -1410,13 +1410,6 @@ class DeliverableDraftRevisionResponse(WireModel):
     content: dict[str, Any]
 
 
-class DeliverableWorkspaceResponse(WireModel):
-    template: DeliverableTemplateResponse
-    current: DeliverableDraftRevisionResponse | None
-    history: list[DeliverableDraftRevisionResponse]
-    model_eligibility: DeliverableModelEligibilityResponse
-
-
 class DeliverableExportMetadataResponse(WireModel):
     deliverable_id: str
     format: Literal["md", "pdf", "xlsx"]
@@ -1449,6 +1442,14 @@ class FrozenDeliverableResponse(WireModel):
     render_identity: dict[str, Any]
     payload: dict[str, Any]
     exports: dict[str, DeliverableExportMetadataResponse]
+
+
+class DeliverableWorkspaceResponse(WireModel):
+    template: DeliverableTemplateResponse
+    current: DeliverableDraftRevisionResponse | None
+    history: list[DeliverableDraftRevisionResponse]
+    frozen_history: list[FrozenDeliverableResponse]
+    model_eligibility: DeliverableModelEligibilityResponse
 
 
 class DeliverableChangedDraftResponse(DeliverableDraftRevisionResponse):
