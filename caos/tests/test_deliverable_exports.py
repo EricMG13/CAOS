@@ -5,6 +5,7 @@ import io
 import hashlib
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -173,6 +174,23 @@ def test_all_six_pathways_render_substantive_semantic_exports(tmp_path: Path) ->
         }
         assert template["title"] in values
         assert "Model outputs remain sensitive to refinancing assumptions." in values
+
+
+def test_frozen_exports_are_byte_reproducible_across_a_time_gap() -> None:
+    # Regression test: openpyxl unconditionally stamps workbook.properties.modified
+    # and every ZIP entry's date_time with the real wall clock at save time, so a
+    # duplicate freeze of the same draft that happened to straddle a one-second
+    # boundary would be misclassified as DELIVERABLE_FREEZE_CONFLICT. The 1.1s sleep
+    # is deliberate: it is the smallest reliable way to force a real render to cross
+    # a wall-clock second boundary and exercise the actual save path end to end.
+    payload = _frozen_payload("RELATIVE_VALUE")
+    first_pdf = render_frozen_pdf(payload)
+    first_xlsx = render_frozen_xlsx(payload)
+    time.sleep(1.1)
+    second_pdf = render_frozen_pdf(payload)
+    second_xlsx = render_frozen_xlsx(payload)
+    assert first_pdf == second_pdf
+    assert first_xlsx == second_xlsx
 
 
 def test_freeze_pins_and_renders_exact_active_revision_model_authority(
