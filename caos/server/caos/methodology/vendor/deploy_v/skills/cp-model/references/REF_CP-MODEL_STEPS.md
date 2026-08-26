@@ -124,13 +124,21 @@ Every rendered statement retains its source ID, locator and as-of date in
 Use CP-1 cash-paid interest and tax metrics, not expenses. Retain CP-1 signs for
 cash flows. Calculate FFO `Other` only as the disclosed residual in REF C.
 
-When CP-2G is present, its three Base and three Downside periods drive formulas
-using the latest PF revenue mix, margins and cash-flow ratios. Keep CP-2G
+When CP-2G is present, its complete versioned registry drives exactly three
+Base and three Downside periods. One validated effective assumption set is used
+by both Python and workbook formulas. Keep CP-2G
 assumption values and lineage on hidden control sheets; do not display a
 forecast-assumption block on the analyst-facing `Model` worksheet.
 The direct CP-2G interface has three division-growth slots; a scenario build
 with more than three unallocated CP-1 business-unit series blocks rather than
 silently leaving additional units flat.
+
+Accessible liquidity is `max(ending cash - minimum operating cash, 0) +
+accessible undrawn committed revolver`; liquidity headroom is `ending cash +
+accessible undrawn committed revolver - minimum operating cash`. Covenant
+headroom is enabled only for an accepted `MAX_TOTAL_LEVERAGE` definition and is
+`threshold - total leverage`. Missing authority produces a null result and the
+registry's named gap, never a zero or inferred threshold.
 ## REF_CP-MODEL_C_ModelMath.md
 # REF CP-MODEL C — Model Math
 
@@ -250,15 +258,29 @@ later period depending on it, unavailable. The case period is available only
 when all active-slot growth drivers and all other required case-period drivers
 are ready.
 
+For a segmented issuer, consolidated revenue growth is `NOT_APPLICABLE` with a
+null value in every case period. For an unsegmented issuer, every division slot
+is inactive and consolidated revenue growth must instead be numeric, `READY`
+and fully sourced for every case period. These applicability rules are part of
+the canonical validation boundary; an accepted handoff cannot silently produce
+blank forecast revenue because its active growth driver was marked inapplicable.
+
 Base and Downside segment revenue applies the assigned CP-2G growth rate to the
 column named by `rollforward_column_id`: PF for year one and the preceding year
 in the same case thereafter. COGS, OPEX, D&A, cash leases, cash taxes, working
 capital, FFO Other, capex and working-capital balances roll at their PF
-revenue/COGS ratios; identified add-backs and facility debt carry from PF; cash
-rolls through NCF; and CP-2G supplies acquisitions, equity, dividends and other
-financing flows. All such cells are formulas with independently calculated
+revenue/COGS ratios; the CP-2G identified add-back assumption is represented
+exactly once in a dedicated forecast bucket independent of the issuer's
+historical add-back series; facility debt carries from PF; cash rolls through
+NCF; and CP-2G supplies acquisitions, equity, dividends and other financing
+flows. All such cells are formulas with independently calculated
 expectations. CP-2G values remain formula-linked to hidden `_INPUTS` records so
 lineage is retained without a visible forecast-assumption section.
+
+For each case, the first breached forecast period records every threshold first
+breached in that period. Each record carries the case, period, threshold and
+metric identity, limit, actual value and headroom; simultaneous minimum-cash
+and maximum-leverage breaches must not be collapsed to a period-only label.
 ## REF_CP-MODEL_D_PreservationExportQA.md
 # REF CP-MODEL D — Recalculation, Export and QA
 

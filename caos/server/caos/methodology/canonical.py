@@ -13,13 +13,14 @@ from ..models.domain import CpModelBundle, _LOAD_LOCK, _load_module, project_cp2
 from .bundle import DeployVBundle, MethodologyError
 
 
-CANONICAL_MODULES = ("CP-1", "CP-1A", "CP-1B", "CP-2", "CP-2A")
+CANONICAL_MODULES = ("CP-1", "CP-1A", "CP-1B", "CP-2", "CP-2A", "CP-2G")
 CANONICAL_OUTPUT_TOKENS = {
     "CP-1": 32_000,
     "CP-1A": 12_000,
     "CP-1B": 12_000,
     "CP-2": 16_000,
     "CP-2A": 16_000,
+    "CP-2G": 24_000,
 }
 _MODULES = {
     "CP-1": (
@@ -50,6 +51,14 @@ _MODULES = {
             "references/REF_CP-2A_STEPS.md",
             "references/CP-2B_SCHEMA_REFERENCE.md",
             "references/REF_CP-2B_STEPS.md",
+        ),
+    ),
+    "CP-2G": (
+        "cp-2g-forward-credit-model",
+        "Forward Credit Model",
+        (
+            "references/CP-2G_ForwardCreditModel.schema.md",
+            "references/REF_CP-2G_STEPS.md",
         ),
     ),
 }
@@ -537,6 +546,7 @@ class CanonicalModuleRunner:
                 artifacts["CP-1B"]["markdown"],
                 artifacts["CP-2"]["markdown"],
                 projected,
+                artifacts["CP-2G"]["markdown"],
             )
             if validation.errors:
                 raise CanonicalValidationError("CP-MODEL bundle validation failed")

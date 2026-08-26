@@ -79,25 +79,39 @@ Append on every run:
 `<!-- table-id: cp2g.cp_model_forecast_drivers -->`
 
 Columns:
-`driver_id | slot_id | case | period_id | fiscal_year | value | unit | assumption_id | status | source_id | source_locator | as_of`
+`driver_id | slot_id | case | period_id | fiscal_year | value | unit | assumption_id | status | source_id | source_locator | as_of | gap_code`
+
+This is the complete `cp-model-assumptions.v1` interface. It contains every
+versioned definition for Base and Downside across exactly three forecast years.
 
 Emit exactly three consecutive fiscal years for both `BASE` and `DOWNSIDE`.
 The first year is no earlier than the latest CP-1 actual fiscal year. If the
 latest actual year includes a directly reported FY period, the first forecast
 year is no earlier than the following fiscal year.
-For every case/period emit:
-
-- `division_growth` for each of `DIVISION_1`, `DIVISION_2`, `DIVISION_3`,
-  unit `PERCENT_DECIMAL`;
-- `acquisitions_disposals`, `net_equity_issue_repay`, `dividends_paid` and
-  `other_investing_financing` with blank `slot_id`, unit `CURRENCY_MM`.
+For every case/period emit every definition in the versioned CP-MODEL
+Assumption Registry exactly once. The registry covers segment and consolidated
+growth, EBITDA margin and add-backs, cash-flow ratios, rates and spreads, debt
+and refinancing flows, minimum cash and accessible revolver, capital-allocation
+flows, and the supported covenant test.
 
 `DIVISION_1..3` resolve only through CP-1's
 `cp1.cp_model_segment_allocation`; CP-2G must never infer the mapping from
-segment display order. Slots unused by the issuer may be `NOT_APPLICABLE`.
+segment display order. For a segmented issuer, every allocated slot is `READY`
+and numeric in every case/period, every unallocated slot is `NOT_APPLICABLE`,
+and consolidated revenue growth is `NOT_APPLICABLE`. For an unsegmented issuer,
+all division slots are `NOT_APPLICABLE` and consolidated revenue growth is
+`READY` and numeric in every case/period.
 
-`status` is `READY` or `NOT_APPLICABLE`. A ready value requires an assumption
+`status` is `READY`, `NOT_APPLICABLE`, or `UNAVAILABLE`. A ready value requires an assumption
 ID, source ID, precise locator and ISO as-of date. A not-applicable row has a
 blank value and remains blank in the workbook. CP-MODEL does not consume upside
 drivers. A missing active division-growth value makes that case period and its
 dependent later periods unavailable; it is never interpreted as zero growth.
+
+`UNAVAILABLE` has a null value and the registry's exact `gap_code`. Accessible
+liquidity equals `max(ending cash - minimum operating cash, 0) + accessible
+undrawn committed revolver`. Liquidity headroom equals `ending cash +
+accessible undrawn committed revolver - minimum operating cash` and may be
+negative. Covenant headroom is calculated only for an accepted
+`MAX_TOTAL_LEVERAGE` definition as `threshold - total leverage`; a missing
+definition produces null and `COVENANT_DEFINITION_UNAVAILABLE`.

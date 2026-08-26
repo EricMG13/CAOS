@@ -461,9 +461,21 @@ def create_app(
         run = get_run_or_404(run_id, who)
         require_case(runs, run["case_id"], who, write=True)
         try:
-            return runtime.accept_run(run["case_id"], run_id, who.subject)
+            snapshot = runtime.accept_run(run["case_id"], run_id, who.subject)
         except WorkflowError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if run.get("accepted_snapshot_id") is None:
+            try:
+                readiness = model_readiness.readiness(run["case_id"])
+                if readiness["status"] == "READY_TO_BUILD":
+                    build, created = model_readiness.queue(
+                        run["case_id"], who.subject
+                    )
+                    if created and settings.environment != "production":
+                        model_runtime.schedule(build["id"], who.subject)
+            except Exception:
+                pass
+        return snapshot
 
     @app.get("/api/cases/{case_id}/snapshot", response_model=SnapshotOverviewResponse)
     def snapshot(case_id: str, request: Request) -> dict[str, Any]:
@@ -757,7 +769,7 @@ def create_app(
             build, created = model_readiness.queue(case_id, who.subject)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail="MODEL_NOT_READY") from exc
-        if created and settings.environment != "production":
+        if build.get("status") == "QUEUED" and settings.environment != "production":
             model_runtime.schedule(build["id"], who.subject)
         return {"build": public_model_build(build), "created": created}
 

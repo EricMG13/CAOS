@@ -1,6 +1,6 @@
 ---
 name: cp-model
-description: "Start-of-message trigger: Run CP-MODEL or bare CP-MODEL. Embedded, quoted, filename, comparison, and output mentions are inert. Build the canonical CP-MODEL Credit Snapshot plus historical/forecast Excel workbook from validated CP-1, CP-1A, CP-1B, CP-2, CP-2B and optional CP-2G handoffs. Use only when the user explicitly asks to create or populate the CP-MODEL workbook."
+description: "Start-of-message trigger: Run CP-MODEL or bare CP-MODEL. Embedded, quoted, filename, comparison, and output mentions are inert. Build the canonical CP-MODEL Credit Snapshot plus historical/forecast Excel workbook from validated CP-1, CP-1A, CP-1B, CP-2, CP-2B and CP-2G handoffs. Use only when the user explicitly asks to create or populate the CP-MODEL workbook."
 ---
 
 # CP-MODEL
@@ -67,13 +67,13 @@ schedules to fit a presentation capacity.
 ## Required execution
 
 After validating the required CP-1, CP-1A, CP-1B, CP-2 and CP-2B handoffs
-(and optional CP-2G), confirm LibreOffice/soffice is available and run:
+(and CP-2G), confirm LibreOffice/soffice is available and run:
 
 ```text
 python ./scripts/export_cp_model_v3.py \
   --cp1 <CP-1.md> --cp1a <CP-1A.md> --cp1b <CP-1B.md> \
   --cp2 <CP-2.md> --cp2b <CP-2B.md> \
-  [--cp2g <CP-2G.md>] [--quarter-count <N>] \
+  --cp2g <CP-2G.md> [--quarter-count <N>] \
   [--soffice <path>] --output-dir <destination>
 ```
 
@@ -101,8 +101,7 @@ This package emits exactly one validated `.xlsx` workbook under the inline WORKB
 
 ### CP-MODEL | CreditSnapshotModelWorkbook | Data-driven workbook generator
 
-**Required upstream:** CP-1, CP-1A, CP-1B, CP-2, CP-2B  
-**Optional upstream:** CP-2G  
+**Required upstream:** CP-1, CP-1A, CP-1B, CP-2, CP-2B, CP-2G
 **Downstream:** none  
 **Owned object:** `credit_snapshot_model_workbook`  
 **Output class:** `WORKBOOK_EXPORT`  
@@ -118,8 +117,8 @@ input. CP-1C/comparables are not consumed.
 #### Entry contract
 
 Require matching common-envelope identity and `qa_status: Passed` from CP-1,
-CP-1A, CP-1B, CP-2 and CP-2B. CP-2G may be omitted; if present it must match the
-same identity and pass its complete forecast-driver contract. Each required
+CP-1A, CP-1B, CP-2, CP-2B and CP-2G. CP-2G must match the same identity and pass
+its complete `cp-model-assumptions.v1` forecast-driver contract. Each required
 handoff must list CP-MODEL as a downstream consumer. Conversation text is not
 evidence and cannot fill a missing stable-table value.
 
@@ -150,7 +149,9 @@ Load:
    `cp1b.cp_model_snapshot_fields`, and one ready CP-MODEL row.
 4. CP-2 canonical Markdown with `cp2.cp_model_strengths_weaknesses`.
 5. CP-2B canonical Markdown with `cp2b.cp_model_catalysts`.
-6. A working LibreOffice/soffice calculation engine.
+6. CP-2G canonical Markdown with every versioned Assumption Registry definition
+   for Base and Downside across exactly three forecast years.
+7. A working LibreOffice/soffice calculation engine.
 
 #### Workflow
 

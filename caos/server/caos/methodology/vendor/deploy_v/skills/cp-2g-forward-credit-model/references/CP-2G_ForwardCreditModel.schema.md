@@ -9,7 +9,7 @@ the complete `cp2g.cp_model_forecast_drivers` stable table defined in REF F.
 |---|---|---|
 | T2H.1 | Source and identity gate | source_id, upstream module/run/period, status, locator, limitation |
 | T2H.2 | Historical-to-base bridge | metric, historical actual, LTM/base, adjustment, basis, evidence_id |
-| T2H.3 | Assumption register | assumption_id, driver, case, period, value/range, unit, class, source, rationale |
+| T2H.3 | Assumption register | driver_id, slot_id, case, period_id, fiscal_year, value, unit, assumption_id, status, source_id, source_locator, as_of, gap_code |
 | T2H.4 | Forward operating model | period, case, revenue, EBITDA, margin, CFO, capex, FCF, evidence/assumption IDs |
 | T2H.5 | Debt and liquidity roll-forward | period, case, opening debt/cash, issuance, repayment, interest, closing debt/cash, accessible liquidity |
 | T2H.6 | Credit metrics | period, case, gross/net leverage, coverage, FCF/debt, liquidity runway, definition IDs |
@@ -30,15 +30,17 @@ the complete `cp2g.cp_model_forecast_drivers` stable table defined in REF F.
 On every run, runtime output and canonical
 Markdown must include `cp2g.cp_model_forecast_drivers` with columns:
 
-`driver_id | slot_id | case | period_id | fiscal_year | value | unit | assumption_id | status | source_id | source_locator | as_of`
+`driver_id | slot_id | case | period_id | fiscal_year | value | unit | assumption_id | status | source_id | source_locator | as_of | gap_code`
+
+This is the complete `cp-model-assumptions.v1` interface. It contains every
+versioned definition for Base and Downside across exactly three forecast years.
 
 Emit exactly three consecutive fiscal years for `BASE` and `DOWNSIDE`. The
 first forecast year is no earlier than the latest CP-1 actual fiscal year; when
 the latest actual year contains a directly reported FY period, forecasting
 starts no earlier than the following fiscal year. Each
-case/period contains `division_growth` rows for `DIVISION_1..3` and the four
-non-division flow drivers defined in REF F: seven rows per case/period and 42
-rows in total. Division slots resolve only through
+case/period contains every definition in the versioned CP-MODEL Assumption
+Registry exactly once. Division slots resolve only through
 `cp1.cp_model_segment_allocation`; display order is never a mapping.
 
 Allocation rows define active slots. Every active slot must be `READY`, numeric
@@ -47,6 +49,18 @@ and fully sourced for every case/period. An inactive slot is
 active slot makes that case period and its dependent later periods unavailable;
 it must never be interpreted as zero growth. A case period is consumable only
 when all active slots and every other required driver are ready.
+For a segmented issuer, consolidated revenue growth is `NOT_APPLICABLE` with a
+null value in every case/period. For an unsegmented issuer, every division slot
+is `NOT_APPLICABLE` and consolidated revenue growth is `READY`, numeric and
+fully sourced in every case/period.
+
+`UNAVAILABLE` rows carry no value or provenance and must carry the definition's
+exact named gap. Accessible liquidity is `max(ending cash - minimum operating
+cash, 0) + accessible undrawn committed revolver`; liquidity headroom is
+`ending cash + accessible undrawn committed revolver - minimum operating cash`.
+The only enabled covenant test is accepted `MAX_TOTAL_LEVERAGE`, with headroom
+`threshold - total leverage`; otherwise the output is null with
+`COVENANT_DEFINITION_UNAVAILABLE`.
 
 ## Completion gate
 

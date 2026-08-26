@@ -13,6 +13,8 @@ from .domain import CpModelV3Error, CreditModelIR, Period, SENIOR_DEBT_CLASSES
 
 ZERO = Decimal("0")
 RECONCILIATION_TOLERANCE = Decimal("0.001")
+CALCULATION_CONTRACT_VERSION = "cp-model-calculations.v4"
+FORECAST_ADDBACK_ID = "forecast::identified_addbacks"
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ class AnalysisColumn:
 @dataclass(frozen=True)
 class ColumnCalculation:
     column: AnalysisColumn
-    values: Mapping[str, Decimal]
+    values: Mapping[str, Decimal | None]
     segment_values: Mapping[str, Decimal]
     addback_values: Mapping[str, Decimal]
     debt_values: Mapping[str, Decimal | None]
@@ -68,11 +70,23 @@ class ColumnCalculation:
 
 
 @dataclass(frozen=True)
+class BreachThreshold:
+    case: str
+    period_id: str
+    threshold_id: str
+    metric_id: str
+    limit: Decimal
+    actual: Decimal
+    headroom: Decimal
+
+
+@dataclass(frozen=True)
 class CalculationBook:
     periods: Mapping[str, PeriodCalculation]
     checks: tuple[SemanticCheck, ...]
     columns: tuple[AnalysisColumn, ...]
     column_calculations: Mapping[str, ColumnCalculation]
+    first_breaches: Mapping[str, tuple[BreachThreshold, ...]]
 
     def for_period(self, period_id: str) -> PeriodCalculation:
         try:
@@ -112,14 +126,41 @@ def _check(
     )
 
 
+def is_finite_number(value: object) -> bool:
+    return isinstance(value, Decimal) and value.is_finite()
+
+
+def _finite_operand(value: object, label: str) -> Decimal:
+    if not is_finite_number(value):
+        raise CpModelV3Error(f"{label} must be finite")
+    assert isinstance(value, Decimal)
+    return value
+
+
+def _finite_product(left: object, right: object, label: str) -> Decimal:
+    result = _finite_operand(left, f"{label} left operand") * _finite_operand(
+        right, f"{label} right operand"
+    )
+    return _finite_operand(result, label)
+
+
 def _ratio(numerator: Decimal, denominator: Decimal, *, positive: bool = False) -> Decimal | None:
-    if denominator == ZERO or (positive and denominator <= ZERO):
+    if (
+        not is_finite_number(numerator)
+        or not is_finite_number(denominator)
+        or denominator == ZERO
+        or (positive and denominator <= ZERO)
+    ):
         return None
     return numerator / denominator
 
 
 def _growth(current: Decimal, prior: Decimal) -> Decimal | None:
-    if prior == ZERO:
+    if (
+        not is_finite_number(current)
+        or not is_finite_number(prior)
+        or prior == ZERO
+    ):
         return None
     return current / prior - Decimal("1")
 
@@ -777,11 +818,31 @@ def _column_credit_metrics(
         if column.group == "YTD" and column.day_count > 0
         else Decimal("1")
     )
-    adjusted_ebitda = values["adjusted_ebitda_calc"] * annualization
-    fcf = values["fcf"] * annualization
-    interest = values["cash_interest_paid"] * annualization
-    debt = values["total_debt_reported"]
-    cash = values["cash_and_equivalents"]
+    raw_adjusted_ebitda = _finite_operand(
+        values.get("adjusted_ebitda_calc"), "credit metrics adjusted EBITDA"
+    )
+    adjusted_ebitda = _finite_product(
+        raw_adjusted_ebitda,
+        annualization,
+        "credit metrics adjusted EBITDA",
+    )
+    fcf = _finite_product(values.get("fcf"), annualization, "credit metrics FCF")
+    interest = _finite_product(
+        values.get("cash_interest_paid"),
+        annualization,
+        "credit metrics cash interest",
+    )
+    debt = _finite_operand(values.get("total_debt_reported"), "credit metrics debt")
+    cash = _finite_operand(values.get("cash_and_equivalents"), "credit metrics cash")
+    revenue = _finite_operand(values.get("revenue"), "credit metrics revenue")
+    cogs = _finite_operand(values.get("cogs"), "credit metrics COGS")
+    receivables = _finite_operand(
+        values.get("net_accounts_receivable"), "credit metrics receivables"
+    )
+    inventory = _finite_operand(values.get("inventory"), "credit metrics inventory")
+    payables = _finite_operand(
+        values.get("accounts_payable"), "credit metrics payables"
+    )
     days = Decimal(column.day_count or 365)
     return {
         "senior_secured_leverage": _ratio(
@@ -797,42 +858,51 @@ def _column_credit_metrics(
         ),
         "fcf_percent_debt": _ratio(fcf, debt, positive=True),
         "capex_percent_revenue": _ratio(
-            abs(values["capex_and_intangible_investment"]),
-            values["revenue"],
+            abs(
+                _finite_operand(
+                    values.get("capex_and_intangible_investment"),
+                    "credit metrics capex",
+                )
+            ),
+            revenue,
             positive=True,
         ),
         "cash_conversion": _ratio(fcf, adjusted_ebitda, positive=True),
         "gross_margin": _ratio(
-            values["gross_profit"], values["revenue"], positive=True
+            _finite_operand(values.get("gross_profit"), "credit metrics gross profit"),
+            revenue,
+            positive=True,
         ),
         "adjusted_ebitda_margin": _ratio(
-            values["adjusted_ebitda_calc"], values["revenue"], positive=True
+            raw_adjusted_ebitda,
+            revenue,
+            positive=True,
         ),
         "dso": (
             _ratio(
-                values["net_accounts_receivable"] * days,
-                values["revenue"],
+                _finite_product(receivables, days, "credit metrics receivable days"),
+                revenue,
                 positive=True,
             )
-            if values["net_accounts_receivable"] > ZERO
+            if receivables > ZERO
             else None
         ),
         "dsi": (
             _ratio(
-                values["inventory"] * days,
-                abs(values["cogs"]),
+                _finite_product(inventory, days, "credit metrics inventory days"),
+                abs(cogs),
                 positive=True,
             )
-            if values["inventory"] > ZERO
+            if inventory > ZERO
             else None
         ),
         "dpo": (
             _ratio(
-                values["accounts_payable"] * days,
-                abs(values["cogs"]),
+                _finite_product(payables, days, "credit metrics payable days"),
+                abs(cogs),
                 positive=True,
             )
-            if values["accounts_payable"] > ZERO
+            if payables > ZERO
             else None
         ),
     }
@@ -869,15 +939,56 @@ def _forecast_period_ready(
     case: str,
     period_id: str,
 ) -> bool:
-    ready_growth_slots = {
-        driver.slot_id
-        for driver in model.forecast_drivers
-        if driver.case == case
-        and driver.period_id == period_id
-        and driver.driver_id == "division_growth"
-        and driver.value is not None
+    if model.segments:
+        required_growth = tuple(
+            ("division_growth", slot_id, slot_id)
+            for slot_id in sorted(_active_forecast_slots(model))
+        )
+    else:
+        required_growth = (
+            ("consolidated_revenue_growth", "", "CONSOLIDATED"),
+        )
+    for driver_id, slot_id, label in required_growth:
+        matching = tuple(
+            driver
+            for driver in model.forecast_drivers
+            if driver.case == case
+            and driver.period_id == period_id
+            and driver.driver_id == driver_id
+            and driver.slot_id == slot_id
+        )
+        if (
+            len(matching) != 1
+            or matching[0].status != "READY"
+            or not is_finite_number(matching[0].value)
+        ):
+            raise CpModelV3Error(
+                f"active forecast growth {label} for {case}/{period_id} "
+                "must be exactly one finite READY driver"
+            )
+    optional_unavailable = {
+        "liquidity.minimum_operating_cash",
+        "liquidity.undrawn_revolver",
+        "covenant.max_total_leverage",
     }
-    return _active_forecast_slots(model).issubset(ready_growth_slots)
+    period_drivers = tuple(
+        driver
+        for driver in model.forecast_drivers
+        if driver.case == case and driver.period_id == period_id
+    )
+    required_ready = all(
+        driver.status == "READY" and is_finite_number(driver.value)
+        for driver in period_drivers
+        if driver.assumption_id not in optional_unavailable
+        and driver.driver_id not in {"division_growth", "consolidated_revenue_growth"}
+    )
+    optional_valid = all(
+        driver.status == "UNAVAILABLE"
+        or (driver.status == "READY" and is_finite_number(driver.value))
+        for driver in period_drivers
+        if driver.assumption_id in optional_unavailable
+    )
+    return required_ready and optional_valid
 
 
 def _forecast_column(
@@ -891,55 +1002,105 @@ def _forecast_column(
         return ColumnCalculation(column, {}, {}, {}, {}, {}, {})
 
     driver_period_id = column.forecast_period_id or column.column_id
+    def driver(driver_id: str, slot_id: str = "") -> Decimal:
+        key = (column.case, driver_period_id, driver_id, slot_id)
+        try:
+            value = drivers[key]
+        except KeyError as exc:
+            raise CpModelV3Error(
+                f"missing READY forecast driver {driver_id}/{slot_id or 'DEFAULT'} "
+                f"for {column.case}/{driver_period_id}"
+            ) from exc
+        return _finite_operand(value, f"forecast driver {driver_id}")
+
+    def nullable_driver(driver_id: str) -> Decimal | None:
+        value = drivers.get((column.case, driver_period_id, driver_id, ""))
+        return None if value is None else _finite_operand(value, f"forecast driver {driver_id}")
+
+    def prior_value(key: str) -> Decimal:
+        try:
+            value = prior.values[key]
+        except KeyError as exc:
+            raise CpModelV3Error(f"prior forecast value {key} is missing") from exc
+        return _finite_operand(value, f"prior forecast value {key}")
+
     segment_values: dict[str, Decimal] = {}
     for series in model.segments:
         slot = model.segment_forecast_slots[series.series_id]
-        growth = drivers[(column.case, driver_period_id, "division_growth", slot)]
-        segment_values[series.series_id] = (
-            prior.segment_values.get(series.series_id, ZERO) * (Decimal("1") + growth)
+        growth = driver("division_growth", slot)
+        segment_values[series.series_id] = _finite_product(
+            prior.segment_values.get(series.series_id, ZERO),
+            Decimal("1") + growth,
+            f"forecast segment revenue {series.series_id}",
         )
     revenue = sum(segment_values.values(), ZERO)
     if not segment_values:
-        growth = drivers[
-            (column.case, driver_period_id, "division_growth", "DIVISION_1")
-        ]
-        revenue = prior.values["revenue"] * (Decimal("1") + growth)
+        growth = driver("consolidated_revenue_growth")
+        revenue = _finite_product(
+            prior_value("revenue"), Decimal("1") + growth, "forecast revenue"
+        )
+    revenue = _finite_operand(revenue, "forecast revenue")
 
-    pf_revenue = pro_forma.values["revenue"]
+    def pro_forma_value(key: str) -> Decimal:
+        try:
+            value = pro_forma.values[key]
+        except KeyError as exc:
+            raise CpModelV3Error(f"pro-forma value {key} is missing") from exc
+        return _finite_operand(value, f"pro-forma {key}")
+
+    pf_revenue = pro_forma_value("revenue")
 
     def pf_ratio(key: str, denominator: Decimal = pf_revenue) -> Decimal:
-        if denominator == ZERO:
-            return ZERO
-        return pro_forma.values[key] / denominator
+        numerator = pro_forma_value(key)
+        if not is_finite_number(denominator) or denominator == ZERO:
+            raise CpModelV3Error(f"pro-forma {key} denominator must be finite and non-zero")
+        return numerator / denominator
 
-    cogs = revenue * pf_ratio("cogs")
-    opex = revenue * pf_ratio("opex_including_da")
-    depreciation = revenue * pf_ratio("depreciation_amortization")
-    addback_values = dict(pro_forma.addback_values)
-    gross_profit = revenue + cogs
-    ebit = gross_profit + opex
-    ebitda = ebit + depreciation
-    adjusted_ebitda = ebitda + sum(addback_values.values(), ZERO)
-    cash_interest = (
-        pro_forma.values["cash_interest_paid"]
-        / pro_forma.values["total_debt_reported"]
-        * prior.values["total_debt_reported"]
-        if pro_forma.values["total_debt_reported"] != ZERO
-        else ZERO
+    if not is_finite_number(pf_revenue) or pf_revenue == ZERO:
+        raise CpModelV3Error(
+            "pro-forma revenue denominator must be finite and non-zero"
+        )
+
+    cogs = _finite_product(revenue, pf_ratio("cogs"), "forecast COGS")
+    depreciation = _finite_product(
+        revenue, pf_ratio("depreciation_amortization"), "forecast depreciation"
     )
-    leases = revenue * pf_ratio("cash_lease_payments")
-    cash_taxes = revenue * pf_ratio("cash_taxes_paid")
-    working_capital = revenue * pf_ratio("working_capital_change")
-    ffo_other = revenue * pf_ratio("ffo_other")
+    identified_addbacks = driver("identified_addbacks")
+    addback_values = {series.series_id: ZERO for series in model.addbacks}
+    addback_values[FORECAST_ADDBACK_ID] = identified_addbacks
+    gross_profit = revenue + cogs
+    adjusted_ebitda = _finite_product(
+        revenue, driver("adjusted_ebitda_margin"), "forecast adjusted EBITDA"
+    )
+    ebitda = adjusted_ebitda - identified_addbacks
+    opex = ebitda - depreciation - gross_profit
+    contractual_amortization = driver("contractual_amortization")
+    debt_issuance = driver("debt_issuance")
+    debt_repayment = driver("debt_repayment")
+    refinancing_proceeds = driver("refinancing_proceeds")
+    debt_issue_repay = (
+        debt_issuance
+        + refinancing_proceeds
+        - contractual_amortization
+        - debt_repayment
+    )
+    total_debt = max(prior_value("total_debt_reported") + debt_issue_repay, ZERO)
+    cash_interest = -_finite_product(
+        total_debt,
+        driver("base_rate") + driver("debt_spread"),
+        "forecast cash interest",
+    )
+    leases = _finite_product(revenue, driver("lease_cash_pct_revenue"), "forecast leases")
+    cash_taxes = _finite_product(revenue, driver("cash_tax_pct_revenue"), "forecast cash taxes")
+    working_capital = _finite_product(
+        revenue, driver("working_capital_pct_revenue"), "forecast working capital"
+    )
+    ffo_other = _finite_product(revenue, pf_ratio("ffo_other"), "forecast FFO other")
     ffo = adjusted_ebitda + cash_interest + leases + cash_taxes + ffo_other
     cfo = ffo + working_capital
-    capex = revenue * pf_ratio("capex_and_intangible_investment")
-
-    def driver(driver_id: str) -> Decimal:
-        return drivers.get((column.case, driver_period_id, driver_id, ""), ZERO)
+    capex = -_finite_product(revenue, driver("capex_pct_revenue"), "forecast capex")
 
     acquisitions = driver("acquisitions_disposals")
-    debt_issue_repay = ZERO
     equity_issue_repay = driver("net_equity_issue_repay")
     dividends = driver("dividends_paid")
     other_investing_financing = driver("other_investing_financing")
@@ -972,31 +1133,59 @@ def _forecast_column(
         "dividends_paid": dividends,
         "other_investing_financing": other_investing_financing,
         "net_cash_change": ncf,
-        "cash_and_equivalents": prior.values["cash_and_equivalents"] + ncf,
-        "rcf_commitment": prior.values["rcf_commitment"],
-        "total_debt_calc": prior.values["total_debt_calc"],
-        "total_debt_reported": prior.values["total_debt_reported"],
-        "secured_debt": prior.values["secured_debt"],
-        "unsecured_debt": prior.values["unsecured_debt"],
-        "other_debt": prior.values["other_debt"],
-        "senior_debt": prior.values["senior_debt"],
-        "senior_secured_debt": prior.values["senior_secured_debt"],
-        "net_accounts_receivable": revenue
-        * pf_ratio("net_accounts_receivable"),
-        "inventory": abs(cogs)
-        * (
-            pro_forma.values["inventory"] / abs(pro_forma.values["cogs"])
-            if pro_forma.values["cogs"] != ZERO
-            else ZERO
+        "cash_and_equivalents": prior_value("cash_and_equivalents") + ncf,
+        "rcf_commitment": prior_value("rcf_commitment"),
+        "total_debt_calc": total_debt,
+        "total_debt_reported": total_debt,
+        "secured_debt": prior_value("secured_debt"),
+        "unsecured_debt": prior_value("unsecured_debt"),
+        "other_debt": prior_value("other_debt"),
+        "senior_debt": prior_value("senior_debt"),
+        "senior_secured_debt": prior_value("senior_secured_debt"),
+        "net_accounts_receivable": _finite_product(
+            revenue, pf_ratio("net_accounts_receivable"), "forecast receivables"
         ),
-        "accounts_payable": abs(cogs)
-        * (
-            pro_forma.values["accounts_payable"] / abs(pro_forma.values["cogs"])
-            if pro_forma.values["cogs"] != ZERO
-            else ZERO
+        "inventory": _finite_product(
+            abs(cogs),
+            pf_ratio("inventory", abs(pro_forma_value("cogs"))),
+            "forecast inventory",
+        ),
+        "accounts_payable": _finite_product(
+            abs(cogs),
+            pf_ratio("accounts_payable", abs(pro_forma_value("cogs"))),
+            "forecast payables",
         ),
     }
     values = _compose_values(primitive, segment_values, addback_values, model)
+    minimum_cash = nullable_driver("minimum_operating_cash")
+    undrawn_revolver = nullable_driver("undrawn_revolver")
+    cash = values["cash_and_equivalents"]
+    liquidity_available = minimum_cash is not None and undrawn_revolver is not None
+    values.update(
+        {
+            "cumulative_fcf": prior.values.get("cumulative_fcf", ZERO)
+            + values["fcf"],
+            "minimum_operating_cash": minimum_cash,
+            "undrawn_revolver": undrawn_revolver,
+            "accessible_liquidity": (
+                max(cash - minimum_cash, ZERO) + undrawn_revolver
+                if liquidity_available
+                else None
+            ),
+            "liquidity_headroom": (
+                cash + undrawn_revolver - minimum_cash
+                if liquidity_available
+                else None
+            ),
+            "net_debt": total_debt - cash,
+        }
+    )
+    covenant = nullable_driver("max_total_leverage")
+    leverage = _ratio(total_debt, adjusted_ebitda, positive=True)
+    values["covenant_max_total_leverage"] = covenant
+    values["covenant_headroom"] = None
+    if covenant is not None and leverage is not None:
+        values["covenant_headroom"] = covenant - leverage
     return ColumnCalculation(
         column,
         values,
@@ -1326,6 +1515,10 @@ def _build_column_calculations(
             if calculation.credit_metrics
             else _column_credit_metrics(calculation)
         )
+        if column.group in {"BASE", "DOWNSIDE"}:
+            metrics["covenant_headroom"] = calculation.values.get(
+                "covenant_headroom"
+            )
         result[column.column_id] = ColumnCalculation(
             column,
             calculation.values,
@@ -1395,4 +1588,64 @@ def calculate(model: CreditModelIR) -> CalculationBook:
         )
     columns = _analysis_columns(model)
     column_calculations = _build_column_calculations(model, periods, columns)
-    return CalculationBook(periods, tuple(checks), columns, column_calculations)
+    first_breaches: dict[str, tuple[BreachThreshold, ...]] = {}
+    for case in ("BASE", "DOWNSIDE"):
+        first_breaches[case] = ()
+        for column in columns:
+            if column.group != case:
+                continue
+            calculation = column_calculations[column.column_id]
+            if not calculation.values:
+                continue
+            breaches: list[BreachThreshold] = []
+            liquidity_headroom = calculation.values.get("liquidity_headroom")
+            minimum_cash = calculation.values.get("minimum_operating_cash")
+            cash = calculation.values.get("cash_and_equivalents")
+            undrawn = calculation.values.get("undrawn_revolver")
+            if (
+                is_finite_number(liquidity_headroom)
+                and liquidity_headroom < ZERO
+                and is_finite_number(minimum_cash)
+                and is_finite_number(cash)
+                and is_finite_number(undrawn)
+            ):
+                actual = cash + undrawn
+                breaches.append(
+                    BreachThreshold(
+                        case,
+                        column.column_id,
+                        "liquidity.minimum_operating_cash",
+                        "cash_plus_undrawn_revolver",
+                        minimum_cash,
+                        actual,
+                        actual - minimum_cash,
+                    )
+                )
+            covenant_headroom = calculation.values.get("covenant_headroom")
+            covenant_limit = calculation.values.get(
+                "covenant_max_total_leverage"
+            )
+            leverage = calculation.credit_metrics.get("total_leverage")
+            if (
+                is_finite_number(covenant_headroom)
+                and covenant_headroom < ZERO
+                and is_finite_number(covenant_limit)
+                and is_finite_number(leverage)
+            ):
+                breaches.append(
+                    BreachThreshold(
+                        case,
+                        column.column_id,
+                        "covenant.max_total_leverage",
+                        "total_leverage",
+                        covenant_limit,
+                        leverage,
+                        covenant_limit - leverage,
+                    )
+                )
+            if breaches:
+                first_breaches[case] = tuple(breaches)
+                break
+    return CalculationBook(
+        periods, tuple(checks), columns, column_calculations, first_breaches
+    )

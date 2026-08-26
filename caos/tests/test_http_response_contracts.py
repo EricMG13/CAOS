@@ -468,7 +468,14 @@ KEY_SETS = {
         "error": None,
         "export": {"status": None, "error": None},
         "worksheet_schema_version": None,
-        "calculation_runtime": {"name": None, "version": None, "sha256": None},
+        "calculation_runtime": {
+            "name": None,
+            "version": None,
+            "sha256": None,
+            "assumption_registry_version": None,
+            "assumption_registry_digest": None,
+            "calculation_contract_version": None,
+        },
     },
     "report": {
         "id": None,
@@ -584,6 +591,40 @@ def test_model_build_rejects_unknown_calculation_runtime_fields(
     }
     with pytest.raises(ValidationError):
         ModelBuildResponse.model_validate(payload)
+
+
+def test_model_route_preserves_legacy_calculation_runtime_identity(
+    client: TestClient, response_payloads: dict[str, Any]
+) -> None:
+    current = response_payloads["model_build"]
+    legacy_runtime = {
+        key: current["calculation_runtime"][key]
+        for key in ("name", "version", "sha256")
+    }
+    legacy, created = client.app.state.ledgers.models.queue_build(
+        {
+            "case_id": current["case_id"],
+            "accepted_run_id": current["accepted_run_id"],
+            "accepted_snapshot_id": current["accepted_snapshot_id"],
+            "source_set_id": current["source_set_id"],
+            "input_fingerprint": "9" * 64,
+            "worksheet_schema_version": current["worksheet_schema_version"],
+            "calculation_runtime": legacy_runtime,
+        },
+        "legacy-analyst",
+    )
+
+    response = client.get(
+        f"/api/cases/{current['case_id']}/models/{legacy['id']}"
+    )
+
+    assert created is True
+    assert response.status_code == 200
+    runtime = response.json()["calculation_runtime"]
+    assert {key: runtime[key] for key in legacy_runtime} == legacy_runtime
+    assert runtime["assumption_registry_version"] is None
+    assert runtime["assumption_registry_digest"] is None
+    assert runtime["calculation_contract_version"] is None
 
 
 def test_model_readiness_uses_the_shared_model_build_shape(

@@ -160,6 +160,13 @@ Canonical four-quarter fixture in USD millions.
 | services | Services | OPERATING_SEGMENT | 1 | FY2024_Q3 | 120 | Verified | SRC-1 | Annual report 2024 p. 15 |
 | services | Services | OPERATING_SEGMENT | 1 | FY2024_Q4 | 130 | Verified | SRC-1 | Annual report 2024 p. 15 |
 
+### CP-MODEL segment allocation
+
+<!-- table-id: cp1.cp_model_segment_allocation -->
+| slot_id | slot_label | component_segment_ids |
+|---|---|---|
+| DIVISION_1 | Services | services |
+
 ### Adjusted EBITDA bridge
 
 <!-- table-id: cp1.adjusted_ebitda_bridge -->

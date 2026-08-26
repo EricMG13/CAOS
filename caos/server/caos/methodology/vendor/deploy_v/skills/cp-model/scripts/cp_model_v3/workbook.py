@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from openpyxl import Workbook
 from openpyxl.comments import Comment
@@ -14,10 +14,11 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .calculations import (
+    CALCULATION_CONTRACT_VERSION,
+    FORECAST_ADDBACK_ID,
     SENIOR_DEBT_CLASSES,
     AnalysisColumn,
     CalculationBook,
-    PeriodCalculation,
     SemanticCheck,
 )
 from .domain import (
@@ -25,10 +26,8 @@ from .domain import (
     CreditModelIR,
     DebtSeries,
     NarrativeItem,
-    Period,
     SourceNumber,
     SourceRef,
-    TextValue,
     V3_CONTRACT_VERSION,
 )
 
@@ -300,7 +299,6 @@ def _render_model(
     model_cells: dict[tuple[str, str], str] = {}
     row_for_key: dict[str, int] = {}
     period_by_id = {period.period_id: period for period in model.periods}
-    column_by_id = {column.column_id: column for column in columns}
     pro_forma = next(column for column in columns if column.group == "PF")
     pf_letter = column_letters[pro_forma.column_id]
 
@@ -373,6 +371,30 @@ def _render_model(
                 f"missing forecast input cell for {key}"
             ) from exc
 
+    def forecast_debt_formula(column: AnalysisColumn) -> str:
+        latest_balance_period = pro_forma.balance_period_id or model.quarters[-1].period_id
+        starting_debt = (
+            "SUMIFS('_INPUTS'!$D:$D,'_INPUTS'!$B:$B,\"total_debt\","
+            f"'_INPUTS'!$C:$C,\"{latest_balance_period}\")"
+        )
+        pieces = [starting_debt]
+        for candidate in columns:
+            if candidate.case != column.case or candidate.group != column.group:
+                continue
+            if candidate.fiscal_year is None or column.fiscal_year is None:
+                continue
+            if candidate.fiscal_year > column.fiscal_year:
+                continue
+            pieces.extend(
+                (
+                    forecast_driver_reference(candidate, "debt_issuance"),
+                    forecast_driver_reference(candidate, "refinancing_proceeds"),
+                    f"-{forecast_driver_reference(candidate, 'contractual_amortization')}",
+                    f"-{forecast_driver_reference(candidate, 'debt_repayment')}",
+                )
+            )
+        return "+".join(pieces)
+
     def forecast_source_formula(key: str, column: AnalysisColumn, letter: str) -> str:
         prior_id = column.rollforward_column_id or pro_forma.column_id
         prior_letter = column_letters[prior_id]
@@ -382,28 +404,48 @@ def _render_model(
                 return "=" + "+".join(f"{letter}{item}" for item in segment_rows)
             return (
                 f"={prior_letter}{row_for_key['revenue']}*"
-                f"(1+{forecast_driver_reference(column, 'division_growth', 'DIVISION_1')})"
+                f"(1+{forecast_driver_reference(column, 'consolidated_revenue_growth')})"
             )
-        if key in {"cogs", "opex_including_da", "depreciation_amortization"}:
+        if key in {"cogs", "depreciation_amortization"}:
             return (
-                f"=IFERROR({letter}{row_for_key['revenue']}*"
-                f"{pf_letter}{row_for_key[key]}/{pf_letter}{row_for_key['revenue']},0)"
+                f"={letter}{row_for_key['revenue']}*"
+                f"{pf_letter}{row_for_key[key]}/{pf_letter}{row_for_key['revenue']}"
+            )
+        if key == "opex_including_da":
+            return (
+                f"={letter}{row_for_key['revenue']}*"
+                f"{forecast_driver_reference(column, 'adjusted_ebitda_margin')}-"
+                f"{forecast_driver_reference(column, 'identified_addbacks')}-"
+                f"{letter}{row_for_key['depreciation_amortization']}-"
+                f"{letter}{row_for_key['gross_profit']}"
             )
         if key == "ebitda_reported":
             return f"={letter}{row_for_key['ebitda_calc']}"
         if key == "adjusted_ebitda_reported":
-            return f"={letter}{row_for_key['adjusted_ebitda_calc']}"
-        if key == "cash_interest_paid":
-            return f"={pf_letter}{row_for_key[key]}"
-        if key in {
-            "cash_lease_payments",
-            "cash_taxes_paid",
-            "working_capital_change",
-            "capex_and_intangible_investment",
-        }:
             return (
-                f"=IFERROR({letter}{row_for_key['revenue']}*"
-                f"{pf_letter}{row_for_key[key]}/{pf_letter}{row_for_key['revenue']},0)"
+                f"={letter}{row_for_key['revenue']}*"
+                f"{forecast_driver_reference(column, 'adjusted_ebitda_margin')}"
+            )
+        if key == "cash_interest_paid":
+            return (
+                f"=-({forecast_debt_formula(column)})*("
+                f"{forecast_driver_reference(column, 'base_rate')}+"
+                f"{forecast_driver_reference(column, 'debt_spread')})"
+            )
+        ratio_driver = {
+            "cash_lease_payments": "lease_cash_pct_revenue",
+            "cash_taxes_paid": "cash_tax_pct_revenue",
+            "working_capital_change": "working_capital_pct_revenue",
+        }
+        if key in ratio_driver:
+            return (
+                f"={letter}{row_for_key['revenue']}*"
+                f"{forecast_driver_reference(column, ratio_driver[key])}"
+            )
+        if key == "capex_and_intangible_investment":
+            return (
+                f"=-{letter}{row_for_key['revenue']}*"
+                f"{forecast_driver_reference(column, 'capex_pct_revenue')}"
             )
         if key == "cfo_reported":
             return f"={letter}{row_for_key['cfo_calc']}"
@@ -415,7 +457,13 @@ def _render_model(
         }:
             return f"={forecast_driver_reference(column, key)}"
         if key == "net_debt_issue_repay":
-            return "=0"
+            return (
+                "="
+                f"{forecast_driver_reference(column, 'debt_issuance')}+"
+                f"{forecast_driver_reference(column, 'refinancing_proceeds')}-"
+                f"{forecast_driver_reference(column, 'contractual_amortization')}-"
+                f"{forecast_driver_reference(column, 'debt_repayment')}"
+            )
         if key == "net_cash_change":
             return f"={letter}{row_for_key['ncf']}"
         if key == "cash_and_equivalents":
@@ -426,16 +474,16 @@ def _render_model(
         if key == "rcf_commitment":
             return f"={pf_letter}{row_for_key[key]}"
         if key == "total_debt_reported":
-            return f"={letter}{row_for_key['total_debt_calc']}"
+            return f"={forecast_debt_formula(column)}"
         if key == "net_accounts_receivable":
             return (
-                f"=IFERROR({letter}{row_for_key['revenue']}*"
-                f"{pf_letter}{row_for_key[key]}/{pf_letter}{row_for_key['revenue']},0)"
+                f"={letter}{row_for_key['revenue']}*"
+                f"{pf_letter}{row_for_key[key]}/{pf_letter}{row_for_key['revenue']}"
             )
         if key in {"inventory", "accounts_payable"}:
             return (
-                f"=IFERROR(ABS({letter}{row_for_key['cogs']})*"
-                f"{pf_letter}{row_for_key[key]}/ABS({pf_letter}{row_for_key['cogs']}),0)"
+                f"=ABS({letter}{row_for_key['cogs']})*"
+                f"{pf_letter}{row_for_key[key]}/ABS({pf_letter}{row_for_key['cogs']})"
             )
         raise CpModelV3Error(f"unsupported forecast source row {key}")
 
@@ -552,6 +600,41 @@ def _render_model(
             model_cells[(key, column.column_id)] = cell
         row += 1
 
+    def forecast_formula_row(
+        key: str,
+        label: str,
+        formula_for: object,
+        *,
+        number_format: str = MONEY_FORMAT,
+    ) -> None:
+        nonlocal row
+        row_for_key[key] = row
+        _style_data_row(ws, row, max_column, fill=PALE_BLUE, bold=True)
+        _set_literal(ws.cell(row, 1), label)
+        for column in columns:
+            if not is_forecast(column):
+                continue
+            calculation = calculations.for_column(column.column_id)
+            if (
+                not calculation.values
+                or key not in calculation.values
+                or calculation.values[key] is None
+            ):
+                continue
+            letter = column_letters[column.column_id]
+            cell = f"{letter}{row}"
+            state.formula(
+                "Model",
+                cell,
+                key,
+                formula_for(column, letter),
+                calculation.values[key],
+                period_id=column.column_id,
+                number_format=number_format,
+            )
+            model_cells[(key, column.column_id)] = cell
+        row += 1
+
     def growth_row(growth_key: str, label: str, source_key: str) -> None:
         nonlocal row
         semantic_id = f"growth::{growth_key}"
@@ -650,12 +733,12 @@ def _render_model(
         lambda _column, letter: f"={letter}{row_for_key['revenue']}+{letter}{row_for_key['cogs']}",
         bold=True,
     )
+    source_row("depreciation_amortization", "Depreciation & amortisation", "depreciation_amortization")
     source_row("opex_including_da", "OPEX including D&A", "opex_including_da")
     formula_row(
         "ebit", "EBIT",
         lambda _column, letter: f"={letter}{row_for_key['gross_profit']}+{letter}{row_for_key['opex_including_da']}",
     )
-    source_row("depreciation_amortization", "Depreciation & amortisation", "depreciation_amortization")
     formula_row(
         "ebitda_calc", "EBITDA (calculated)",
         lambda _column, letter: f"={letter}{row_for_key['ebit']}+{letter}{row_for_key['depreciation_amortization']}",
@@ -708,7 +791,7 @@ def _render_model(
                     )
                 elif is_forecast(column):
                     state.formula(
-                        "Model", cell, addback_key, f"={pf_letter}{row}", expected,
+                        "Model", cell, addback_key, "=0", expected,
                         period_id=column.column_id, number_format=MONEY_FORMAT,
                     )
                 else:
@@ -716,6 +799,32 @@ def _render_model(
                         "Model", cell, addback_key, component_formula(addback_key, column), expected,
                         period_id=column.column_id, number_format=MONEY_FORMAT,
                     )
+                model_cells[(addback_key, column.column_id)] = cell
+            row += 1
+        if realization_status == "NOT_STATED":
+            addback_key = f"addback::{FORECAST_ADDBACK_ID}"
+            row_for_key[addback_key] = row
+            group_rows.append(row)
+            _style_data_row(ws, row, max_column, fill=PALE_YELLOW, font_color=INPUT_BLUE)
+            _set_literal(ws.cell(row, 1), "  Forecast identified add-backs")
+            for column in columns:
+                if not is_forecast(column):
+                    continue
+                calculation = calculations.for_column(column.column_id)
+                expected = calculation.addback_values.get(FORECAST_ADDBACK_ID)
+                if expected is None:
+                    continue
+                letter = column_letters[column.column_id]
+                cell = f"{letter}{row}"
+                state.formula(
+                    "Model",
+                    cell,
+                    addback_key,
+                    f"={forecast_driver_reference(column, 'identified_addbacks')}",
+                    expected,
+                    period_id=column.column_id,
+                    number_format=MONEY_FORMAT,
+                )
                 model_cells[(addback_key, column.column_id)] = cell
             row += 1
         formula_row(
@@ -813,6 +922,15 @@ def _render_model(
         "fcf", "Free cash flow",
         lambda _column, letter: f"={letter}{row_for_key['cfo_calc']}+{letter}{row_for_key['capex_and_intangible_investment']}",
         bold=True,
+    )
+    forecast_formula_row(
+        "cumulative_fcf",
+        "Cumulative free cash flow",
+        lambda column, letter: (
+            f"={letter}{row_for_key['fcf']}"
+            if not column.comparison_column_id
+            else f"={column_letters[column.comparison_column_id]}{row_for_key['cumulative_fcf']}+{letter}{row_for_key['fcf']}"
+        ),
     )
     for key, label in (
         ("acquisitions_disposals", "Acquisitions / disposals"),
@@ -954,10 +1072,13 @@ def _render_model(
         "senior_debt", "Senior debt",
         lambda column, letter: classified_debt_formula(column, letter, senior_only=True), bold=True,
     )
+    def total_debt_formula(column: AnalysisColumn, letter: str) -> str:
+        if is_forecast(column):
+            return f"={forecast_debt_formula(column)}"
+        return "=" + "+".join(f"{letter}{item}" for item in subtotal_rows)
+
     formula_row(
-        "total_debt_calc", "Total debt (calculated)",
-        lambda _column, letter: "=" + "+".join(f"{letter}{item}" for item in subtotal_rows),
-        bold=True,
+        "total_debt_calc", "Total debt (calculated)", total_debt_formula, bold=True,
     )
     source_row("total_debt_reported", "Total debt (reported / projected)", "total_debt", bold=True)
     formula_row(
@@ -968,6 +1089,42 @@ def _render_model(
     source_row("net_accounts_receivable", "Net accounts receivable", "net_accounts_receivable")
     source_row("inventory", "Inventory", "inventory")
     source_row("accounts_payable", "Accounts payable", "accounts_payable")
+    forecast_formula_row(
+        "minimum_operating_cash",
+        "Minimum operating cash",
+        lambda column, _letter: f"={forecast_driver_reference(column, 'minimum_operating_cash')}",
+    )
+    forecast_formula_row(
+        "undrawn_revolver",
+        "Accessible undrawn revolver",
+        lambda column, _letter: f"={forecast_driver_reference(column, 'undrawn_revolver')}",
+    )
+    forecast_formula_row(
+        "accessible_liquidity",
+        "Accessible liquidity",
+        lambda _column, letter: (
+            f"=MAX({letter}{row_for_key['cash_and_equivalents']}-"
+            f"{letter}{row_for_key['minimum_operating_cash']},0)+"
+            f"{letter}{row_for_key['undrawn_revolver']}"
+        ),
+    )
+    forecast_formula_row(
+        "liquidity_headroom",
+        "Liquidity headroom",
+        lambda _column, letter: (
+            f"={letter}{row_for_key['cash_and_equivalents']}+"
+            f"{letter}{row_for_key['undrawn_revolver']}-"
+            f"{letter}{row_for_key['minimum_operating_cash']}"
+        ),
+    )
+    forecast_formula_row(
+        "net_debt",
+        "Net debt",
+        lambda _column, letter: (
+            f"={letter}{row_for_key['total_debt_reported']}-"
+            f"{letter}{row_for_key['cash_and_equivalents']}"
+        ),
+    )
 
     section("Credit Metrics")
 
@@ -1016,6 +1173,11 @@ def _render_model(
             return f"=({debt}-{cash})/{adjusted_annual}"
         if key == "interest_coverage":
             return f"={adjusted_annual}/ABS({interest_annual})"
+        if key == "covenant_headroom":
+            return (
+                f"={forecast_driver_reference(column, 'max_total_leverage')}-"
+                f"{letter}{row_for_key['total_leverage']}"
+            )
         if key == "fcf_percent_debt":
             return f"={fcf_annual}/{debt}"
         if key == "capex_percent_revenue":
@@ -1046,8 +1208,10 @@ def _render_model(
         _set_literal(ws.cell(row, 1), label)
         for column in columns:
             expected = calculations.for_column(column.column_id).credit_metrics.get(key)
+            if expected is None:
+                continue
             formula = credit_metric_formula(key, column)
-            if expected is None or formula is None:
+            if formula is None:
                 continue
             letter = column_letters[column.column_id]
             cell = f"{letter}{row}"
@@ -1075,6 +1239,7 @@ def _render_model(
     credit_metric_row("total_leverage", "Total leverage", MULTIPLE_FORMAT)
     credit_metric_row("net_leverage", "Total net leverage", MULTIPLE_FORMAT)
     credit_metric_row("interest_coverage", "Interest coverage", MULTIPLE_FORMAT)
+    credit_metric_row("covenant_headroom", "Covenant headroom", MULTIPLE_FORMAT)
     _style_data_row(ws, row, max_column, fill=GREY, bold=True)
     ws.cell(row, 1, "Cash Flow and Investment")
     row += 1
@@ -1324,6 +1489,17 @@ def _narrative_refs(items: Sequence[NarrativeItem]) -> tuple[SourceRef, ...]:
     return tuple(result)
 
 
+def _breach_summary(calculations: CalculationBook, case: str) -> str:
+    breaches = calculations.first_breaches[case]
+    if not breaches:
+        return "No breach in forecast horizon"
+    return "\n".join(
+        f"{breach.period_id} | {breach.threshold_id} | {breach.metric_id} | "
+        f"limit={breach.limit} | actual={breach.actual} | headroom={breach.headroom}"
+        for breach in breaches
+    )
+
+
 def _render_snapshot(
     state: _RenderState,
     model: CreditModelIR,
@@ -1539,8 +1715,27 @@ def _render_snapshot(
             )
         _style_data_row(ws, row, len(display_columns) + 1, fill=PALE_BLUE)
 
+    breakpoint_start = header_row + len(highlight_rows) + 2
+    section(breakpoint_start, "Forward Breakpoints")
+    for offset, case in enumerate(("BASE", "DOWNSIDE"), 1):
+        row = breakpoint_start + offset
+        _set_literal(ws.cell(row, 1), f"{case.title()} first breach")
+        ws.cell(row, 1).fill = _fill(GREY)
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
+        breaches = calculations.first_breaches[case]
+        state.value(
+            "Credit Snapshot",
+            f"B{row}",
+            f"first_breach::{case}",
+            _breach_summary(calculations, case),
+            owner="CP-MODEL",
+            write_class="CALCULATED",
+            period_id=breaches[0].period_id if breaches else "",
+        )
+        ws[f"B{row}"].alignment = Alignment(wrap_text=True, vertical="top")
+
     latest_period = model.quarters[-1]
-    addback_start = header_row + len(highlight_rows) + 2
+    addback_start = breakpoint_start + 4
     section(addback_start, f"Latest EBITDA Add-backs — {latest_period.display_label}")
     addback_header = addback_start + 1
     for index, header in enumerate(("Add-back", "Category", "Realization", "Amount"), 1):
@@ -1713,6 +1908,7 @@ def _render_inputs(workbook: Workbook, model: CreditModelIR) -> _InputRenderResu
             "source_id",
             "source_locator",
             "as_of",
+            "gap_code",
         ),
     )
     period_order = {period.period_id: index for index, period in enumerate(model.periods)}
@@ -1819,18 +2015,19 @@ def _render_inputs(workbook: Workbook, model: CreditModelIR) -> _InputRenderResu
         input_row = _append_source_row(
             ws,
             "CP-2G",
-            f"forecast::{driver.driver_id}::{driver.slot_id or 'ALL'}::{driver.case}",
+            f"assumption::{driver.assumption_id}::{driver.case}",
             driver.period_id,
             driver.value if driver.value is not None else "",
             driver.status,
             driver.provenance,
         )
+        _set_literal(ws.cell(input_row, 9), driver.gap_code)
         forecast_driver_cells[
             (driver.case, driver.period_id, driver.driver_id, driver.slot_id)
         ] = f"'_INPUTS'!$D${input_row}"
         forecast_mappings.append(
             MappingRecord(
-                f"forecast::{driver.driver_id}::{driver.slot_id or 'ALL'}",
+                f"assumption::{driver.assumption_id}",
                 "CP-2G",
                 f"_INPUTS!D{input_row}",
                 "FORECAST_SOURCE",
@@ -1875,6 +2072,8 @@ def _render_checks(
     checks: Sequence[SemanticCheck],
     formula_count: int,
     warnings: Sequence[str],
+    model: CreditModelIR,
+    calculations: CalculationBook,
 ) -> None:
     ws = workbook.create_sheet("_CHECKS")
     _append_literal_row(
@@ -1893,6 +2092,48 @@ def _render_checks(
     _append_literal_row(ws, ("input_contract", "PASS", "", "", "", "", "", "All canonical handoffs validated."))
     _append_literal_row(ws, ("template_dependency", "PASS", "", "none", "none", "", "", "Workbook created from a blank file."))
     _append_literal_row(ws, ("formula_recalculation", "PASS", "", formula_count, formula_count, 0, 0, "Publication requires external recalculation and cache validation."))
+    _append_literal_row(
+        ws,
+        (
+            "assumption_set_completeness",
+            "PASS",
+            "",
+            len(model.effective_assumptions),
+            len(model.effective_assumptions),
+            0,
+            0,
+            "Every registry definition is present for Base and Downside across exactly three forecast years.",
+        ),
+    )
+    for gap in model.assumption_gaps:
+        _append_literal_row(
+            ws,
+            (
+                "assumption_gap",
+                "WARN",
+                "",
+                "",
+                "",
+                "",
+                "",
+                f"{gap}: output remains null until accepted authority is supplied.",
+            ),
+        )
+    for case in ("BASE", "DOWNSIDE"):
+        for breach in calculations.first_breaches[case]:
+            _append_literal_row(
+                ws,
+                (
+                    "first_breach",
+                    "WARN",
+                    breach.period_id,
+                    float(breach.actual),
+                    float(breach.limit),
+                    float(breach.headroom),
+                    0,
+                    f"{breach.threshold_id} ({breach.metric_id}) first breached for {case}.",
+                ),
+            )
     for warning in warnings:
         _append_literal_row(ws, ("input_warning", "WARN", "", "", "", "", "", warning))
     for check in checks:
@@ -1917,6 +2158,7 @@ def _render_checks(
 def _render_audit(
     workbook: Workbook,
     model: CreditModelIR,
+    calculations: CalculationBook,
     metadata: RenderMetadata,
 ) -> None:
     ws = workbook.create_sheet("_AUDIT")
@@ -1932,12 +2174,43 @@ def _render_audit(
         ("quarter_count", len(model.quarters), ""),
         ("annual_count", len(model.annuals), ""),
         ("analysis_axis", "QUARTER|YTD|FY|LTM|PF|BASE|DOWNSIDE", ""),
+        ("assumption_registry_version", model.assumption_registry_version, ""),
+        ("assumption_registry_digest", model.assumption_registry_digest, model.assumption_registry_digest),
+        ("calculation_contract_version", CALCULATION_CONTRACT_VERSION, ""),
         ("renderer_hash", metadata.renderer_hash, metadata.renderer_hash),
         ("calculation_engine", metadata.calculation_engine, ""),
         ("template", "none", ""),
+        (
+            "first_breach::BASE",
+            _breach_summary(calculations, "BASE")
+            if calculations.first_breaches["BASE"]
+            else "NONE",
+            "",
+        ),
+        (
+            "first_breach::DOWNSIDE",
+            _breach_summary(calculations, "DOWNSIDE")
+            if calculations.first_breaches["DOWNSIDE"]
+            else "NONE",
+            "",
+        ),
     )
     for row in rows:
         _append_literal_row(ws, row)
+    for case in ("BASE", "DOWNSIDE"):
+        for index, breach in enumerate(calculations.first_breaches[case], 1):
+            _append_literal_row(
+                ws,
+                (
+                    f"first_breach::{case}::{index}",
+                    (
+                        f"period={breach.period_id}|threshold={breach.threshold_id}|"
+                        f"metric={breach.metric_id}|limit={breach.limit}|"
+                        f"actual={breach.actual}|headroom={breach.headroom}"
+                    ),
+                    "",
+                ),
+            )
     for module_id, path in sorted(model.source_paths.items()):
         _append_literal_row(
             ws,
@@ -1997,8 +2270,10 @@ def render_workbook(
         calculations.checks,
         len(state.formulas),
         model.validation_warnings,
+        model,
+        calculations,
     )
-    _render_audit(workbook, model, metadata)
+    _render_audit(workbook, model, calculations, metadata)
     _style_hidden_sheets(workbook)
     workbook.calculation.calcMode = "auto"
     workbook.calculation.fullCalcOnLoad = True

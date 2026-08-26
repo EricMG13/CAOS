@@ -156,6 +156,9 @@ class CalculationRuntimeResponse(WireModel):
     name: str
     version: str
     sha256: str
+    assumption_registry_version: str | None = None
+    assumption_registry_digest: str | None = None
+    calculation_contract_version: str | None = None
 
 
 class ModelRequirementResponse(WireModel):

@@ -4576,3 +4576,98 @@ Decision: accept the final broad-review correction for independent review. The
 case lock serializes evidence validation with withdrawal, all focused and
 complete gates pass, and no interface, schema, envelope, or persistence hook
 was added.
+
+## 2026-08-26 — Analyst authoring Phase 2 methodology and build gate
+
+Decision under review: promote CP-2G into the accepted canonical Full Credit
+authority and make its complete Base/Downside Assumption Registry calculate and
+export through the single integrity-pinned CP-MODEL path.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-246 | Authority reviewer | Model readiness could follow a user's historical visible-snapshot pointer and build stale inputs after a later Full Credit snapshot was accepted. | Critical | Resolved and verified | Readiness, queue, and replay resolve the latest accepted snapshot authority while preserving the visible pointer as presentation history. Focused regressions keep an older snapshot visible, accept a newer canonical CP-2G snapshot, and prove readiness/build inputs use only the newer authority. |
+| RT-2026-08-26-247 | Partial-failure reviewer | Autoqueue or local scheduling failure after acceptance could roll back the accepted snapshot, duplicate a build, or leave no retry path. | Critical | Resolved and verified | The HTTP composition seam commits acceptance first, then best-effort invokes the existing idempotent readiness queue. Duplicate acceptance does not enqueue twice; queue failure leaves readiness retryable; schedule failure leaves one queued build that the existing request route can schedule; non-ready and non-Full-Credit accepts do not queue. |
+| RT-2026-08-26-248 | Methodology-integrity reviewer | Returning shallow copies of nested Assumption Registry metadata lets a consumer mutate live methodology authority while the pinned registry digest remains unchanged. | Critical | Resolved and verified | `assumption_registry()` now returns a deep-copied list preserving the public shape. A red-first isolation regression mutates nested exposed metadata and proves a fresh registry and the pinned digest remain unchanged. |
+| RT-2026-08-26-249 | Financial-model reviewer | Pro-forma denominator guards and workbook `IFERROR(...,0)` formulas could silently turn unavailable revenue/COGS ratios into zero, manufacturing forecast values and apparent liquidity. | Critical | Resolved and verified | Python forecast ratios now require finite, non-zero denominators and ratio helpers reject non-finite operands; workbook formulas no longer substitute zero. Red-first tests cover zero EBITDA/interest ratios, zero pro-forma revenue, non-finite CP-1 values, formula omission, and exact accessible-liquidity arithmetic. LibreOffice independently recalculated and matched all 808 formulas with 20 semantic checks. |
+| RT-2026-08-26-250 | Contract reviewer | The generic completeness blocklist treats the intentional `UNAVAILABLE` covenant status as a disqualifying placeholder, so a complete named-gap CP-2G artifact cannot become canonical. | High | Resolved and verified | T2H.3 now binds the full 138-row registry and exempts only the status column from the generic placeholder rule; the CP-MODEL validator still enforces null value/provenance and the exact `COVENANT_DEFINITION_UNAVAILABLE` gap. Canonical Full Credit and queue regressions pass. |
+| RT-2026-08-26-251 | Supply-chain reviewer | Manual manifest edits or a permissive regeneration script could pin the wrong bytes, follow symlinks, or admit a path escape. | High | Resolved and verified | A minimal deterministic repository tool reproduces the existing manifest/integrity schemas, hashes only declared in-root regular files, rejects absolute/parent/symlink traversal, supports CI `--check`, and writes atomically. The production verifier checks 307 files with zero mismatches under build `e76b33e313f4cf0f5176a81b700a50553903451b170d0482df33a91807683700`. |
+
+Decision: accept Phase 2 for parent integration. Full server verification passes
+378 tests with 45 explicit environment skips, the security audit is empty, the
+formula-verified workbook contains ready three-year Base/Downside columns, and
+no Phase 3 persistence or UI authority was introduced.
+
+## 2026-08-26 — Analyst authoring Phase 2 registry-shape correction
+
+Correction under review: preserve the existing JSON-facing `definitions` list
+shape while retaining the nested deep-copy isolation accepted in RT-248.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-252 | Contract reviewer | Deep-copying the immutable source tuple directly fixes authority mutation but changes the public registry's `definitions` container from a list to a tuple. | High | Resolved and verified | The function now deep-copies `list(ASSUMPTION_DEFINITIONS)`. A red-first shape assertion and the nested isolation regression both pass. The final deterministic Deploy V build is `c7c4f0bf7288b5cd6df5e875249370821633d0c76eaf854e8f3fdde6e77f518e`; the earlier build identifier in RT-251 is superseded by this append-only correction. |
+
+Decision: accept the correction. The public registry shape and authority
+isolation are both stable; no methodology semantics changed.
+
+## 2026-08-26 — Analyst authoring Phase 2 clean-diff correction
+
+Correction under review: remove an incidental Markdown hard-break trailing
+space found by the final `git diff --check` gate and regenerate authority from
+the resulting exact bytes.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-253 | Release reviewer | A changed CP-MODEL SKILL line retained trailing whitespace, leaving the final clean-diff gate red even though methodology semantics were correct. | Low | Resolved and verified | The whitespace was removed and the repository generator rerun. Final authority build `36ab780644dcefc590c6f3c95fb6f0f3e59b821d79e74564a02d3a313cd35d11` supersedes the byte identities in RT-251 and RT-252; semantics and tests are unchanged. |
+
+Decision: accept the byte-only correction after final integrity and clean-diff
+checks.
+
+## 2026-08-26 — Analyst authoring Phase 2 independent-review corrections
+
+Correction under review: close all five Important findings from the independent
+Phase 2 review and prove the corrected methodology through the real workbook
+calculation engine rather than only Python expectations.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-254 | Assumption-contract reviewer | The validator admitted globally known non-ready statuses for required numeric definitions, while the value-only calculator then raised raw `KeyError`; allowed unavailable liquidity also crashed instead of producing a named null gap. | Critical | Resolved and verified | Every registry definition now publishes `allowed_statuses`; only inactive growth permits `NOT_APPLICABLE`, only liquidity/covenant definitions permit `UNAVAILABLE`, and all consumed drivers require finite `READY` values. Missing mandatory drivers raise `CpModelV3Error`; unavailable minimum cash/revolver produces null dependent liquidity outputs and named gaps, with workbook formula cells omitted. Red-first tests cover required N/A, unsupported unavailable, allowed liquidity/covenant gaps, inactive growth, and residual missing drivers. |
+| RT-2026-08-26-255 | History-compatibility reviewer | Requiring the three new runtime identity fields rejected honest pre-Phase-2 stored builds that contain only name/version/hash. | High | Resolved and verified | The three new response fields are optional and remain `null` for legacy records; no current registry/calculation identity is synthesized for old bytes. A ledger-backed route regression returns the stored legacy build while new builds retain all three identities; 27 response-contract tests pass. |
+| RT-2026-08-26-256 | Threshold-disclosure reviewer | First breach collapsed liquidity and covenant tests to a period string, so a reviewer could not see which threshold failed or whether both failed together. | Critical | Resolved and verified | Python now retains a tuple of structured breach records with case, period, threshold/metric identity, limit, actual and headroom. Liquidity-only, covenant-only and simultaneous first-period cases are permanent tests. The same identities appear in Credit Snapshot, `_CHECKS`, summary/detail `_AUDIT` rows and the serialized visible worksheet; no-breach audit compatibility remains `NONE`. |
+| RT-2026-08-26-257 | Add-back reviewer | The forecast assumption was assigned to the first historical add-back series and disappeared when an issuer had none; a naive dedicated row could then double-count issuers that did have history. | Critical | Resolved and verified | Forecast identified add-backs use one methodology-owned bucket independent of historical series; all historical forecast rows are zero and the dedicated workbook row alone links the assumption. Zero/one/multiple historical-series tests prove Python and workbook expectations include it exactly once. The real LibreOffice gate initially exposed a remaining one-series double-count (`Model!O21` expected 0, found 4); correcting the historical forecast formula to `=0` closed the root cause. |
+| RT-2026-08-26-258 | Numeric-boundary reviewer | New forecast multiplication/division trusted CP-1-derived in-memory operands after parsing, allowing NaN/infinity or zero denominators to escape the calculation boundary. | Critical | Resolved and verified | Local finite operand/product guards now precede revenue, EBITDA, interest, working-capital, receivable, inventory/payable and metric arithmetic; ratios reject non-finite or zero/invalid denominators. Direct boundary tests cover NaN, positive/negative infinity, zero revenue/COGS/EBITDA/interest and typed errors. LibreOffice then exposed an over-applied annualization in the Python YTD margin expectation (`Model!H83`); the raw margin numerator is now preserved while leverage/coverage retain annualized EBITDA. |
+| RT-2026-08-26-259 | Workbook-engine reviewer | Openpyxl formula expectations alone could miss real cached-value divergence after row/formula changes. | Critical | Resolved and verified | The canonical fixture was recalculated outside the sandbox through LibreOffice 26.2.5.2. After the two concrete defects above were fixed, the production exporter returned `qa_status: Passed`, validated 814 formulas and 20 semantic checks, and published the governed workbook. The deterministic bundle generator and verifier were rerun after the exact final bytes. |
+
+Decision: accept the corrections for independent rereview. All five Important
+root causes are closed with red-first permanent regressions, the real workbook
+engine agrees with Python, legacy history remains honest, and no Phase 3 state
+or UI surface was introduced.
+
+## 2026-08-26 — Analyst authoring Phase 2 forecast-applicability correction
+
+Correction under review: make CP-2G growth-driver applicability depend on the
+validated CP-1 issuer shape so an accepted handoff cannot silently blank a
+forecast column.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-260 | Forecast-authority reviewer | A segmented issuer could mark an allocated division-growth row `NOT_APPLICABLE`, while an unsegmented issuer could publish division growth and omit consolidated growth; both handoffs passed row-local validation and then produced unavailable forecast revenue. | Critical | Resolved and verified | The canonical validator now cross-checks CP-1 allocation shape against every CP-2G case/period: allocated slots are finite `READY`, unallocated slots are `NOT_APPLICABLE`, segmented issuers use no consolidated growth, and unsegmented issuers require finite `READY` consolidated growth with every division slot inactive. Four red-first validator-to-calculator tests cover valid and invalid segmented/unsegmented shapes. The full server suite passes 391 tests with 45 skips, the security audit is empty, and LibreOffice independently validates 814 formulas and 20 semantic checks. |
+
+Decision: accept the applicability correction for final rereview. The rule is
+enforced at the single canonical validator boundary and documented in the
+versioned CP-2G/CP-MODEL methodology; no calculator fallback or host-side math
+was introduced.
+
+## 2026-08-26 — Analyst authoring Phase 2 calculation-boundary correction
+
+Correction under review: defend the calculation entry point even when a caller
+directly mutates a previously validated `CreditModelIR` and bypasses handoff
+validation.
+
+| ID | Perspective | Objection | Impact | Status | Resolution / disposition |
+|----|-------------|-----------|--------|--------|--------------------------|
+| RT-2026-08-26-261 | Defense-in-depth reviewer | Directly removing, nulling, marking inapplicable, or making non-finite an active segmented or consolidated growth driver caused `calculate(model)` to mark the forecast column unavailable or fail only later, instead of rejecting the corrupted IR at the calculation boundary. | Critical | Resolved and verified | `_forecast_period_ready` now requires exactly one finite `READY` driver for every active allocated slot, or exactly one finite `READY` consolidated driver for an unsegmented issuer, and raises typed `CpModelV3Error` otherwise. Six direct-IR red-first mutations cover missing, non-ready and non-finite segmented/consolidated growth. Optional unavailable liquidity/covenant authority retains its named-null behavior. The full server suite passes 397 tests with 45 skips; security is empty and LibreOffice validates 814 formulas with 20 semantic checks. |
+
+Decision: accept the calculation-boundary correction. Validator and calculator
+now fail closed independently at their own authority boundaries, while the
+methodology's explicitly optional unavailable inputs continue to degrade rather
+than block.

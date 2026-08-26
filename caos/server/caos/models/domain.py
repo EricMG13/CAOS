@@ -222,7 +222,11 @@ class CpModelBundle:
             "name": "cp_model_v3_python",
             "version": self._domain.V3_CONTRACT_VERSION,
             "sha256": runtime_hash.hexdigest(),
+            "assumption_registry_version": self._inputs.ASSUMPTION_REGISTRY_VERSION,
+            "assumption_registry_digest": self._inputs.ASSUMPTION_REGISTRY_DIGEST,
+            "calculation_contract_version": self._calculations.CALCULATION_CONTRACT_VERSION,
         }
+        self.assumption_registry = self._inputs.assumption_registry()
 
     def validate_handoff(
         self, markdown: str, *, module_id: str, run_id: str | None = None
@@ -242,7 +246,12 @@ class CpModelBundle:
     ) -> Any:
         return self._inputs.validate_cp_model_bundle(cp1, cp1a, cp1b, cp2, cp2b, cp2g)
 
-    def calculate(self, paths: dict[str, Path]) -> tuple[Any, Any]:
+    def calculate(
+        self,
+        paths: dict[str, Path],
+        *,
+        effective_assumptions: list[dict[str, Any]] | None = None,
+    ) -> tuple[Any, Any]:
         bundle_paths = self._domain.BundlePaths(
             cp1=paths["CP-1"],
             cp1a=paths["CP-1A"],
@@ -251,7 +260,9 @@ class CpModelBundle:
             cp2b=paths["CP-2B"],
             cp2g=paths.get("CP-2G"),
         )
-        model = self._domain.build_ir(bundle_paths)
+        model = self._domain.build_ir(
+            bundle_paths, effective_assumptions=effective_assumptions
+        )
         return model, self._calculations.calculate(model)
 
     def render_workbook(

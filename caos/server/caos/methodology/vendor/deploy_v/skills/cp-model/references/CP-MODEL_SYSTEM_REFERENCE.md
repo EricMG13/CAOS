@@ -7,8 +7,8 @@
 | owned_object | credit_snapshot_model_workbook |
 | schema_family | Infrastructure |
 | output_class | WORKBOOK_EXPORT |
-| required upstream | CP-1, CP-1A, CP-1B, CP-2, CP-2B |
-| optional upstream | CP-2G |
+| required upstream | CP-1, CP-1A, CP-1B, CP-2, CP-2B, CP-2G |
+| optional upstream | none |
 | downstream | none |
 | construction | clean-sheet, data-driven renderer |
 | visible sheets | Credit Snapshot, Model, KPIs |
@@ -18,7 +18,7 @@ CP-MODEL v3 creates its model and snapshot from validated canonical data. It
 does not consume a workbook template, a fixed cell-address manifest, vendor
 formulas or a protected manual capital table. CP-1 owns canonical numeric
 truth; CP-1B validates it. CP-1A, CP-1B, CP-2 and CP-2B own snapshot text.
-CP-2G optionally owns forecast drivers. CP-1C/comparables are not consumed.
+CP-2G owns the versioned forecast Assumption Registry. CP-1C/comparables are not consumed.
 
 The module owns only the new workbook it exports. It fails closed on a missing
 or mismatched handoff, unresolved source value, reconciliation failure,

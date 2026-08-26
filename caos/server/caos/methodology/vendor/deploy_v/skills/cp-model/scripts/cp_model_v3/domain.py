@@ -5,13 +5,16 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 
 from validate_cp_model_inputs import (
+    ASSUMPTION_DEFINITION_BY_ID,
+    ASSUMPTION_REGISTRY_DIGEST,
+    ASSUMPTION_REGISTRY_VERSION,
     CP1A_SNAPSHOT_TABLE,
     CP1B_SNAPSHOT_TABLE,
     CP1_OPERATING_KPI_TABLE,
@@ -19,7 +22,7 @@ from validate_cp_model_inputs import (
     CP2B_SNAPSHOT_TABLE,
     CP2G_FORECAST_TABLE,
     CP2_SNAPSHOT_TABLE,
-    SENIOR_DEBT_CLASSES,
+    SENIOR_DEBT_CLASSES as SENIOR_DEBT_CLASSES,
     parse_stable_tables,
     validate_common_handoff,
     validate_cp_model_bundle,
@@ -208,6 +211,7 @@ class NarrativeItem:
 
 @dataclass(frozen=True)
 class ForecastDriver:
+    assumption_id: str
     driver_id: str
     slot_id: str
     case: str
@@ -216,6 +220,7 @@ class ForecastDriver:
     value: Decimal | None
     unit: str
     status: str
+    gap_code: str
     provenance: tuple[SourceRef, ...]
 
 
@@ -239,6 +244,10 @@ class CreditModelIR:
     weaknesses: tuple[NarrativeItem, ...]
     catalysts: tuple[NarrativeItem, ...]
     forecast_drivers: tuple[ForecastDriver, ...]
+    effective_assumptions: tuple[ForecastDriver, ...]
+    assumption_gaps: tuple[str, ...]
+    assumption_registry_version: str
+    assumption_registry_digest: str
     source_paths: Mapping[str, Path]
     source_hashes: Mapping[str, str]
     limitation_flags: tuple[str, ...]
@@ -740,7 +749,8 @@ def _parse_catalysts(rows: list[dict[str, str]]) -> tuple[NarrativeItem, ...]:
 
 
 def _parse_forecast(
-    tables: Mapping[str, Mapping[str, list[dict[str, str]]]]
+    tables: Mapping[str, Mapping[str, list[dict[str, str]]]],
+    effective_assumptions: list[dict[str, Any]] | None = None,
 ) -> tuple[ForecastDriver, ...]:
     if "CP-2G" not in tables:
         return ()
@@ -749,6 +759,7 @@ def _parse_forecast(
         status = row["status"].strip()
         result.append(
             ForecastDriver(
+                assumption_id=row["assumption_id"].strip(),
                 driver_id=row["driver_id"].strip(),
                 slot_id=row["slot_id"].strip(),
                 case=row["case"].strip(),
@@ -761,6 +772,7 @@ def _parse_forecast(
                 ),
                 unit=row["unit"].strip(),
                 status=status,
+                gap_code=row.get("gap_code", "").strip(),
                 provenance=(
                     (_ref(row, as_of=row["as_of"].strip()),)
                     if status == "READY"
@@ -768,7 +780,7 @@ def _parse_forecast(
                 ),
             )
         )
-    return tuple(
+    defaults = tuple(
         sorted(
             result,
             key=lambda item: (
@@ -779,9 +791,68 @@ def _parse_forecast(
             ),
         )
     )
+    if effective_assumptions is None:
+        return defaults
+
+    by_key = {
+        (item.assumption_id, item.case, item.period_id): item for item in defaults
+    }
+    supplied: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in effective_assumptions:
+        try:
+            key = (
+                str(row["assumption_id"]),
+                str(row["case"]),
+                str(row["period_id"]),
+            )
+        except (KeyError, TypeError) as exc:
+            raise CpModelV3Error("effective assumption identity is incomplete") from exc
+        if key in supplied:
+            raise CpModelV3Error(f"duplicate effective assumption {key}")
+        supplied[key] = row
+    if set(supplied) != set(by_key):
+        raise CpModelV3Error("effective assumption set must be complete")
+
+    result: list[ForecastDriver] = []
+    for key, default in by_key.items():
+        row = supplied[key]
+        definition = ASSUMPTION_DEFINITION_BY_ID[default.assumption_id]
+        if row.get("unit") != default.unit or row.get("status") != default.status:
+            raise CpModelV3Error(f"effective assumption metadata mismatch: {key}")
+        if default.status != "READY":
+            if row.get("value") is not None or row.get("gap_code", "") != default.gap_code:
+                raise CpModelV3Error(f"unavailable assumption cannot be overridden: {key}")
+            result.append(default)
+            continue
+        try:
+            value = Decimal(str(row["value"]))
+        except (InvalidOperation, KeyError, TypeError) as exc:
+            raise CpModelV3Error(f"effective assumption value is invalid: {key}") from exc
+        if not value.is_finite():
+            raise CpModelV3Error(f"effective assumption value must be finite: {key}")
+        if value < Decimal(str(definition["hard_min"])) or value > Decimal(
+            str(definition["hard_max"])
+        ):
+            raise CpModelV3Error(f"effective assumption value is outside bounds: {key}")
+        result.append(replace(default, value=value))
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (
+                item.case,
+                item.fiscal_year,
+                item.assumption_id,
+            ),
+        )
+    )
 
 
-def build_ir(paths: BundlePaths, *, quarter_count: int | None = None) -> CreditModelIR:
+def build_ir(
+    paths: BundlePaths,
+    *,
+    quarter_count: int | None = None,
+    effective_assumptions: list[dict[str, Any]] | None = None,
+) -> CreditModelIR:
     """Validate canonical handoffs and return a typed, layout-free model."""
 
     source_paths = paths.by_module()
@@ -861,7 +932,7 @@ def build_ir(paths: BundlePaths, *, quarter_count: int | None = None) -> CreditM
         "WEAKNESS",
     )
     catalysts = _parse_catalysts(cp2b_tables[CP2B_SNAPSHOT_TABLE])
-    forecast_drivers = _parse_forecast(tables)
+    forecast_drivers = _parse_forecast(tables, effective_assumptions)
 
     issuer_name = str(cp1_identity["issuer_name"])
     try:
@@ -895,6 +966,18 @@ def build_ir(paths: BundlePaths, *, quarter_count: int | None = None) -> CreditM
         weaknesses=weaknesses,
         catalysts=catalysts,
         forecast_drivers=forecast_drivers,
+        effective_assumptions=forecast_drivers,
+        assumption_gaps=tuple(
+            sorted(
+                {
+                    item.gap_code
+                    for item in forecast_drivers
+                    if item.status == "UNAVAILABLE" and item.gap_code
+                }
+            )
+        ),
+        assumption_registry_version=ASSUMPTION_REGISTRY_VERSION,
+        assumption_registry_digest=ASSUMPTION_REGISTRY_DIGEST,
         source_paths=source_paths,
         source_hashes=hashes,
         limitation_flags=tuple(

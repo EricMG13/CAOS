@@ -136,9 +136,10 @@ conclusions, never shorter reasoning or invented filler.
       - **critical_columns**: identical to columns
       - **minimum_body_rows**: 1
     - **T2H.3**: structured below
-      - **columns**: assumption_id; driver; case; period; value/range; unit; class; source; rationale
+      - **columns**: driver_id; slot_id; case; period_id; fiscal_year; value; unit; assumption_id; status; source_id; source_locator; as_of; gap_code
       - **critical_columns**: identical to columns
-      - **minimum_body_rows**: 1
+      - **disqualifier_exempt_columns**: status
+      - **minimum_body_rows**: 138
     - **T2H.4**: structured below
       - **columns**: period; case; revenue; EBITDA; margin; CFO; capex; FCF; evidence/assumption IDs
       - **critical_columns**: identical to columns
@@ -165,29 +166,24 @@ conclusions, never shorter reasoning or invented filler.
       - **minimum_body_rows**: 1
   - **semantic_rules**: structured below
     - structured item
-      - **columns**: assumption_id
+      - **columns**: driver_id; slot_id; case; period_id
       - **register_id**: T2H.3
       - **rule**: unique_columns
       - **rule_id**: cp2g.assumption_ids_unique
     - structured item
       - **case_sensitive**: False
-      - **column**: class
+      - **column**: status
       - **register_id**: T2H.3
       - **rule**: allowed_values
-      - **rule_id**: cp2g.assumption_class_enum
-      - **values**: source_fact; management_guidance; external_consensus; user_assumption; calculated; analyst_judgment
+      - **rule_id**: cp2g.assumption_status_enum
+      - **values**: READY; NOT_APPLICABLE; UNAVAILABLE
     - structured item
       - **case_sensitive**: False
       - **column**: case
       - **register_id**: T2H.3
       - **rule**: required_values
       - **rule_id**: cp2g.requires_downside_case
-      - **values**: base; downside
-    - structured item
-      - **columns**: assumption_id; driver; case; class; source
-      - **register_id**: T2H.3
-      - **rule**: at_least_one_row_populates
-      - **rule_id**: cp2g.assumptions_have_evidenced_row
+      - **values**: BASE; DOWNSIDE
   - **status_by_evidence_class**: structured below
     - **full_run**: full_analytical_complete
     - **presentation_fixture**: source_limited_complete
@@ -199,6 +195,18 @@ conclusions, never shorter reasoning or invented filler.
 - **reader_question**: How do base and downside cases change leverage, liquidity, and refinancing capacity over time?
 - **required_decision_drivers**: base/downside trajectory; first material inflection; liquidity/covenant/refinancing consequence
 - **required_risk_catalyst_trigger_fields**: case; inflection period; breakpoint; monitoring trigger
+
+T2H.3 is the complete `cp-model-assumptions.v1` interface:
+
+`driver_id | slot_id | case | period_id | fiscal_year | value | unit | assumption_id | status | source_id | source_locator | as_of | gap_code`
+
+It contains every versioned CP-MODEL Assumption Registry definition for Base
+and Downside across exactly three forecast years. A `READY` row must carry a
+finite value within the registry's unit and hard bounds plus accepted source
+lineage. `NOT_APPLICABLE` is permitted only where the registry permits it.
+`UNAVAILABLE` carries a null value and the registry's exact named gap; an
+unavailable covenant definition uses `COVENANT_DEFINITION_UNAVAILABLE` and must
+remain null downstream.
 
 Shared presentation rules:
 - **all_canonical_registers_lossless**: True

@@ -15,7 +15,7 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from ..artifacts.domain import accepted_snapshot, build_snapshot_payload
+from ..artifacts.domain import build_snapshot_payload, latest_accepted_snapshot
 from ..contracts import canonical_json, digest
 from ..ledgers import ModelLedger, RunLedger, SourceCatalog
 from ..methodology.canonical import CANONICAL_MODULES, is_canonical_full_credit
@@ -73,7 +73,7 @@ class ModelReadinessService:
         self.model = model
 
     def readiness(self, case_id: str) -> dict[str, Any]:
-        snapshot = accepted_snapshot(self.runs, case_id)
+        snapshot = latest_accepted_snapshot(self.runs, case_id)
         if snapshot is None:
             return self._not_ready(
                 "ACCEPTED_FULL_CREDIT_REQUIRED",
@@ -107,7 +107,7 @@ class ModelReadinessService:
         }
 
     def queue(self, case_id: str, actor: str) -> tuple[dict[str, Any], bool]:
-        snapshot = accepted_snapshot(self.runs, case_id)
+        snapshot = latest_accepted_snapshot(self.runs, case_id)
         if snapshot is None:
             raise ValueError("MODEL_NOT_READY")
         try:
@@ -177,7 +177,7 @@ class ModelReadinessService:
         cp2b = by_module["CP-2A"]["derived"]["CP-2B"]
         markdown = {
             module_id: by_module[module_id]["markdown"]
-            for module_id in ("CP-1", "CP-1A", "CP-1B", "CP-2")
+            for module_id in ("CP-1", "CP-1A", "CP-1B", "CP-2", "CP-2G")
         }
         markdown["CP-2B"] = cp2b["markdown"]
         validation = self.model.validate(
@@ -186,6 +186,7 @@ class ModelReadinessService:
             markdown["CP-1B"],
             markdown["CP-2"],
             markdown["CP-2B"],
+            markdown["CP-2G"],
         )
         if validation.errors:
             raise ModelInputError("CP-MODEL bundle validation failed")
@@ -199,7 +200,7 @@ class ModelReadinessService:
                 "digest": by_module[module_id]["digest"],
                 "status": "READY",
             }
-            for module_id in ("CP-1", "CP-1A", "CP-1B", "CP-2", "CP-2A")
+            for module_id in CANONICAL_MODULES
         ]
         inventory.append(
             {

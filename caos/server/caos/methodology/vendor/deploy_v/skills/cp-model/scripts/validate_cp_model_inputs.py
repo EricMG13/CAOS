@@ -10,6 +10,9 @@ drivers, table shapes, controlled identifiers and cross-table integrity.
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
+import json
 import math
 import re
 import sys
@@ -143,7 +146,7 @@ CP2G_FORECAST_COLUMNS = frozenset(
     {
         "driver_id", "slot_id", "case", "period_id", "fiscal_year", "value",
         "unit", "assumption_id", "status", "source_id", "source_locator",
-        "as_of",
+        "as_of", "gap_code",
     }
 )
 CP1_SEGMENT_ALLOCATION_COLUMNS = frozenset(
@@ -162,15 +165,95 @@ CP1B_REQUIRED_SNAPSHOT_FIELDS = {"historical_performance"}
 CP2_SNAPSHOT_DIRECTIONS = {"STRENGTH", "WEAKNESS"}
 CP2_SNAPSHOT_MAX_PER_DIRECTION = 5
 CP2B_SNAPSHOT_MAX_ROWS = 8
-FORECAST_DRIVER_IDS = {
-    "division_growth",
-    "acquisitions_disposals",
-    "net_equity_issue_repay",
-    "dividends_paid",
-    "other_investing_financing",
-}
 FORECAST_CASES = {"BASE", "DOWNSIDE"}
-FORECAST_STATUSES = {"READY", "NOT_APPLICABLE"}
+FORECAST_STATUSES = {"READY", "NOT_APPLICABLE", "UNAVAILABLE"}
+
+ASSUMPTION_REGISTRY_VERSION = "cp-model-assumptions.v1"
+
+
+def _assumption_definition(
+    assumption_id: str,
+    label: str,
+    family: str,
+    driver_id: str,
+    unit: str,
+    hard_min: str,
+    hard_max: str,
+    affected_outputs: tuple[str, ...],
+    *,
+    slot_id: str = "",
+    gap_code: str = "ASSUMPTION_AUTHORITY_UNAVAILABLE",
+    allowed_statuses: tuple[str, ...] = ("READY",),
+) -> dict[str, object]:
+    return {
+        "assumption_id": assumption_id,
+        "label": label,
+        "family": family,
+        "description": f"Canonical {label.casefold()} assumption.",
+        "driver_id": driver_id,
+        "slot_id": slot_id,
+        "value_type": "DECIMAL",
+        "unit": unit,
+        "cases": ["BASE", "DOWNSIDE"],
+        "periods": "EXACT_THREE_FORECAST_YEARS",
+        "default_value_source": "CP-2G_ACCEPTED_HANDOFF",
+        "lineage_rule": "READY_REQUIRES_SOURCE_ID_LOCATOR_AND_AS_OF",
+        "sensitivity_default": {
+            "range": "0.02" if unit == "PERCENT_DECIMAL" else "10",
+            "step": "0.01" if unit == "PERCENT_DECIMAL" else "5",
+        },
+        "hard_min": hard_min,
+        "hard_max": hard_max,
+        "required_authority": "ACCEPTED_CANONICAL_CP2G",
+        "allowed_statuses": list(allowed_statuses),
+        "degradation": {"behavior": "NULL_WITH_NAMED_GAP", "gap_code": gap_code},
+        "affected_outputs": list(affected_outputs),
+    }
+
+
+ASSUMPTION_DEFINITIONS = (
+    _assumption_definition("operating.revenue_growth.division_1", "Division 1 revenue growth", "OPERATING", "division_growth", "PERCENT_DECIMAL", "-0.75", "2", ("revenue", "ebitda", "fcf", "liquidity", "leverage"), slot_id="DIVISION_1", allowed_statuses=("READY", "NOT_APPLICABLE")),
+    _assumption_definition("operating.revenue_growth.division_2", "Division 2 revenue growth", "OPERATING", "division_growth", "PERCENT_DECIMAL", "-0.75", "2", ("revenue", "ebitda", "fcf", "liquidity", "leverage"), slot_id="DIVISION_2", allowed_statuses=("READY", "NOT_APPLICABLE")),
+    _assumption_definition("operating.revenue_growth.division_3", "Division 3 revenue growth", "OPERATING", "division_growth", "PERCENT_DECIMAL", "-0.75", "2", ("revenue", "ebitda", "fcf", "liquidity", "leverage"), slot_id="DIVISION_3", allowed_statuses=("READY", "NOT_APPLICABLE")),
+    _assumption_definition("operating.consolidated_revenue_growth", "Consolidated revenue growth", "OPERATING", "consolidated_revenue_growth", "PERCENT_DECIMAL", "-0.75", "2", ("revenue", "ebitda", "fcf", "liquidity", "leverage"), allowed_statuses=("READY", "NOT_APPLICABLE")),
+    _assumption_definition("operating.adjusted_ebitda_margin", "Adjusted EBITDA margin", "OPERATING", "adjusted_ebitda_margin", "PERCENT_DECIMAL", "-0.50", "0.80", ("ebitda", "ebitda_margin", "fcf", "leverage", "coverage")),
+    _assumption_definition("operating.identified_addbacks", "Identified add-backs", "OPERATING", "identified_addbacks", "CURRENCY_MM", "0", "10000", ("ebitda", "ebitda_margin", "fcf", "leverage", "coverage")),
+    _assumption_definition("cash_flow.capex_pct_revenue", "Capital expenditure as percent of revenue", "CASH_FLOW", "capex_pct_revenue", "PERCENT_DECIMAL", "0", "1", ("fcf", "cumulative_fcf", "cash", "liquidity")),
+    _assumption_definition("cash_flow.working_capital_pct_revenue", "Working capital change as percent of revenue", "CASH_FLOW", "working_capital_pct_revenue", "PERCENT_DECIMAL", "-1", "1", ("fcf", "cumulative_fcf", "cash", "liquidity")),
+    _assumption_definition("cash_flow.cash_tax_pct_revenue", "Cash taxes as percent of revenue", "CASH_FLOW", "cash_tax_pct_revenue", "PERCENT_DECIMAL", "-1", "0", ("fcf", "cumulative_fcf", "cash", "liquidity")),
+    _assumption_definition("cash_flow.lease_cash_pct_revenue", "Lease cash flow as percent of revenue", "CASH_FLOW", "lease_cash_pct_revenue", "PERCENT_DECIMAL", "-1", "0", ("fcf", "cumulative_fcf", "cash", "liquidity")),
+    _assumption_definition("rates.base_rate", "Base interest rate", "RATES", "base_rate", "PERCENT_DECIMAL", "-0.05", "0.50", ("cash_interest", "fcf", "coverage", "cash", "liquidity")),
+    _assumption_definition("rates.debt_spread", "Debt spread or coupon", "RATES", "debt_spread", "PERCENT_DECIMAL", "0", "0.50", ("cash_interest", "fcf", "coverage", "cash", "liquidity")),
+    _assumption_definition("capital.contractual_amortization", "Contractual debt amortization", "CAPITAL", "contractual_amortization", "CURRENCY_MM", "0", "100000", ("debt", "net_debt", "leverage", "cash", "liquidity")),
+    _assumption_definition("capital.debt_issuance", "Debt issuance", "CAPITAL", "debt_issuance", "CURRENCY_MM", "0", "100000", ("debt", "net_debt", "leverage", "cash", "liquidity")),
+    _assumption_definition("capital.debt_repayment", "Discretionary debt repayment", "CAPITAL", "debt_repayment", "CURRENCY_MM", "0", "100000", ("debt", "net_debt", "leverage", "cash", "liquidity")),
+    _assumption_definition("capital.refinancing_proceeds", "Refinancing proceeds", "CAPITAL", "refinancing_proceeds", "CURRENCY_MM", "0", "100000", ("debt", "net_debt", "leverage", "cash", "liquidity")),
+    _assumption_definition("capital.acquisitions_disposals", "Acquisitions and disposals", "CAPITAL", "acquisitions_disposals", "CURRENCY_MM", "-100000", "100000", ("fcf", "cash", "liquidity")),
+    _assumption_definition("capital.net_equity_issue_repay", "Net equity issuance or repurchase", "CAPITAL", "net_equity_issue_repay", "CURRENCY_MM", "-100000", "100000", ("fcf", "cash", "liquidity")),
+    _assumption_definition("capital.dividends_paid", "Dividends paid", "CAPITAL", "dividends_paid", "CURRENCY_MM", "-100000", "0", ("fcf", "cash", "liquidity")),
+    _assumption_definition("capital.other_investing_financing", "Other investing and financing", "CAPITAL", "other_investing_financing", "CURRENCY_MM", "-100000", "100000", ("fcf", "cash", "liquidity")),
+    _assumption_definition("liquidity.minimum_operating_cash", "Minimum operating cash", "LIQUIDITY", "minimum_operating_cash", "CURRENCY_MM", "0", "100000", ("accessible_liquidity", "liquidity_headroom", "first_breach"), gap_code="MINIMUM_CASH_DEFINITION_UNAVAILABLE", allowed_statuses=("READY", "UNAVAILABLE")),
+    _assumption_definition("liquidity.undrawn_revolver", "Accessible undrawn revolver", "LIQUIDITY", "undrawn_revolver", "CURRENCY_MM", "0", "100000", ("accessible_liquidity", "liquidity_headroom", "first_breach"), gap_code="ACCESSIBLE_LIQUIDITY_DEFINITION_UNAVAILABLE", allowed_statuses=("READY", "UNAVAILABLE")),
+    _assumption_definition("covenant.max_total_leverage", "Maximum total leverage covenant", "COVENANT", "max_total_leverage", "MULTIPLE", "0", "25", ("covenant_headroom", "first_breach"), gap_code="COVENANT_DEFINITION_UNAVAILABLE", allowed_statuses=("READY", "UNAVAILABLE")),
+)
+ASSUMPTION_DEFINITION_BY_ID = {
+    str(item["assumption_id"]): item for item in ASSUMPTION_DEFINITIONS
+}
+ASSUMPTION_REGISTRY_DIGEST = hashlib.sha256(
+    json.dumps(
+        {"version": ASSUMPTION_REGISTRY_VERSION, "definitions": ASSUMPTION_DEFINITIONS},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+
+
+def assumption_registry() -> dict[str, object]:
+    return {
+        "version": ASSUMPTION_REGISTRY_VERSION,
+        "digest": ASSUMPTION_REGISTRY_DIGEST,
+        "definitions": copy.deepcopy(list(ASSUMPTION_DEFINITIONS)),
+    }
 
 METRIC_IDS = {
     "revenue",
@@ -1572,22 +1655,30 @@ def _validate_cp2g_forecast(
         errors,
     )
     rows = tables.get(table_id, [])
-    keys: set[tuple[str, str, str, str]] = set()
+    keys: set[tuple[str, str, str]] = set()
     years: set[int] = set()
     periods: set[str] = set()
     period_years: dict[str, int] = {}
     for row_index, row in enumerate(rows, 1):
         driver_id = row.get("driver_id", "").strip()
         slot_id = row.get("slot_id", "").strip()
+        assumption_id = row.get("assumption_id", "").strip()
         case = row.get("case", "").strip()
         period_id = row.get("period_id", "").strip()
-        if driver_id not in FORECAST_DRIVER_IDS:
-            errors.append(f"{table_id} row {row_index}: unknown driver_id {driver_id!r}")
-        if driver_id == "division_growth":
-            if slot_id not in {"DIVISION_1", "DIVISION_2", "DIVISION_3"}:
-                errors.append(f"{table_id} row {row_index}: division_growth requires DIVISION_1..3")
-        elif slot_id:
-            errors.append(f"{table_id} row {row_index}: {driver_id} must have blank slot_id")
+        definition = ASSUMPTION_DEFINITION_BY_ID.get(assumption_id)
+        if definition is None:
+            errors.append(
+                f"{table_id} row {row_index}: unregistered assumption_id {assumption_id!r}"
+            )
+        else:
+            if driver_id != definition["driver_id"]:
+                errors.append(
+                    f"{table_id} row {row_index}: driver_id must be {definition['driver_id']}"
+                )
+            if slot_id != definition["slot_id"]:
+                errors.append(
+                    f"{table_id} row {row_index}: slot_id must be {definition['slot_id']}"
+                )
         if case not in FORECAST_CASES:
             errors.append(f"{table_id} row {row_index}: invalid case {case!r}")
         if PERIOD_ID.fullmatch(period_id) is None:
@@ -1605,13 +1696,18 @@ def _validate_cp2g_forecast(
                     f"{table_id}: period {period_id!r} maps to multiple fiscal years"
                 )
         periods.add(period_id)
-        key = (driver_id, slot_id, case, period_id)
+        key = (assumption_id, case, period_id)
         if key in keys:
             errors.append(f"{table_id}: duplicate forecast key {key}")
         keys.add(key)
         status = row.get("status", "").strip()
         if status not in FORECAST_STATUSES:
             errors.append(f"{table_id} row {row_index}: invalid status {status!r}")
+        elif definition is not None and status not in definition["allowed_statuses"]:
+            errors.append(
+                f"{table_id} row {row_index}: status {status!r} is not allowed for "
+                f"{assumption_id}; allowed statuses are {definition['allowed_statuses']}"
+            )
         value = row.get("value", "").strip()
         if status == "READY":
             number = _number(
@@ -1621,12 +1717,30 @@ def _validate_cp2g_forecast(
             )
             if number is not None and not math.isfinite(number):
                 errors.append(f"{table_id} row {row_index}: value must be finite")
-            if not row.get("assumption_id", "").strip():
-                errors.append(f"{table_id} row {row_index}: assumption_id is required")
+            if number is not None and definition is not None:
+                if number < float(str(definition["hard_min"])) or number > float(
+                    str(definition["hard_max"])
+                ):
+                    errors.append(
+                        f"{table_id} row {row_index}: value is outside registry bounds"
+                    )
             _validate_provenance(table_id, row_index, row, errors)
-        elif value:
-            errors.append(f"{table_id} row {row_index}: NOT_APPLICABLE value must be blank")
-        expected_unit = "PERCENT_DECIMAL" if driver_id == "division_growth" else "CURRENCY_MM"
+            if row.get("gap_code", "").strip():
+                errors.append(f"{table_id} row {row_index}: READY gap_code must be blank")
+        else:
+            if value:
+                errors.append(f"{table_id} row {row_index}: {status} value must be blank")
+            if status == "UNAVAILABLE":
+                expected_gap = (
+                    str(definition["degradation"]["gap_code"])
+                    if definition is not None
+                    else ""
+                )
+                if row.get("gap_code", "").strip() != expected_gap:
+                    errors.append(
+                        f"{table_id} row {row_index}: UNAVAILABLE requires gap_code {expected_gap}"
+                    )
+        expected_unit = str(definition["unit"]) if definition is not None else ""
         if row.get("unit") != expected_unit:
             errors.append(
                 f"{table_id} row {row_index}: unit must be {expected_unit}"
@@ -1641,16 +1755,17 @@ def _validate_cp2g_forecast(
             f"FY{minimum_fiscal_year}"
         )
     if len(periods) == 3:
-        expected: set[tuple[str, str, str, str]] = set()
+        expected: set[tuple[str, str, str]] = set()
         for case in FORECAST_CASES:
             for period_id in periods:
-                for slot_id in ("DIVISION_1", "DIVISION_2", "DIVISION_3"):
-                    expected.add(("division_growth", slot_id, case, period_id))
-                for driver_id in FORECAST_DRIVER_IDS - {"division_growth"}:
-                    expected.add((driver_id, "", case, period_id))
+                for assumption_id in ASSUMPTION_DEFINITION_BY_ID:
+                    expected.add((assumption_id, case, period_id))
         missing = expected - keys
         if missing:
-            errors.append(f"{table_id}: missing forecast rows {sorted(missing)}")
+            errors.append(f"{table_id}: incomplete assumption registry rows {sorted(missing)}")
+        extra = keys - expected
+        if extra:
+            errors.append(f"{table_id}: unsupported assumption registry rows {sorted(extra)}")
 
 
 def _validate_segment_allocation(
@@ -1658,6 +1773,7 @@ def _validate_segment_allocation(
     errors: list[str],
     *,
     required: bool,
+    forecast_tables: dict[str, TableRows] | None = None,
 ) -> None:
     segments = {
         row.get("segment_id", "").strip()
@@ -1665,24 +1781,23 @@ def _validate_segment_allocation(
         if row.get("segment_id", "").strip()
     }
     allocation = cp1_tables.get(CP1_SEGMENT_ALLOCATION_TABLE)
-    if not segments and allocation is None:
-        return
     if not required and allocation is None:
         return
-    if allocation is None:
+    if segments and allocation is None:
         errors.append(
             f"{CP1_SEGMENT_ALLOCATION_TABLE}: required for forecast segment mapping"
         )
         return
-    _require_columns(
-        cp1_tables,
-        CP1_SEGMENT_ALLOCATION_TABLE,
-        CP1_SEGMENT_ALLOCATION_COLUMNS,
-        errors,
-    )
+    if allocation is not None:
+        _require_columns(
+            cp1_tables,
+            CP1_SEGMENT_ALLOCATION_TABLE,
+            CP1_SEGMENT_ALLOCATION_COLUMNS,
+            errors,
+        )
     slots: set[str] = set()
     assigned: list[str] = []
-    for row_index, row in enumerate(allocation, 1):
+    for row_index, row in enumerate(allocation or (), 1):
         slot_id = row.get("slot_id", "").strip()
         if slot_id not in {"DIVISION_1", "DIVISION_2", "DIVISION_3"}:
             errors.append(
@@ -1700,6 +1815,38 @@ def _validate_segment_allocation(
         errors.append(
             f"{CP1_SEGMENT_ALLOCATION_TABLE}: components must cover every segment exactly"
         )
+    if forecast_tables is None:
+        return
+
+    segmented = bool(segments)
+    active_slots = slots if segmented else set()
+    for row in forecast_tables.get(CP2G_FORECAST_TABLE, []):
+        driver_id = row.get("driver_id", "").strip()
+        status = row.get("status", "").strip()
+        case_period = f"{row.get('case', '').strip()}/{row.get('period_id', '').strip()}"
+        if driver_id == "division_growth":
+            slot_id = row.get("slot_id", "").strip()
+            if slot_id in active_slots and status != "READY":
+                errors.append(
+                    f"{CP2G_FORECAST_TABLE} {case_period}: active slot {slot_id} "
+                    "must be READY"
+                )
+            if slot_id not in active_slots and status != "NOT_APPLICABLE":
+                errors.append(
+                    f"{CP2G_FORECAST_TABLE} {case_period}: inactive slot {slot_id} "
+                    "must be NOT_APPLICABLE"
+                )
+        elif driver_id == "consolidated_revenue_growth":
+            if segmented and status != "NOT_APPLICABLE":
+                errors.append(
+                    f"{CP2G_FORECAST_TABLE} {case_period}: segmented issuer requires "
+                    "NOT_APPLICABLE consolidated growth"
+                )
+            if not segmented and status != "READY":
+                errors.append(
+                    f"{CP2G_FORECAST_TABLE} {case_period}: unsegmented issuer requires "
+                    "READY consolidated growth"
+                )
 
 
 def _minimum_forecast_fiscal_year(period_rows: Iterable[dict[str, str]]) -> int | None:
@@ -1780,6 +1927,7 @@ def validate_cp_model_bundle(
             cp1_tables,
             errors,
             required=True,
+            forecast_tables=parsed.get("CP-2G"),
         )
     if "CP-1A" in parsed:
         _validate_snapshot_field_table(
